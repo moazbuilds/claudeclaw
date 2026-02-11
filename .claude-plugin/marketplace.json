@@ -1,0 +1,16 @@
+{
+  "name": "claude-heartbeat",
+  "owner": {
+    "name": "moazbuilds"
+  },
+  "plugins": [
+    {
+      "name": "heartbeat",
+      "source": ".",
+      "description": "Cron-like daemon that runs Claude prompts on a schedule",
+      "version": "1.0.0",
+      "keywords": ["cron", "heartbeat", "scheduler", "daemon"],
+      "category": "productivity"
+    }
+  ]
+}
