@@ -5,7 +5,7 @@ import { writeState, type StateData } from "../statusline";
 import { cronMatches, nextCronMatch } from "../cron";
 import { loadJobs } from "../jobs";
 import { writePidFile, cleanupPidFile, checkExistingDaemon } from "../pid";
-import { initConfig, loadSettings, reloadSettings, type Settings } from "../config";
+import { initConfig, loadSettings, reloadSettings, resolvePrompt, type Settings } from "../config";
 import type { Job } from "../jobs";
 
 const CLAUDE_DIR = join(process.cwd(), ".claude");
@@ -110,6 +110,11 @@ export async function start() {
 
   console.log("Claude Heartbeat daemon started");
   console.log(`  PID: ${process.pid}`);
+  console.log(`  Security: ${settings.security.level}`);
+  if (settings.security.allowedTools.length > 0)
+    console.log(`    + allowed: ${settings.security.allowedTools.join(", ")}`);
+  if (settings.security.disallowedTools.length > 0)
+    console.log(`    - blocked: ${settings.security.disallowedTools.join(", ")}`);
   console.log(`  Heartbeat: ${settings.heartbeat.enabled ? `every ${settings.heartbeat.interval}m` : "disabled"}`);
   console.log(`  Jobs loaded: ${jobs.length}`);
   jobs.forEach((j) => console.log(`    - ${j.name} [${j.schedule}]`));
@@ -170,7 +175,9 @@ export async function start() {
     nextHeartbeatAt = 0;
 
     function tick() {
-      run("heartbeat", currentSettings.heartbeat.prompt).then((r) => forwardToTelegram("", r));
+      resolvePrompt(currentSettings.heartbeat.prompt)
+        .then((prompt) => run("heartbeat", prompt))
+        .then((r) => forwardToTelegram("", r));
       nextHeartbeatAt = Date.now() + ms;
     }
 
@@ -191,6 +198,16 @@ export async function start() {
         newSettings.heartbeat.enabled !== currentSettings.heartbeat.enabled ||
         newSettings.heartbeat.interval !== currentSettings.heartbeat.interval ||
         newSettings.heartbeat.prompt !== currentSettings.heartbeat.prompt;
+
+      // Detect security config changes
+      const secChanged =
+        newSettings.security.level !== currentSettings.security.level ||
+        newSettings.security.allowedTools.join(",") !== currentSettings.security.allowedTools.join(",") ||
+        newSettings.security.disallowedTools.join(",") !== currentSettings.security.disallowedTools.join(",");
+
+      if (secChanged) {
+        console.log(`[${ts()}] Security level changed → ${newSettings.security.level}`);
+      }
 
       if (hbChanged) {
         console.log(`[${ts()}] Config change detected — heartbeat: ${newSettings.heartbeat.enabled ? `every ${newSettings.heartbeat.interval}m` : "disabled"}`);
@@ -237,7 +254,9 @@ export async function start() {
     const now = new Date();
     for (const job of currentJobs) {
       if (cronMatches(job.schedule, now)) {
-        run(job.name, job.prompt).then((r) => forwardToTelegram(job.name, r));
+        resolvePrompt(job.prompt)
+          .then((prompt) => run(job.name, prompt))
+          .then((r) => forwardToTelegram(job.name, r));
       }
     }
     updateState();

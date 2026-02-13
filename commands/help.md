@@ -9,6 +9,7 @@ Display this help information to the user:
 **Commands:**
 - `/heartbeat:start` — Initialize config and start the daemon
 - `/heartbeat:stop` — Stop the running daemon
+- `/heartbeat:clear` — Back up the current session and restart fresh
 - `/heartbeat:status` — Show daemon status, countdowns, and config
 - `/heartbeat:config` — View or modify heartbeat settings (interval, prompt, telegram)
 - `/heartbeat:jobs` — Create, list, edit, or delete cron jobs

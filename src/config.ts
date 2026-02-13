@@ -1,4 +1,4 @@
-import { join } from "path";
+import { join, isAbsolute } from "path";
 import { mkdir } from "fs/promises";
 import { existsSync } from "fs";
 
@@ -10,6 +10,7 @@ const LOGS_DIR = join(HEARTBEAT_DIR, "logs");
 const DEFAULT_SETTINGS: Settings = {
   heartbeat: { enabled: false, interval: 15, prompt: "" },
   telegram: { token: "", allowedUserIds: [] },
+  security: { level: "moderate", allowedTools: [], disallowedTools: [] },
 };
 
 export interface HeartbeatConfig {
@@ -23,9 +24,22 @@ export interface TelegramConfig {
   allowedUserIds: number[];
 }
 
+export type SecurityLevel =
+  | "locked"
+  | "strict"
+  | "moderate"
+  | "unrestricted";
+
+export interface SecurityConfig {
+  level: SecurityLevel;
+  allowedTools: string[];
+  disallowedTools: string[];
+}
+
 export interface Settings {
   heartbeat: HeartbeatConfig;
   telegram: TelegramConfig;
+  security: SecurityConfig;
 }
 
 let cached: Settings | null = null;
@@ -40,7 +54,20 @@ export async function initConfig(): Promise<void> {
   }
 }
 
+const VALID_LEVELS = new Set<SecurityLevel>([
+  "locked",
+  "strict",
+  "moderate",
+  "unrestricted",
+]);
+
 function parseSettings(raw: Record<string, any>): Settings {
+  const rawLevel = raw.security?.level;
+  const level: SecurityLevel =
+    typeof rawLevel === "string" && VALID_LEVELS.has(rawLevel as SecurityLevel)
+      ? (rawLevel as SecurityLevel)
+      : "moderate";
+
   return {
     heartbeat: {
       enabled: raw.heartbeat?.enabled ?? false,
@@ -50,6 +77,15 @@ function parseSettings(raw: Record<string, any>): Settings {
     telegram: {
       token: raw.telegram?.token ?? "",
       allowedUserIds: raw.telegram?.allowedUserIds ?? [],
+    },
+    security: {
+      level,
+      allowedTools: Array.isArray(raw.security?.allowedTools)
+        ? raw.security.allowedTools
+        : [],
+      disallowedTools: Array.isArray(raw.security?.disallowedTools)
+        ? raw.security.disallowedTools
+        : [],
     },
   };
 }
@@ -71,4 +107,28 @@ export async function reloadSettings(): Promise<Settings> {
 export function getSettings(): Settings {
   if (!cached) throw new Error("Settings not loaded. Call loadSettings() first.");
   return cached;
+}
+
+const PROMPT_EXTENSIONS = [".md", ".txt", ".prompt"];
+
+/**
+ * If the prompt string looks like a file path (ends with .md, .txt, or .prompt),
+ * read and return the file contents. Otherwise return the string as-is.
+ * Relative paths are resolved from the project root (cwd).
+ */
+export async function resolvePrompt(prompt: string): Promise<string> {
+  const trimmed = prompt.trim();
+  if (!trimmed) return trimmed;
+
+  const isPath = PROMPT_EXTENSIONS.some((ext) => trimmed.endsWith(ext));
+  if (!isPath) return trimmed;
+
+  const resolved = isAbsolute(trimmed) ? trimmed : join(process.cwd(), trimmed);
+  try {
+    const content = await Bun.file(resolved).text();
+    return content.trim();
+  } catch {
+    console.warn(`[config] Prompt path "${trimmed}" not found, using as literal string`);
+    return trimmed;
+  }
 }

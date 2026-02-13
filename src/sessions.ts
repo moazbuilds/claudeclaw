@@ -1,5 +1,5 @@
 import { join } from "path";
-import { unlink } from "fs/promises";
+import { unlink, readdir, rename } from "fs/promises";
 import { randomUUID } from "crypto";
 
 const HEARTBEAT_DIR = join(process.cwd(), ".claude", "heartbeat");
@@ -52,4 +52,28 @@ export async function resetSession(): Promise<void> {
   } catch {
     // already gone
   }
+}
+
+export async function backupSession(): Promise<string | null> {
+  const existing = await loadSession();
+  if (!existing) return null;
+
+  // Find next backup index
+  let files: string[];
+  try {
+    files = await readdir(HEARTBEAT_DIR);
+  } catch {
+    files = [];
+  }
+  const indices = files
+    .filter((f) => /^session_\d+\.backup$/.test(f))
+    .map((f) => Number(f.match(/^session_(\d+)\.backup$/)![1]));
+  const nextIndex = indices.length > 0 ? Math.max(...indices) + 1 : 1;
+
+  const backupName = `session_${nextIndex}.backup`;
+  const backupPath = join(HEARTBEAT_DIR, backupName);
+  await rename(SESSION_FILE, backupPath);
+  current = null;
+
+  return backupName;
 }
