@@ -153,11 +153,7 @@ Defaults: `WEB_HOST=127.0.0.1`, `WEB_PORT=4632` unless changed via settings or `
   "heartbeat": {
     "enabled": true,
     "interval": 15,
-    "prompt": "Check git status and summarize recent changes.",
-    "timezone": "America/New_York",
-    "excludeWindows": [
-      { "days": [1, 2, 3, 4, 5], "start": "23:00", "end": "07:00" }
-    ]
+    "prompt": "Check git status and summarize recent changes."
     // OR use a file path:
     // "prompt": "prompts/heartbeat.md"
   },
@@ -175,8 +171,6 @@ Defaults: `WEB_HOST=127.0.0.1`, `WEB_PORT=4632` unless changed via settings or `
 - `heartbeat.enabled` — whether the recurring heartbeat runs
 - `heartbeat.interval` — minutes between heartbeat runs
 - `heartbeat.prompt` — the prompt sent to Claude on each heartbeat. Can be an inline string or a file path ending in `.md`, `.txt`, or `.prompt` (relative to project root). File contents are re-read on each tick, so edits take effect without restarting the daemon.
-- `heartbeat.timezone` — IANA timezone used for quiet-hours checks (e.g. `America/New_York`). Empty means system timezone.
-- `heartbeat.excludeWindows` — local-time windows where heartbeat is skipped. Format: array of `{ days?: number[], start: "HH:mm", end: "HH:mm" }` using day numbers `0=Sun ... 6=Sat`. Overnight windows are supported (`23:00` → `07:00`).
 - `telegram.token` — Telegram bot token from @BotFather
 - `telegram.allowedUserIds` — array of numeric Telegram user IDs allowed to interact
 - `security.level` — one of: `locked`, `strict`, `moderate`, `unrestricted`
