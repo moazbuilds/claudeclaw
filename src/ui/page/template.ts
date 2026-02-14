@@ -84,7 +84,7 @@ ${pageStyles}
           <input class="hb-input" id="hb-interval-input" type="number" min="1" max="1440" step="1" required />
         </label>
         <label class="hb-field" for="hb-prompt-input">
-          <span class="hb-label">Prompt</span>
+          <span class="hb-label">Custom prompt</span>
           <textarea class="hb-textarea" id="hb-prompt-input" placeholder="What should heartbeat run?" required></textarea>
         </label>
         <div class="hb-actions">
