@@ -257,18 +257,28 @@ function htmlPage(): string {
       animation: rise 700ms ease-out both;
     }
 
-    .logo-svg {
-      display: block;
-      width: min(300px, 80vw);
-      height: auto;
+    .logo-art {
+      width: 12ch;
       margin: 0 auto 18px;
+      color: #dbe7ff;
       filter: drop-shadow(0 8px 20px #00000040);
     }
-    .logo-svg text {
-      fill: #dbe7ff;
+    .logo-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 20px;
+      line-height: 1.1;
+      margin-bottom: 2px;
+    }
+    .logo-body {
+      margin: 0;
+      white-space: pre;
       font-family: "JetBrains Mono", monospace;
       font-size: 20px;
       letter-spacing: 0;
+      line-height: 1.08;
+      text-align: left;
     }
 
     @keyframes rise {
@@ -358,13 +368,12 @@ function htmlPage(): string {
   <div class="grain" aria-hidden="true"></div>
   <main class="stage">
     <section class="hero">
-      <svg class="logo-svg" viewBox="0 0 300 130" role="img" aria-label="Lobster ASCII art logo">
-        <text x="86" y="28" text-anchor="middle">🦞</text>
-        <text x="214" y="28" text-anchor="middle">🦞</text>
-        <text x="150" y="58" text-anchor="middle" xml:space="preserve">   ▐▛███▜▌</text>
-        <text x="150" y="88" text-anchor="middle" xml:space="preserve">  ▝▜█████▛▘</text>
-        <text x="150" y="118" text-anchor="middle" xml:space="preserve">    ▘▘ ▝▝</text>
-      </svg>
+      <div class="logo-art" role="img" aria-label="Lobster ASCII art logo">
+        <div class="logo-top"><span>🦞</span><span>🦞</span></div>
+        <pre class="logo-body">   ▐▛███▜▌
+  ▝▜█████▛▘
+    ▘▘ ▝▝</pre>
+      </div>
       <div class="time" id="clock">--:--:--</div>
       <div class="date" id="date">Loading date...</div>
       <div class="message" id="message">Welcome back.</div>
