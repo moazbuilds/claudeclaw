@@ -675,11 +675,18 @@ function htmlPage(): string {
       border-right: 0;
     }
     .pill-label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
       font-size: 10px;
       text-transform: uppercase;
       letter-spacing: 0.06em;
       color: #d6e2f5;
       opacity: 0.75;
+    }
+    .pill-icon {
+      font-size: 11px;
+      opacity: 0.9;
     }
     .pill-value {
       font-size: 13px;
@@ -896,12 +903,14 @@ function htmlPage(): string {
       if (state.heartbeat.enabled) {
         pills.push({
           cls: "ok",
+          icon: "💓",
           label: "Heartbeat",
           value: "Every " + state.heartbeat.intervalMinutes + "m",
         });
       } else {
         pills.push({
           cls: "bad",
+          icon: "💓",
           label: "Heartbeat",
           value: "Disabled",
         });
@@ -909,6 +918,7 @@ function htmlPage(): string {
 
       pills.push({
         cls: state.security.level === "unrestricted" ? "warn" : "ok",
+        icon: "🛡️",
         label: "Security",
         value: cap(state.security.level),
         meta: "allowed " + (state.security.allowedTools?.length || 0) + " | blocked " + (state.security.disallowedTools?.length || 0),
@@ -916,6 +926,7 @@ function htmlPage(): string {
 
       pills.push({
         cls: state.telegram.configured ? "ok" : "warn",
+        icon: "✈️",
         label: "Telegram",
         value: state.telegram.configured
           ? (state.telegram.allowedUserCount + " user" + (state.telegram.allowedUserCount !== 1 ? "s" : ""))
@@ -924,11 +935,13 @@ function htmlPage(): string {
 
       pills.push({
         cls: state.jobs.length ? "ok" : "warn",
+        icon: "🗂️",
         label: "Jobs",
         value: String(state.jobs.length),
       });
       pills.push({
         cls: "ok",
+        icon: "⏱️",
         label: "Uptime",
         value: fmtDur(state.daemon.uptimeMs),
       });
@@ -954,13 +967,13 @@ function htmlPage(): string {
         const pills = buildPills(state);
         dockEl.innerHTML = pills.map((p) =>
           '<div class="pill ' + p.cls + '">' +
-            '<div class="pill-label">' + esc(p.label) + '</div>' +
+            '<div class="pill-label"><span class="pill-icon">' + esc(p.icon || "") + "</span>" + esc(p.label) + '</div>' +
             '<div class="pill-value">' + esc(p.value) + '</div>' +
             (p.meta ? ('<div class="pill-meta">' + esc(p.meta) + "</div>") : "") +
           "</div>"
         ).join("");
       } catch (err) {
-        dockEl.innerHTML = '<div class="pill bad"><div class="pill-label">Status</div><div class="pill-value">Offline</div><div class="pill-meta">' + esc(String(err)) + '</div></div>';
+        dockEl.innerHTML = '<div class="pill bad"><div class="pill-label"><span class="pill-icon">⚠️</span>Status</div><div class="pill-value">Offline</div><div class="pill-meta">' + esc(String(err)) + '</div></div>';
       }
     }
 
