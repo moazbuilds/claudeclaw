@@ -596,10 +596,12 @@ function htmlPage(): string {
 
     const typePhrases = [
       "Okay human, let's do it.",
+      "Okay human, let's do it faster.",
       "Build. Refine. Ship.",
       "Keep it simple. Keep it clean.",
       "One focused step at a time.",
-      "Clock is live. Let's move."
+      "Clock is live. Let's move.",
+      "Ship it, lobster mode."
     ];
 
     function startTypewriter() {
