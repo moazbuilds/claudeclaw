@@ -1,8 +1,19 @@
 import { pageStyles } from "./styles";
 import { pageScript } from "./script";
 
+function decodeUnicodeEscapes(text: string): string {
+  const decodedCodePoints = text.replace(/\\u\{([0-9a-fA-F]+)\}/g, (_, hex: string) => {
+    const codePoint = Number.parseInt(hex, 16);
+    return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : _;
+  });
+  return decodedCodePoints.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex: string) => {
+    const code = Number.parseInt(hex, 16);
+    return Number.isFinite(code) ? String.fromCharCode(code) : _;
+  });
+}
+
 export function htmlPage(): string {
-  return String.raw`
+  const html = String.raw`
 <!doctype html>
 <html lang="en">
 <head>
@@ -145,4 +156,5 @@ ${pageScript}
   </script>
 </body>
 </html>`;
+  return decodeUnicodeEscapes(html);
 }
