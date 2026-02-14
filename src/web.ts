@@ -271,7 +271,7 @@ function htmlPage(): string {
       font-size: 18px;
       line-height: 1.1;
       margin-bottom: 2px;
-      transform: translateX(0.9ch);
+      transform: translateX(1.2ch);
     }
     .logo-body {
       margin: 0;
