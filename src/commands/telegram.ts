@@ -1,6 +1,8 @@
 import { run } from "../runner";
 import { getSettings, loadSettings } from "../config";
 import { resetSession } from "../sessions";
+import { mkdir } from "node:fs/promises";
+import { extname, join } from "node:path";
 
 // --- Markdown → Telegram HTML conversion (ported from nanobot) ---
 
@@ -64,6 +66,7 @@ function markdownToTelegramHtml(text: string): string {
 // --- Telegram Bot API (raw fetch, zero deps) ---
 
 const API_BASE = "https://api.telegram.org/bot";
+const FILE_API_BASE = "https://api.telegram.org/file/bot";
 
 interface TelegramUser {
   id: number;
@@ -77,11 +80,33 @@ interface TelegramMessage {
   reply_to_message?: { from?: TelegramUser };
   chat: { id: number; type: string };
   text?: string;
+  caption?: string;
+  photo?: TelegramPhotoSize[];
+  document?: TelegramDocument;
   entities?: Array<{
     type: "mention" | "bot_command" | string;
     offset: number;
     length: number;
   }>;
+  caption_entities?: Array<{
+    type: "mention" | "bot_command" | string;
+    offset: number;
+    length: number;
+  }>;
+}
+
+interface TelegramPhotoSize {
+  file_id: string;
+  width: number;
+  height: number;
+  file_size?: number;
+}
+
+interface TelegramDocument {
+  file_id: string;
+  file_name?: string;
+  mime_type?: string;
+  file_size?: number;
 }
 
 interface TelegramChatMember {
@@ -111,6 +136,10 @@ interface TelegramMe {
   can_read_all_group_messages?: boolean;
 }
 
+interface TelegramFile {
+  file_path?: string;
+}
+
 let telegramDebug = false;
 
 function debugLog(message: string): void {
@@ -120,6 +149,56 @@ function debugLog(message: string): void {
 
 function normalizeTelegramText(text: string): string {
   return text.replace(/\u2014/g, "-");
+}
+
+function getMessageTextAndEntities(message: TelegramMessage): {
+  text: string;
+  entities: TelegramMessage["entities"];
+} {
+  if (message.text) {
+    return {
+      text: normalizeTelegramText(message.text),
+      entities: message.entities,
+    };
+  }
+
+  if (message.caption) {
+    return {
+      text: normalizeTelegramText(message.caption),
+      entities: message.caption_entities,
+    };
+  }
+
+  return { text: "", entities: [] };
+}
+
+function isImageDocument(document?: TelegramDocument): boolean {
+  return Boolean(document?.mime_type?.startsWith("image/"));
+}
+
+function pickLargestPhoto(photo: TelegramPhotoSize[]): TelegramPhotoSize {
+  return [...photo].sort((a, b) => {
+    const sizeA = a.file_size ?? a.width * a.height;
+    const sizeB = b.file_size ?? b.width * b.height;
+    return sizeB - sizeA;
+  })[0];
+}
+
+function extensionFromMimeType(mimeType?: string): string {
+  switch (mimeType) {
+    case "image/jpeg":
+      return ".jpg";
+    case "image/png":
+      return ".png";
+    case "image/webp":
+      return ".webp";
+    case "image/gif":
+      return ".gif";
+    case "image/bmp":
+      return ".bmp";
+    default:
+      return "";
+  }
 }
 
 function extractTelegramCommand(text: string): string | null {
@@ -168,14 +247,13 @@ let botUsername: string | null = null;
 let botId: number | null = null;
 
 function groupTriggerReason(message: TelegramMessage): string | null {
-  const text = normalizeTelegramText(message.text ?? "");
+  if (botId && message.reply_to_message?.from?.id === botId) return "reply_to_bot";
+  const { text, entities } = getMessageTextAndEntities(message);
   if (!text) return null;
   const lowerText = text.toLowerCase();
-
-  if (botId && message.reply_to_message?.from?.id === botId) return "reply_to_bot";
   if (botUsername && lowerText.includes(`@${botUsername.toLowerCase()}`)) return "text_contains_mention";
 
-  for (const entity of message.entities ?? []) {
+  for (const entity of entities ?? []) {
     const value = text.slice(entity.offset, entity.offset + entity.length);
     if (entity.type === "mention" && botUsername && value.toLowerCase() === `@${botUsername.toLowerCase()}`) {
       return "mention_entity_matches_bot";
@@ -189,6 +267,34 @@ function groupTriggerReason(message: TelegramMessage): string | null {
   }
 
   return null;
+}
+
+async function downloadImageFromMessage(token: string, message: TelegramMessage): Promise<string | null> {
+  const photo = message.photo && message.photo.length > 0 ? pickLargestPhoto(message.photo) : null;
+  const imageDocument = isImageDocument(message.document) ? message.document : null;
+  const fileId = photo?.file_id ?? imageDocument?.file_id;
+  if (!fileId) return null;
+
+  const fileMeta = await callApi<{ ok: boolean; result: TelegramFile }>(token, "getFile", { file_id: fileId });
+  if (!fileMeta.ok || !fileMeta.result.file_path) return null;
+
+  const remotePath = fileMeta.result.file_path;
+  const downloadUrl = `${FILE_API_BASE}${token}/${remotePath}`;
+  const response = await fetch(downloadUrl);
+  if (!response.ok) throw new Error(`Telegram file download failed: ${response.status} ${response.statusText}`);
+
+  const dir = join(process.cwd(), ".claude", "claudeclaw", "inbox", "telegram");
+  await mkdir(dir, { recursive: true });
+
+  const remoteExt = extname(remotePath);
+  const docExt = extname(imageDocument?.file_name ?? "");
+  const mimeExt = extensionFromMimeType(imageDocument?.mime_type);
+  const ext = remoteExt || docExt || mimeExt || ".jpg";
+  const filename = `${message.chat.id}-${message.message_id}-${Date.now()}${ext}`;
+  const localPath = join(dir, filename);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  await Bun.write(localPath, bytes);
+  return localPath;
 }
 
 async function handleMyChatMember(update: TelegramMyChatMemberUpdate): Promise<void> {
@@ -234,10 +340,11 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
   const config = getSettings().telegram;
   const userId = message.from?.id;
   const chatId = message.chat.id;
-  const text = message.text ? normalizeTelegramText(message.text) : message.text;
+  const { text } = getMessageTextAndEntities(message);
   const chatType = message.chat.type;
   const isPrivate = chatType === "private";
   const isGroup = chatType === "group" || chatType === "supergroup";
+  const hasImage = Boolean((message.photo && message.photo.length > 0) || isImageDocument(message.document));
 
   if (!isPrivate && !isGroup) return;
 
@@ -262,12 +369,12 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     return;
   }
 
-  if (!text?.trim()) {
+  if (!text.trim() && !hasImage) {
     debugLog(`Skip message chat=${chatId} from=${userId ?? "unknown"} reason=empty_text`);
     return;
   }
 
-  const command = extractTelegramCommand(text);
+  const command = text ? extractTelegramCommand(text) : null;
   if (command === "/start") {
     await sendMessage(
       config.token,
@@ -284,8 +391,9 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
   }
 
   const label = message.from?.username ?? String(userId ?? "unknown");
+  const mediaSuffix = hasImage ? " [image]" : "";
   console.log(
-    `[${new Date().toLocaleTimeString()}] Telegram ${label}: "${text.slice(0, 60)}${text.length > 60 ? "..." : ""}"`
+    `[${new Date().toLocaleTimeString()}] Telegram ${label}${mediaSuffix}: "${text.slice(0, 60)}${text.length > 60 ? "..." : ""}"`
   );
 
   // Keep typing indicator alive while queued/running
@@ -293,7 +401,24 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
 
   try {
     await sendTyping(config.token, chatId);
-    const prefixedPrompt = `[Telegram from ${label}]: ${text}`;
+    let imagePath: string | null = null;
+    if (hasImage) {
+      try {
+        imagePath = await downloadImageFromMessage(config.token, message);
+      } catch (err) {
+        console.error(`[Telegram] Failed to download image for ${label}: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+
+    const promptParts = [`[Telegram from ${label}]`];
+    if (text.trim()) promptParts.push(`Message: ${text}`);
+    if (imagePath) {
+      promptParts.push(`Image path: ${imagePath}`);
+      promptParts.push("The user attached an image. Inspect this image file directly before answering.");
+    } else if (hasImage) {
+      promptParts.push("The user attached an image, but downloading it failed. Respond and ask them to resend.");
+    }
+    const prefixedPrompt = promptParts.join("\n");
     const result = await run("telegram", prefixedPrompt);
 
     if (result.exitCode !== 0) {
