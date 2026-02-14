@@ -341,6 +341,14 @@ function htmlPage(): string {
       text-shadow: 0 10px 35px #00000055;
       transition: text-shadow 280ms ease;
     }
+    .clock-suffix {
+      font-family: "JetBrains Mono", monospace;
+      font-size: 0.22em;
+      letter-spacing: 0.12em;
+      vertical-align: super;
+      margin-left: 0.35em;
+      opacity: 0.9;
+    }
 
     .time.ms-pulse {
       text-shadow: 0 10px 40px #7dc5ff4d;
@@ -632,8 +640,12 @@ function htmlPage(): string {
       const hh = use12Hour ? String((rawH % 12) || 12).padStart(2, "0") : String(rawH).padStart(2, "0");
       const mm = String(now.getMinutes()).padStart(2, "0");
       const ss = String(now.getSeconds()).padStart(2, "0");
-      const suffix = use12Hour ? (rawH >= 12 ? " PM" : " AM") : "";
-      clockEl.textContent = hh + ":" + mm + ":" + ss + suffix;
+      if (use12Hour) {
+        const suffix = rawH >= 12 ? "PM" : "AM";
+        clockEl.innerHTML = hh + ":" + mm + ":" + ss + '<span class="clock-suffix">' + suffix + "</span>";
+      } else {
+        clockEl.textContent = hh + ":" + mm + ":" + ss;
+      }
       dateEl.textContent = dateFmt.format(now);
       msgEl.textContent = greetingForHour(now.getHours());
 
