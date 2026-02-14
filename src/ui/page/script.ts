@@ -8,6 +8,15 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
     const settingsBtn = $("settings-btn");
     const settingsModal = $("settings-modal");
     const settingsClose = $("settings-close");
+    const hbConfig = $("hb-config");
+    const hbModal = $("hb-modal");
+    const hbModalClose = $("hb-modal-close");
+    const hbForm = $("hb-form");
+    const hbIntervalInput = $("hb-interval-input");
+    const hbPromptInput = $("hb-prompt-input");
+    const hbModalStatus = $("hb-modal-status");
+    const hbCancelBtn = $("hb-cancel-btn");
+    const hbSaveBtn = $("hb-save-btn");
     const infoOpen = $("info-open");
     const infoModal = $("info-modal");
     const infoClose = $("info-close");
@@ -33,6 +42,7 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
     const jobsBubbleEl = $("jobs-bubble");
     const uptimeBubbleEl = $("uptime-bubble");
     let hbBusy = false;
+    let hbSaveBusy = false;
     let use12Hour = localStorage.getItem("clock.format") === "12";
     let quickView = "jobs";
     let quickViewInitialized = false;
@@ -402,7 +412,8 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
         const data = await res.json();
         const on = Boolean(data?.heartbeat?.enabled);
         const intervalMinutes = Number(data?.heartbeat?.interval) || 15;
-        setHeartbeatUi(on, undefined, intervalMinutes);
+        const prompt = typeof data?.heartbeat?.prompt === "string" ? data.heartbeat.prompt : "";
+        setHeartbeatUi(on, undefined, intervalMinutes, prompt);
       } catch (err) {
         hbToggle.textContent = "Error";
         hbToggle.className = "hb-toggle off";
@@ -440,14 +451,48 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
       ).join("");
     }
 
-    function setHeartbeatUi(on, label, intervalMinutes) {
+    function setHeartbeatUi(on, label, intervalMinutes, prompt) {
       if (!hbToggle) return;
       hbToggle.textContent = label || (on ? "Enabled" : "Disabled");
       hbToggle.className = "hb-toggle " + (on ? "on" : "off");
       hbToggle.dataset.enabled = on ? "1" : "0";
       if (intervalMinutes != null) hbToggle.dataset.interval = String(intervalMinutes);
+      if (prompt != null) hbToggle.dataset.prompt = String(prompt);
       const iv = Number(hbToggle.dataset.interval) || 15;
       if (hbInfoEl) hbInfoEl.textContent = on ? ("every " + iv + " minutes") : ("paused (interval " + iv + "m)");
+    }
+
+    function openHeartbeatModal() {
+      if (!hbModal) return;
+      hbModal.classList.add("open");
+      hbModal.setAttribute("aria-hidden", "false");
+    }
+
+    function closeHeartbeatModal() {
+      if (!hbModal) return;
+      hbModal.classList.remove("open");
+      hbModal.setAttribute("aria-hidden", "true");
+      if (hbModalStatus) hbModalStatus.textContent = "";
+      hbSaveBusy = false;
+      if (hbSaveBtn) hbSaveBtn.disabled = false;
+      if (hbCancelBtn) hbCancelBtn.disabled = false;
+    }
+
+    async function openHeartbeatConfig() {
+      if (!hbIntervalInput || !hbPromptInput || !hbModalStatus) return;
+      openHeartbeatModal();
+      hbModalStatus.textContent = "Loading...";
+      try {
+        const res = await fetch("/api/settings/heartbeat");
+        const out = await res.json();
+        if (!out.ok) throw new Error(out.error || "failed to load heartbeat");
+        const hb = out.heartbeat || {};
+        hbIntervalInput.value = String(Number(hb.interval) || Number(hbToggle?.dataset.interval) || 15);
+        hbPromptInput.value = typeof hb.prompt === "string" ? hb.prompt : (hbToggle?.dataset.prompt || "");
+        hbModalStatus.textContent = "";
+      } catch (err) {
+        hbModalStatus.textContent = "Failed: " + String(err instanceof Error ? err.message : err);
+      }
     }
 
     if (settingsBtn && settingsModal) {
@@ -459,6 +504,15 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
 
     if (settingsClose && settingsModal) {
       settingsClose.addEventListener("click", () => settingsModal.classList.remove("open"));
+    }
+    if (hbConfig) {
+      hbConfig.addEventListener("click", openHeartbeatConfig);
+    }
+    if (hbModalClose) {
+      hbModalClose.addEventListener("click", closeHeartbeatModal);
+    }
+    if (hbCancelBtn) {
+      hbCancelBtn.addEventListener("click", closeHeartbeatModal);
     }
     if (infoOpen) {
       infoOpen.addEventListener("click", openTechnicalInfo);
@@ -478,6 +532,13 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
       settingsModal.classList.remove("open");
     });
     document.addEventListener("click", (event) => {
+      if (!hbModal) return;
+      if (!hbModal.classList.contains("open")) return;
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (target === hbModal) closeHeartbeatModal();
+    });
+    document.addEventListener("click", (event) => {
       if (!infoModal) return;
       if (!infoModal.classList.contains("open")) return;
       const target = event.target;
@@ -489,7 +550,9 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
     });
     document.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
-      if (infoModal && infoModal.classList.contains("open")) {
+      if (hbModal && hbModal.classList.contains("open")) {
+        closeHeartbeatModal();
+      } else if (infoModal && infoModal.classList.contains("open")) {
         infoModal.classList.remove("open");
         infoModal.setAttribute("aria-hidden", "true");
       } else if (settingsModal && settingsModal.classList.contains("open")) {
@@ -502,10 +565,11 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
         if (hbBusy) return;
         const current = hbToggle.dataset.enabled === "1";
         const intervalMinutes = Number(hbToggle.dataset.interval) || 15;
+        const currentPrompt = hbToggle.dataset.prompt || "";
         const next = !current;
         hbBusy = true;
         hbToggle.disabled = true;
-        setHeartbeatUi(next, next ? "Enabled" : "Disabled", intervalMinutes);
+        setHeartbeatUi(next, next ? "Enabled" : "Disabled", intervalMinutes, currentPrompt);
         try {
           const res = await fetch("/api/settings/heartbeat", {
             method: "POST",
@@ -514,12 +578,66 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
           });
           const out = await res.json();
           if (!out.ok) throw new Error(out.error || "save failed");
+          if (out.heartbeat) {
+            setHeartbeatUi(Boolean(out.heartbeat.enabled), undefined, Number(out.heartbeat.interval) || intervalMinutes, typeof out.heartbeat.prompt === "string" ? out.heartbeat.prompt : currentPrompt);
+          }
           await refreshState();
         } catch {
-          setHeartbeatUi(current, current ? "Enabled" : "Disabled", intervalMinutes);
+          setHeartbeatUi(current, current ? "Enabled" : "Disabled", intervalMinutes, currentPrompt);
         } finally {
           hbBusy = false;
           hbToggle.disabled = false;
+        }
+      });
+    }
+
+    if (hbForm && hbIntervalInput && hbPromptInput && hbModalStatus && hbSaveBtn && hbCancelBtn) {
+      hbForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (hbSaveBusy) return;
+
+        const interval = Number(String(hbIntervalInput.value || "").trim());
+        const prompt = String(hbPromptInput.value || "").trim();
+        if (!Number.isFinite(interval) || interval < 1 || interval > 1440) {
+          hbModalStatus.textContent = "Interval must be 1-1440 minutes.";
+          return;
+        }
+        if (!prompt) {
+          hbModalStatus.textContent = "Prompt is required.";
+          return;
+        }
+
+        hbSaveBusy = true;
+        hbSaveBtn.disabled = true;
+        hbCancelBtn.disabled = true;
+        hbModalStatus.textContent = "Saving...";
+        try {
+          const res = await fetch("/api/settings/heartbeat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              interval,
+              prompt,
+            }),
+          });
+          const out = await res.json();
+          if (!out.ok) throw new Error(out.error || "save failed");
+          const enabled = hbToggle ? hbToggle.dataset.enabled === "1" : false;
+          const next = out.heartbeat || {};
+          setHeartbeatUi(
+            "enabled" in next ? Boolean(next.enabled) : enabled,
+            undefined,
+            Number(next.interval) || interval,
+            typeof next.prompt === "string" ? next.prompt : prompt
+          );
+          hbModalStatus.textContent = "Saved.";
+          await refreshState();
+          setTimeout(() => closeHeartbeatModal(), 120);
+        } catch (err) {
+          hbModalStatus.textContent = "Failed: " + String(err instanceof Error ? err.message : err);
+          hbSaveBusy = false;
+          hbSaveBtn.disabled = false;
+          hbCancelBtn.disabled = false;
         }
       });
     }

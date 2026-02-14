@@ -2,7 +2,7 @@ import { htmlPage } from "./page/html";
 import { clampInt, json } from "./http";
 import type { StartWebUiOptions, WebServerHandle } from "./types";
 import { buildState, buildTechnicalInfo, sanitizeSettings } from "./services/state";
-import { setHeartbeatEnabled } from "./services/settings";
+import { readHeartbeatSettings, updateHeartbeatSettings } from "./services/settings";
 import { createQuickJob, deleteJob } from "./services/jobs";
 import { readLogs } from "./services/logs";
 
@@ -34,10 +34,37 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
       if (url.pathname === "/api/settings/heartbeat" && req.method === "POST") {
         try {
           const body = await req.json();
-          const enabled = Boolean((body as { enabled?: unknown }).enabled);
-          await setHeartbeatEnabled(enabled);
-          if (opts.onHeartbeatEnabledChanged) await opts.onHeartbeatEnabledChanged(enabled);
-          return json({ ok: true, enabled });
+          const payload = body as { enabled?: unknown; interval?: unknown; prompt?: unknown };
+          const patch: { enabled?: boolean; interval?: number; prompt?: string } = {};
+
+          if ("enabled" in payload) patch.enabled = Boolean(payload.enabled);
+          if ("interval" in payload) {
+            const iv = Number(payload.interval);
+            if (!Number.isFinite(iv)) throw new Error("interval must be numeric");
+            patch.interval = iv;
+          }
+          if ("prompt" in payload) patch.prompt = String(payload.prompt ?? "");
+
+          if (!("enabled" in patch) && !("interval" in patch) && !("prompt" in patch)) {
+            throw new Error("no heartbeat fields provided");
+          }
+
+          const next = await updateHeartbeatSettings(patch);
+          if (opts.onHeartbeatEnabledChanged && "enabled" in patch) {
+            await opts.onHeartbeatEnabledChanged(Boolean(patch.enabled));
+          }
+          if (opts.onHeartbeatSettingsChanged) {
+            await opts.onHeartbeatSettingsChanged(patch);
+          }
+          return json({ ok: true, heartbeat: next });
+        } catch (err) {
+          return json({ ok: false, error: String(err) });
+        }
+      }
+
+      if (url.pathname === "/api/settings/heartbeat" && req.method === "GET") {
+        try {
+          return json({ ok: true, heartbeat: await readHeartbeatSettings() });
         } catch (err) {
           return json({ ok: false, error: String(err) });
         }

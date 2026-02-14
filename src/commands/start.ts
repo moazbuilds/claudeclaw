@@ -323,6 +323,28 @@ export async function start(args: string[] = []) {
             updateState();
             console.log(`[${ts()}] Heartbeat ${enabled ? "enabled" : "disabled"} from Web UI`);
           },
+          onHeartbeatSettingsChanged: (patch) => {
+            let changed = false;
+            if (typeof patch.enabled === "boolean" && currentSettings.heartbeat.enabled !== patch.enabled) {
+              currentSettings.heartbeat.enabled = patch.enabled;
+              changed = true;
+            }
+            if (typeof patch.interval === "number" && Number.isFinite(patch.interval)) {
+              const interval = Math.max(1, Math.min(1440, Math.round(patch.interval)));
+              if (currentSettings.heartbeat.interval !== interval) {
+                currentSettings.heartbeat.interval = interval;
+                changed = true;
+              }
+            }
+            if (typeof patch.prompt === "string" && currentSettings.heartbeat.prompt !== patch.prompt) {
+              currentSettings.heartbeat.prompt = patch.prompt;
+              changed = true;
+            }
+            if (!changed) return;
+            scheduleHeartbeat();
+            updateState();
+            console.log(`[${ts()}] Heartbeat settings updated from Web UI`);
+          },
           onJobsChanged: async () => {
             currentJobs = await loadJobs();
             scheduleHeartbeat();
