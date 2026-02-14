@@ -6,7 +6,7 @@ import { writeState, type StateData } from "../statusline";
 import { cronMatches, nextCronMatch } from "../cron";
 import { clearJobSchedule, loadJobs } from "../jobs";
 import { writePidFile, cleanupPidFile, checkExistingDaemon } from "../pid";
-import { initConfig, loadSettings, reloadSettings, resolvePrompt, type Settings } from "../config";
+import { initConfig, loadSettings, reloadSettings, resolvePrompt, type HeartbeatConfig, type Settings } from "../config";
 import { startWebUi, type WebServerHandle } from "../web";
 import type { Job } from "../jobs";
 
@@ -95,6 +95,76 @@ try {
   );
 }
 `;
+
+const WEEKDAY_TO_NUM: Record<string, number> = {
+  Sun: 0,
+  Mon: 1,
+  Tue: 2,
+  Wed: 3,
+  Thu: 4,
+  Fri: 5,
+  Sat: 6,
+};
+
+const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];
+
+function parseClockMinutes(value: string): number | null {
+  const match = value.match(/^([01]\d|2[0-3]):([0-5]\d)$/);
+  if (!match) return null;
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
+function getCurrentLocalDayAndMinute(timezone: string): { day: number; minute: number } | null {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      weekday: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(new Date());
+    const weekday = parts.find((p) => p.type === "weekday")?.value;
+    const hour = Number(parts.find((p) => p.type === "hour")?.value ?? "");
+    const minute = Number(parts.find((p) => p.type === "minute")?.value ?? "");
+    if (!weekday || !Number.isInteger(hour) || !Number.isInteger(minute)) return null;
+    const day = WEEKDAY_TO_NUM[weekday];
+    if (!Number.isInteger(day)) return null;
+    return { day, minute: hour * 60 + minute };
+  } catch {
+    return null;
+  }
+}
+
+function isHeartbeatExcludedNow(config: HeartbeatConfig): boolean {
+  if (!Array.isArray(config.excludeWindows) || config.excludeWindows.length === 0) return false;
+  const timezone = config.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const local = getCurrentLocalDayAndMinute(timezone);
+  if (!local) return false;
+
+  for (const window of config.excludeWindows) {
+    const start = parseClockMinutes(window.start);
+    const end = parseClockMinutes(window.end);
+    if (start == null || end == null) continue;
+    const days = Array.isArray(window.days) && window.days.length > 0 ? window.days : ALL_DAYS;
+    const sameDay = start < end;
+
+    if (sameDay) {
+      if (days.includes(local.day) && local.minute >= start && local.minute < end) return true;
+      continue;
+    }
+
+    if (start === end) {
+      if (days.includes(local.day)) return true;
+      continue;
+    }
+
+    if (local.minute >= start && days.includes(local.day)) return true;
+    const previousDay = (local.day + 6) % 7;
+    if (local.minute < end && days.includes(previousDay)) return true;
+  }
+
+  return false;
+}
 
 async function setupStatusline() {
   await mkdir(CLAUDE_DIR, { recursive: true });
@@ -340,13 +410,25 @@ export async function start(args: string[] = []) {
                 changed = true;
               }
             }
-            if (typeof patch.prompt === "string" && currentSettings.heartbeat.prompt !== patch.prompt) {
-              currentSettings.heartbeat.prompt = patch.prompt;
+          if (typeof patch.prompt === "string" && currentSettings.heartbeat.prompt !== patch.prompt) {
+            currentSettings.heartbeat.prompt = patch.prompt;
+            changed = true;
+          }
+          if (typeof patch.timezone === "string" && currentSettings.heartbeat.timezone !== patch.timezone) {
+            currentSettings.heartbeat.timezone = patch.timezone;
+            changed = true;
+          }
+          if (Array.isArray(patch.excludeWindows)) {
+            const prev = JSON.stringify(currentSettings.heartbeat.excludeWindows);
+            const next = JSON.stringify(patch.excludeWindows);
+            if (prev !== next) {
+              currentSettings.heartbeat.excludeWindows = patch.excludeWindows;
               changed = true;
             }
-            if (!changed) return;
-            scheduleHeartbeat();
-            updateState();
+          }
+          if (!changed) return;
+          scheduleHeartbeat();
+          updateState();
             console.log(`[${ts()}] Heartbeat settings updated from Web UI`);
           },
           onJobsChanged: async () => {
@@ -415,6 +497,11 @@ export async function start(args: string[] = []) {
     nextHeartbeatAt = Date.now() + ms;
 
     function tick() {
+      if (isHeartbeatExcludedNow(currentSettings.heartbeat)) {
+        console.log(`[${ts()}] Heartbeat skipped (excluded window)`);
+        nextHeartbeatAt = Date.now() + ms;
+        return;
+      }
       Promise.all([
         resolvePrompt(currentSettings.heartbeat.prompt),
         loadHeartbeatPromptTemplate(),
@@ -473,7 +560,9 @@ export async function start(args: string[] = []) {
       const hbChanged =
         newSettings.heartbeat.enabled !== currentSettings.heartbeat.enabled ||
         newSettings.heartbeat.interval !== currentSettings.heartbeat.interval ||
-        newSettings.heartbeat.prompt !== currentSettings.heartbeat.prompt;
+        newSettings.heartbeat.prompt !== currentSettings.heartbeat.prompt ||
+        newSettings.heartbeat.timezone !== currentSettings.heartbeat.timezone ||
+        JSON.stringify(newSettings.heartbeat.excludeWindows) !== JSON.stringify(currentSettings.heartbeat.excludeWindows);
 
       // Detect security config changes
       const secChanged =

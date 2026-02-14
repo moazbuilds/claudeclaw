@@ -34,8 +34,20 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
       if (url.pathname === "/api/settings/heartbeat" && req.method === "POST") {
         try {
           const body = await req.json();
-          const payload = body as { enabled?: unknown; interval?: unknown; prompt?: unknown };
-          const patch: { enabled?: boolean; interval?: number; prompt?: string } = {};
+          const payload = body as {
+            enabled?: unknown;
+            interval?: unknown;
+            prompt?: unknown;
+            timezone?: unknown;
+            excludeWindows?: unknown;
+          };
+          const patch: {
+            enabled?: boolean;
+            interval?: number;
+            prompt?: string;
+            timezone?: string;
+            excludeWindows?: Array<{ days?: number[]; start: string; end: string }>;
+          } = {};
 
           if ("enabled" in payload) patch.enabled = Boolean(payload.enabled);
           if ("interval" in payload) {
@@ -44,8 +56,37 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
             patch.interval = iv;
           }
           if ("prompt" in payload) patch.prompt = String(payload.prompt ?? "");
+          if ("timezone" in payload) patch.timezone = String(payload.timezone ?? "");
+          if ("excludeWindows" in payload) {
+            if (!Array.isArray(payload.excludeWindows)) {
+              throw new Error("excludeWindows must be an array");
+            }
+            patch.excludeWindows = payload.excludeWindows
+              .filter((entry) => entry && typeof entry === "object")
+              .map((entry) => {
+                const row = entry as Record<string, unknown>;
+                const start = String(row.start ?? "").trim();
+                const end = String(row.end ?? "").trim();
+                const days = Array.isArray(row.days)
+                  ? row.days
+                      .map((d) => Number(d))
+                      .filter((d) => Number.isInteger(d) && d >= 0 && d <= 6)
+                  : undefined;
+                return {
+                  start,
+                  end,
+                  ...(days && days.length > 0 ? { days } : {}),
+                };
+              });
+          }
 
-          if (!("enabled" in patch) && !("interval" in patch) && !("prompt" in patch)) {
+          if (
+            !("enabled" in patch) &&
+            !("interval" in patch) &&
+            !("prompt" in patch) &&
+            !("timezone" in patch) &&
+            !("excludeWindows" in patch)
+          ) {
             throw new Error("no heartbeat fields provided");
           }
 
