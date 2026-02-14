@@ -118,6 +118,10 @@ function debugLog(message: string): void {
   console.log(`[Telegram][debug] ${message}`);
 }
 
+function normalizeTelegramText(text: string): string {
+  return text.replace(/\u2014/g, "-");
+}
+
 async function callApi<T>(token: string, method: string, body?: Record<string, unknown>): Promise<T> {
   const res = await fetch(`${API_BASE}${token}/${method}`, {
     method: "POST",
@@ -158,7 +162,7 @@ let botUsername: string | null = null;
 let botId: number | null = null;
 
 function groupTriggerReason(message: TelegramMessage): string | null {
-  const text = message.text ?? "";
+  const text = normalizeTelegramText(message.text ?? "");
   if (!text) return null;
   const lowerText = text.toLowerCase();
 
@@ -224,7 +228,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
   const config = getSettings().telegram;
   const userId = message.from?.id;
   const chatId = message.chat.id;
-  const text = message.text;
+  const text = message.text ? normalizeTelegramText(message.text) : message.text;
   const chatType = message.chat.type;
   const isPrivate = chatType === "private";
   const isGroup = chatType === "group" || chatType === "supergroup";
