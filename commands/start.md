@@ -61,9 +61,9 @@ Start the heartbeat daemon for this project. Follow these steps exactly:
      - "How often should it run in minutes?" (header: "Interval", options: "5", "15", "30 (Recommended)", "60")
      - Set `heartbeat.enabled` to `true` and `heartbeat.interval` to their answer.
 
-   - **If yes to Telegram**: Use AskUserQuestion again with two questions:
-     - "What is your Telegram bot token?" (header: "Bot token", options: let user type via Other)
-     - "What are the allowed Telegram user IDs?" (header: "User IDs", options: let user type via Other)
+   - **If yes to Telegram**: Ask for two free-form values (both optional, user can skip either):
+     - Telegram bot token (hint: create/get it from `@BotFather`)
+     - Allowed Telegram user IDs (hint: use `@userinfobot` to get your numeric ID)
      - Set `telegram.token` and `telegram.allowedUserIds` (as array of numbers) accordingly.
      - Note: Telegram bot runs in-process with the daemon. All components (heartbeat, cron, telegram) share one Claude session.
 
