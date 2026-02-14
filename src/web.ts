@@ -7,6 +7,8 @@ import { peekSession } from "./sessions";
 const HEARTBEAT_DIR = join(process.cwd(), ".claude", "claudeclaw");
 const LOGS_DIR = join(HEARTBEAT_DIR, "logs");
 const SETTINGS_FILE = join(HEARTBEAT_DIR, "settings.json");
+const SESSION_FILE = join(HEARTBEAT_DIR, "session.json");
+const STATE_FILE = join(HEARTBEAT_DIR, "state.json");
 
 export interface WebSnapshot {
   pid: number;
@@ -62,6 +64,10 @@ export function startWebUi(opts: {
         } catch (err) {
           return json({ ok: false, error: String(err) });
         }
+      }
+
+      if (url.pathname === "/api/technical-info") {
+        return json(await buildTechnicalInfo(opts.getSnapshot()));
       }
 
       if (url.pathname === "/api/jobs") {
@@ -144,6 +150,31 @@ async function buildState(snapshot: WebSnapshot) {
       : null,
     web: snapshot.settings.web,
   };
+}
+
+async function buildTechnicalInfo(snapshot: WebSnapshot) {
+  return {
+    daemon: {
+      pid: snapshot.pid,
+      startedAt: snapshot.startedAt,
+      uptimeMs: Math.max(0, Date.now() - snapshot.startedAt),
+    },
+    files: {
+      settingsJson: await readJsonFile(SETTINGS_FILE),
+      sessionJson: await readJsonFile(SESSION_FILE),
+      stateJson: await readJsonFile(STATE_FILE),
+    },
+    snapshot,
+  };
+}
+
+async function readJsonFile(path: string): Promise<unknown | null> {
+  try {
+    const raw = await readFile(path, "utf-8");
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
 }
 
 async function readLogs(tail: number) {
@@ -498,6 +529,104 @@ function htmlPage(): string {
       border-color: #ff7f7f55;
       color: #ff9b9b;
     }
+    .info-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 7;
+      display: grid;
+      place-items: center;
+      background: #02050db0;
+      padding: 18px;
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transition: opacity 0.18s ease, visibility 0s linear 0.18s;
+    }
+    .info-modal.open {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+      transition: opacity 0.18s ease, visibility 0s linear 0s;
+    }
+    .info-card {
+      width: min(980px, 100%);
+      max-height: min(82vh, 900px);
+      border: 1px solid #d8e4ff20;
+      border-radius: 16px;
+      background: #0b1220f2;
+      box-shadow: 0 20px 44px #00000066;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .info-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 14px;
+      border-bottom: 1px solid #ffffff12;
+      font-family: "JetBrains Mono", monospace;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: #b8c9e5;
+      font-size: 12px;
+    }
+    .info-body {
+      padding: 10px 14px 14px;
+      overflow: auto;
+      display: grid;
+      gap: 10px;
+      scrollbar-width: thin;
+      scrollbar-color: #7fa6d5 #091222;
+    }
+    .info-section {
+      border: 1px solid #ffffff14;
+      border-radius: 10px;
+      overflow: hidden;
+      background: #0a1321;
+    }
+    .info-title {
+      padding: 8px 10px;
+      border-bottom: 1px solid #ffffff12;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 11px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #9db4d6;
+    }
+    .info-json {
+      margin: 0;
+      padding: 10px;
+      max-height: 32vh;
+      overflow: auto;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 12px;
+      color: #d7e3f5;
+      background: #060d18;
+      line-height: 1.5;
+      scrollbar-width: thin;
+      scrollbar-color: #7fa6d5 #091222;
+    }
+    .info-body::-webkit-scrollbar,
+    .info-json::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+    }
+    .info-body::-webkit-scrollbar-track,
+    .info-json::-webkit-scrollbar-track {
+      background: #091222;
+      border-radius: 999px;
+    }
+    .info-body::-webkit-scrollbar-thumb,
+    .info-json::-webkit-scrollbar-thumb {
+      background: linear-gradient(180deg, #93c6ff, #668ebf);
+      border-radius: 999px;
+      border: 2px solid #091222;
+    }
+    .info-body::-webkit-scrollbar-thumb:hover,
+    .info-json::-webkit-scrollbar-thumb:hover {
+      background: linear-gradient(180deg, #a9d4ff, #789fce);
+    }
 
     .dock {
       position: fixed;
@@ -570,8 +699,29 @@ function htmlPage(): string {
         </div>
         <button class="hb-toggle" id="clock-toggle" type="button">24h</button>
       </div>
+      <div class="setting-item">
+        <div class="setting-main">
+          <div class="settings-label">🧾 Advanced</div>
+          <div class="settings-meta">Technical runtime and JSON files</div>
+        </div>
+        <button class="hb-toggle off" id="info-open" type="button">Info</button>
+      </div>
     </div>
   </aside>
+  <section class="info-modal" id="info-modal" aria-live="polite" aria-hidden="true">
+    <article class="info-card">
+      <div class="info-head">
+        <span>Advanced Technical Info</span>
+        <button class="settings-close" id="info-close" type="button" aria-label="Close technical info">×</button>
+      </div>
+      <div class="info-body" id="info-body">
+        <div class="info-section">
+          <div class="info-title">Loading</div>
+          <pre class="info-json">Loading technical data...</pre>
+        </div>
+      </div>
+    </article>
+  </section>
   <main class="stage">
     <section class="hero">
       <div class="logo-art" role="img" aria-label="Lobster ASCII art logo">
@@ -602,6 +752,10 @@ function htmlPage(): string {
     const settingsBtn = $("settings-btn");
     const settingsModal = $("settings-modal");
     const settingsClose = $("settings-close");
+    const infoOpen = $("info-open");
+    const infoModal = $("info-modal");
+    const infoClose = $("info-close");
+    const infoBody = $("info-body");
     const hbToggle = $("hb-toggle");
     const clockToggle = $("clock-toggle");
     const hbInfoEl = $("hb-info");
@@ -689,10 +843,6 @@ function htmlPage(): string {
 
     function buildPills(state) {
       const pills = [];
-      pills.push({
-        cls: "ok",
-        text: "daemon pid " + state.daemon.pid + " up " + fmtDur(state.daemon.uptimeMs),
-      });
 
       if (state.heartbeat.enabled) {
         pills.push({ cls: "ok", text: "heartbeat every " + state.heartbeat.intervalMinutes + "m" });
@@ -716,10 +866,7 @@ function htmlPage(): string {
         cls: state.jobs.length ? "ok" : "warn",
         text: "jobs " + state.jobs.length,
       });
-
-      if (state.session) {
-        pills.push({ cls: "ok", text: "session " + state.session.sessionIdShort });
-      }
+      pills.push({ cls: "ok", text: "uptime " + fmtDur(state.daemon.uptimeMs) });
 
       return pills;
     }
@@ -761,6 +908,36 @@ function htmlPage(): string {
       }
     }
 
+    async function openTechnicalInfo() {
+      if (!infoModal || !infoBody) return;
+      infoModal.classList.add("open");
+      infoModal.setAttribute("aria-hidden", "false");
+      infoBody.innerHTML = '<div class="info-section"><div class="info-title">Loading</div><pre class="info-json">Loading technical data...</pre></div>';
+      try {
+        const res = await fetch("/api/technical-info");
+        const data = await res.json();
+        renderTechnicalInfo(data);
+      } catch (err) {
+        infoBody.innerHTML = '<div class="info-section"><div class="info-title">Error</div><pre class="info-json">' + esc(String(err)) + "</pre></div>";
+      }
+    }
+
+    function renderTechnicalInfo(data) {
+      if (!infoBody) return;
+      const sections = [
+        { title: "daemon", value: data?.daemon ?? null },
+        { title: "settings.json", value: data?.files?.settingsJson ?? null },
+        { title: "session.json", value: data?.files?.sessionJson ?? null },
+        { title: "state.json", value: data?.files?.stateJson ?? null },
+      ];
+      infoBody.innerHTML = sections.map((section) =>
+        '<div class="info-section">' +
+          '<div class="info-title">' + esc(section.title) + "</div>" +
+          '<pre class="info-json">' + esc(JSON.stringify(section.value, null, 2)) + "</pre>" +
+        "</div>"
+      ).join("");
+    }
+
     function setHeartbeatUi(on, label, intervalMinutes) {
       if (!hbToggle) return;
       hbToggle.textContent = label || (on ? "Enabled" : "Disabled");
@@ -781,6 +958,15 @@ function htmlPage(): string {
     if (settingsClose && settingsModal) {
       settingsClose.addEventListener("click", () => settingsModal.classList.remove("open"));
     }
+    if (infoOpen) {
+      infoOpen.addEventListener("click", openTechnicalInfo);
+    }
+    if (infoClose && infoModal) {
+      infoClose.addEventListener("click", () => {
+        infoModal.classList.remove("open");
+        infoModal.setAttribute("aria-hidden", "true");
+      });
+    }
     document.addEventListener("click", (event) => {
       if (!settingsModal || !settingsBtn) return;
       if (!settingsModal.classList.contains("open")) return;
@@ -788,6 +974,25 @@ function htmlPage(): string {
       if (!(target instanceof Node)) return;
       if (settingsModal.contains(target) || settingsBtn.contains(target)) return;
       settingsModal.classList.remove("open");
+    });
+    document.addEventListener("click", (event) => {
+      if (!infoModal) return;
+      if (!infoModal.classList.contains("open")) return;
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (target === infoModal) {
+        infoModal.classList.remove("open");
+        infoModal.setAttribute("aria-hidden", "true");
+      }
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      if (infoModal && infoModal.classList.contains("open")) {
+        infoModal.classList.remove("open");
+        infoModal.setAttribute("aria-hidden", "true");
+      } else if (settingsModal && settingsModal.classList.contains("open")) {
+        settingsModal.classList.remove("open");
+      }
     });
 
     if (hbToggle) {
