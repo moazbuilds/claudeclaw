@@ -460,6 +460,32 @@ function htmlPage(): string {
       gap: 8px;
       align-items: center;
     }
+    .quick-time-wrap {
+      display: grid;
+      gap: 6px;
+    }
+    .quick-time-buttons {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .quick-add {
+      height: 24px;
+      padding: 0 8px;
+      border: 0;
+      border-radius: 999px;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 10px;
+      letter-spacing: 0.04em;
+      color: #d8e7fb;
+      background: #ffffff14;
+      cursor: pointer;
+      transition: background 0.16s ease, transform 0.16s ease;
+    }
+    .quick-add:hover {
+      background: #ffffff22;
+      transform: translateY(-1px);
+    }
     .quick-input,
     .quick-prompt,
     .quick-submit {
@@ -1020,7 +1046,14 @@ function htmlPage(): string {
       <form class="quick-job" id="quick-job-form">
         <div class="quick-job-head"><span>Quick Job</span><span>Daily Cron</span></div>
         <div class="quick-job-row">
-          <input class="quick-input" id="quick-job-time" type="text" placeholder="HH:MM" inputmode="numeric" pattern="^([01][0-9]|2[0-3]):[0-5][0-9]$" required />
+          <div class="quick-time-wrap">
+            <input class="quick-input" id="quick-job-time" type="text" placeholder="HH:MM" inputmode="numeric" pattern="^([01][0-9]|2[0-3]):[0-5][0-9]$" required />
+            <div class="quick-time-buttons">
+              <button class="quick-add" type="button" data-add-minutes="15">+15m</button>
+              <button class="quick-add" type="button" data-add-minutes="30">+30m</button>
+              <button class="quick-add" type="button" data-add-minutes="60">+60m</button>
+            </div>
+          </div>
           <textarea class="quick-prompt" id="quick-job-prompt" placeholder="Prompt for this scheduled run..." required></textarea>
           <button class="quick-submit" id="quick-job-submit" type="submit">Add Job</button>
         </div>
@@ -1390,13 +1423,47 @@ function htmlPage(): string {
       quickJobTime.value = "09:00";
     }
 
+    function normalizeTimeString(value) {
+      const raw = String(value || "").trim();
+      if (!/^\d{1,2}:\d{2}$/.test(raw)) return null;
+      const [hRaw, mRaw] = raw.split(":");
+      const h = Number(hRaw);
+      const m = Number(mRaw);
+      if (!Number.isInteger(h) || !Number.isInteger(m) || h < 0 || h > 23 || m < 0 || m > 59) return null;
+      return String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0");
+    }
+
+    function addMinutesToTime(time, deltaMinutes) {
+      const normalized = normalizeTimeString(time);
+      if (!normalized) return null;
+      const h = Number(normalized.slice(0, 2));
+      const m = Number(normalized.slice(3, 5));
+      const total = ((h * 60 + m + deltaMinutes) % 1440 + 1440) % 1440;
+      const nextH = Math.floor(total / 60);
+      const nextM = total % 60;
+      return String(nextH).padStart(2, "0") + ":" + String(nextM).padStart(2, "0");
+    }
+
+    document.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const add = target.closest("[data-add-minutes]");
+      if (!add || !(add instanceof HTMLElement)) return;
+      if (!quickJobTime) return;
+      const delta = Number(add.getAttribute("data-add-minutes") || "");
+      if (!Number.isFinite(delta)) return;
+      const current = normalizeTimeString(quickJobTime.value) || "09:00";
+      const next = addMinutesToTime(current, delta);
+      if (next) quickJobTime.value = next;
+    });
+
     if (quickJobForm && quickJobTime && quickJobPrompt && quickJobSubmit && quickJobStatus) {
       quickJobForm.addEventListener("submit", async (event) => {
         event.preventDefault();
-        const time = (quickJobTime.value || "").trim();
+        const time = normalizeTimeString(quickJobTime.value || "");
         const prompt = (quickJobPrompt.value || "").trim();
         if (!time || !prompt) {
-          quickJobStatus.textContent = "Time and prompt are required.";
+          quickJobStatus.textContent = "Use HH:MM and add a prompt.";
           return;
         }
         quickJobSubmit.disabled = true;
