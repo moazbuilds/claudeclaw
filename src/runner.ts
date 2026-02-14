@@ -1,4 +1,4 @@
-import { mkdir, readdir } from "fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "fs/promises";
 import { join } from "path";
 import { existsSync } from "fs";
 import { getSession, createSession } from "./sessions";
@@ -7,7 +7,10 @@ import { getSettings, type SecurityConfig } from "./config";
 const LOGS_DIR = join(process.cwd(), ".claude/claudeclaw/logs");
 // Resolve prompts relative to the claudeclaw installation, not the project dir
 const PROMPTS_DIR = join(import.meta.dir, "..", "prompts");
-const PROJECT_CLAUDE_MD = join(process.cwd(), ".claude", "CLAUDE.md");
+const PROJECT_CLAUDE_MD = join(process.cwd(), "CLAUDE.md");
+const LEGACY_PROJECT_CLAUDE_MD = join(process.cwd(), ".claude", "CLAUDE.md");
+const CLAUDECLAW_BLOCK_START = "<!-- claudeclaw:managed:start -->";
+const CLAUDECLAW_BLOCK_END = "<!-- claudeclaw:managed:end -->";
 
 export interface RunResult {
   stdout: string;
@@ -32,6 +35,51 @@ const DIR_SCOPE_PROMPT = [
   "You MUST NOT run bash commands that modify anything outside this directory (no cd /, no /etc, no ~/, no ../.. escapes).",
   "If a request requires accessing files outside the project, refuse and explain why.",
 ].join("\n");
+
+const CLAUDECLAW_CLAUDE_MD_BLOCK = [
+  CLAUDECLAW_BLOCK_START,
+  "## ClaudeClaw",
+  "",
+  "This project is initialized with ClaudeClaw.",
+  "- Start ClaudeClaw from this project directory only.",
+  "- Runtime state lives under `.claude/claudeclaw/`.",
+  "- Keep daemon actions scoped to this project directory unless security is explicitly set to `unrestricted`.",
+  CLAUDECLAW_BLOCK_END,
+].join("\n");
+
+export async function ensureProjectClaudeMd(): Promise<void> {
+  let content = "";
+
+  if (existsSync(PROJECT_CLAUDE_MD)) {
+    try {
+      content = await readFile(PROJECT_CLAUDE_MD, "utf8");
+    } catch (e) {
+      console.error(`[${new Date().toLocaleTimeString()}] Failed to read project CLAUDE.md:`, e);
+      return;
+    }
+  } else if (existsSync(LEGACY_PROJECT_CLAUDE_MD)) {
+    try {
+      const legacy = await readFile(LEGACY_PROJECT_CLAUDE_MD, "utf8");
+      content = legacy.trim();
+    } catch (e) {
+      console.error(`[${new Date().toLocaleTimeString()}] Failed to read legacy .claude/CLAUDE.md:`, e);
+      return;
+    }
+  }
+
+  if (content.includes(CLAUDECLAW_BLOCK_START) && content.includes(CLAUDECLAW_BLOCK_END)) return;
+
+  const normalized = content.trim();
+  const merged = normalized
+    ? `${normalized}\n\n${CLAUDECLAW_CLAUDE_MD_BLOCK}\n`
+    : `${CLAUDECLAW_CLAUDE_MD_BLOCK}\n`;
+
+  try {
+    await writeFile(PROJECT_CLAUDE_MD, merged, "utf8");
+  } catch (e) {
+    console.error(`[${new Date().toLocaleTimeString()}] Failed to write project CLAUDE.md:`, e);
+  }
+}
 
 function buildSecurityArgs(security: SecurityConfig): string[] {
   const args: string[] = ["--dangerously-skip-permissions"];
@@ -113,7 +161,7 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
   ];
   if (promptContent) appendParts.push(promptContent);
 
-  // Load the project's .claude/CLAUDE.md if it exists
+  // Load the project's CLAUDE.md if it exists
   if (existsSync(PROJECT_CLAUDE_MD)) {
     try {
       const claudeMd = await Bun.file(PROJECT_CLAUDE_MD).text();
