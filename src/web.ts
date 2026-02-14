@@ -582,7 +582,7 @@ function htmlPage(): string {
     .info-section {
       border: 1px solid #ffffff14;
       border-radius: 10px;
-      overflow: hidden;
+      overflow: visible;
       background: #0a1321;
     }
     .info-title {
@@ -597,15 +597,22 @@ function htmlPage(): string {
     .info-json {
       margin: 0;
       padding: 10px;
-      max-height: 32vh;
+      max-height: 40vh;
+      min-height: 140px;
       overflow: auto;
+      display: block;
+      white-space: pre;
       font-family: "JetBrains Mono", monospace;
       font-size: 12px;
       color: #d7e3f5;
       background: #060d18;
       line-height: 1.5;
+      overscroll-behavior: contain;
       scrollbar-width: thin;
       scrollbar-color: #7fa6d5 #091222;
+    }
+    .info-json.state-json {
+      max-height: 52vh;
     }
     .info-body::-webkit-scrollbar,
     .info-json::-webkit-scrollbar {
@@ -933,7 +940,7 @@ function htmlPage(): string {
       infoBody.innerHTML = sections.map((section) =>
         '<div class="info-section">' +
           '<div class="info-title">' + esc(section.title) + "</div>" +
-          '<pre class="info-json">' + esc(JSON.stringify(section.value, null, 2)) + "</pre>" +
+          '<pre class="info-json' + (section.title === "state.json" ? " state-json" : "") + '">' + esc(JSON.stringify(section.value, null, 2)) + "</pre>" +
         "</div>"
       ).join("");
     }
