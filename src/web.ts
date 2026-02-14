@@ -341,54 +341,6 @@ function htmlPage(): string {
       color: #e4ecf8;
       font-weight: 500;
     }
-    .logs-panel {
-      width: min(760px, calc(100vw - 28px));
-      margin: 22px auto 0;
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      background: linear-gradient(180deg, #0d1726b5 0%, #0a1320a8 100%);
-      backdrop-filter: blur(8px);
-      box-shadow: 0 16px 32px #0000003b;
-      overflow: hidden;
-    }
-    .logs-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 10px 14px;
-      border-bottom: 1px solid #ffffff14;
-      font-family: "JetBrains Mono", monospace;
-      font-size: 11px;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-      color: #9ab0ce;
-    }
-    .logs-head .dot {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: #67f0b5;
-      box-shadow: 0 0 10px #67f0b57d;
-      margin-right: 8px;
-      display: inline-block;
-      vertical-align: middle;
-    }
-    .logs-body {
-      margin: 0;
-      padding: 12px 14px 14px;
-      min-height: 150px;
-      max-height: 240px;
-      overflow: auto;
-      white-space: pre-wrap;
-      text-align: left;
-      font-family: "JetBrains Mono", monospace;
-      font-size: 12px;
-      line-height: 1.55;
-      color: #c8d4e8;
-    }
-    .logs-body::-webkit-scrollbar { width: 7px; }
-    .logs-body::-webkit-scrollbar-thumb { background: #ffffff2a; border-radius: 10px; }
-    .logs-body::-webkit-scrollbar-track { background: transparent; }
 
     .dock {
       position: fixed;
@@ -452,13 +404,6 @@ function htmlPage(): string {
       <div class="time" id="clock">--:--:--</div>
       <div class="date" id="date">Loading date...</div>
       <div class="message" id="message">Welcome back.</div>
-      <section class="logs-panel" aria-label="Live logs">
-        <div class="logs-head">
-          <span><span class="dot"></span>Live Logs</span>
-          <span id="logs-updated">syncing</span>
-        </div>
-        <pre class="logs-body" id="logs">Connecting...</pre>
-      </section>
     </section>
   </main>
 
@@ -474,8 +419,6 @@ function htmlPage(): string {
     const msgEl = $("message");
     const dockEl = $("dock");
     const typewriterEl = $("typewriter");
-    const logsEl = $("logs");
-    const logsUpdatedEl = $("logs-updated");
 
     const dateFmt = new Intl.DateTimeFormat(undefined, {
       weekday: "long",
@@ -608,25 +551,6 @@ function htmlPage(): string {
       }
     }
 
-    async function refreshLogs() {
-      try {
-        const res = await fetch("/api/logs?tail=40");
-        const logs = await res.json();
-        const daemonLines = (logs.daemonLog || []).slice(-20);
-        const runLines = [];
-        for (const run of (logs.runs || []).slice(0, 2)) {
-          runLines.push("== " + run.file + " ==");
-          runLines.push(...(run.lines || []).slice(-8));
-        }
-        const allLines = [...daemonLines, ...runLines].slice(-36);
-        logsEl.textContent = allLines.join("\n") || "(no logs yet)";
-        logsUpdatedEl.textContent = new Date().toLocaleTimeString();
-      } catch (err) {
-        logsEl.textContent = "Could not load logs: " + String(err);
-        logsUpdatedEl.textContent = "offline";
-      }
-    }
-
     function esc(s) {
       return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     }
@@ -636,9 +560,7 @@ function htmlPage(): string {
     startTypewriter();
 
     refreshState();
-    refreshLogs();
     setInterval(refreshState, 5000);
-    setInterval(refreshLogs, 5000);
   </script>
 </body>
 </html>`;
