@@ -4,7 +4,7 @@ import { unlink, readdir, rename } from "fs/promises";
 const HEARTBEAT_DIR = join(process.cwd(), ".claude", "claudeclaw");
 const SESSION_FILE = join(HEARTBEAT_DIR, "session.json");
 
-interface GlobalSession {
+export interface GlobalSession {
   sessionId: string;
   createdAt: string;
   lastUsedAt: string;
@@ -45,6 +45,11 @@ export async function createSession(sessionId: string): Promise<void> {
     createdAt: new Date().toISOString(),
     lastUsedAt: new Date().toISOString(),
   });
+}
+
+/** Returns session metadata without mutating lastUsedAt. */
+export async function peekSession(): Promise<GlobalSession | null> {
+  return await loadSession();
 }
 
 export async function resetSession(): Promise<void> {

@@ -6,6 +6,8 @@ import { cronMatches, nextCronMatch } from "../cron";
 import { loadJobs } from "../jobs";
 import { writePidFile, cleanupPidFile, checkExistingDaemon } from "../pid";
 import { initConfig, loadSettings, reloadSettings, resolvePrompt, type Settings } from "../config";
+import { preflight } from "../preflight";
+import { startWebUi, type WebServerHandle } from "../web";
 import type { Job } from "../jobs";
 
 const CLAUDE_DIR = join(process.cwd(), ".claude");
@@ -129,15 +131,46 @@ async function teardownStatusline() {
 // --- Main ---
 
 export async function start(args: string[] = []) {
-  const hasPromptFlag = args.includes("--prompt");
-  const hasTriggerFlag = args.includes("--trigger");
-  const telegramFlag = args.includes("--telegram");
-  const payload = args
-    .filter((a) => a !== "--prompt" && a !== "--trigger" && a !== "--telegram")
-    .join(" ")
-    .trim();
+  let hasPromptFlag = false;
+  let hasTriggerFlag = false;
+  let telegramFlag = false;
+  let debugFlag = false;
+  let webFlag = false;
+  let webPortFlag: number | null = null;
+  const payloadParts: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--prompt") {
+      hasPromptFlag = true;
+    } else if (arg === "--trigger") {
+      hasTriggerFlag = true;
+    } else if (arg === "--telegram") {
+      telegramFlag = true;
+    } else if (arg === "--debug") {
+      debugFlag = true;
+    } else if (arg === "--web") {
+      webFlag = true;
+    } else if (arg === "--web-port") {
+      const raw = args[i + 1];
+      if (!raw) {
+        console.error("`--web-port` requires a numeric value.");
+        process.exit(1);
+      }
+      const parsed = Number(raw);
+      if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 65535) {
+        console.error("`--web-port` must be a valid TCP port (1-65535).");
+        process.exit(1);
+      }
+      webPortFlag = parsed;
+      i++;
+    } else {
+      payloadParts.push(arg);
+    }
+  }
+  const payload = payloadParts.join(" ").trim();
   if (hasPromptFlag && !payload) {
-    console.error("Usage: claudeclaw start --prompt <prompt> [--trigger] [--telegram]");
+    console.error("Usage: claudeclaw start --prompt <prompt> [--trigger] [--telegram] [--debug] [--web] [--web-port <port>]");
     process.exit(1);
   }
   if (!hasPromptFlag && payload) {
@@ -146,6 +179,10 @@ export async function start(args: string[] = []) {
   }
   if (telegramFlag && !hasTriggerFlag) {
     console.error("`--telegram` with `start` requires `--trigger`.");
+    process.exit(1);
+  }
+  if (hasPromptFlag && !hasTriggerFlag && (webFlag || webPortFlag !== null)) {
+    console.error("`--web` is daemon-only. Remove `--prompt`, or add `--trigger`.");
     process.exit(1);
   }
 
@@ -176,11 +213,15 @@ export async function start(args: string[] = []) {
   await initConfig();
   const settings = await loadSettings();
   const jobs = await loadJobs();
+  const webEnabled = webFlag || webPortFlag !== null || settings.web.enabled;
+  const webPort = webPortFlag ?? settings.web.port;
 
   await setupStatusline();
   await writePidFile();
+  let web: WebServerHandle | null = null;
 
   async function shutdown() {
+    if (web) web.stop();
     await teardownStatusline();
     await cleanupPidFile();
     process.exit(0);
@@ -196,6 +237,8 @@ export async function start(args: string[] = []) {
   if (settings.security.disallowedTools.length > 0)
     console.log(`    - blocked: ${settings.security.disallowedTools.join(", ")}`);
   console.log(`  Heartbeat: ${settings.heartbeat.enabled ? `every ${settings.heartbeat.interval}m` : "disabled"}`);
+  console.log(`  Web UI: ${webEnabled ? `http://${settings.web.host}:${webPort}` : "disabled"}`);
+  if (debugFlag) console.log("  Debug: enabled");
   console.log(`  Jobs loaded: ${jobs.length}`);
   jobs.forEach((j) => console.log(`    - ${j.name} [${j.schedule}]`));
 
@@ -204,6 +247,7 @@ export async function start(args: string[] = []) {
   let currentJobs: Job[] = jobs;
   let nextHeartbeatAt = 0;
   let heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+  const daemonStartedAt = Date.now();
 
   // --- Telegram ---
   let telegramSend: ((chatId: number, text: string) => Promise<void>) | null = null;
@@ -212,7 +256,7 @@ export async function start(args: string[] = []) {
   async function initTelegram(token: string) {
     if (token && token !== telegramToken) {
       const { startPolling, sendMessage } = await import("./telegram");
-      startPolling();
+      startPolling(debugFlag);
       telegramSend = (chatId, text) => sendMessage(token, chatId, text);
       telegramToken = token;
       console.log(`[${ts()}] Telegram: enabled`);
@@ -225,6 +269,23 @@ export async function start(args: string[] = []) {
 
   await initTelegram(currentSettings.telegram.token);
   if (!telegramToken) console.log("  Telegram: not configured");
+
+  if (webEnabled) {
+    currentSettings.web.enabled = true;
+    currentSettings.web.port = webPort;
+    web = startWebUi({
+      host: currentSettings.web.host,
+      port: currentSettings.web.port,
+      getSnapshot: () => ({
+        pid: process.pid,
+        startedAt: daemonStartedAt,
+        heartbeatNextAt: nextHeartbeatAt,
+        settings: currentSettings,
+        jobs: currentJobs,
+      }),
+    });
+    console.log(`[${new Date().toLocaleTimeString()}] Web UI listening on http://${web.host}:${web.port}`);
+  }
 
   // --- Helpers ---
   function ts() { return new Date().toLocaleTimeString(); }
@@ -243,7 +304,7 @@ export async function start(args: string[] = []) {
 
   // --- Heartbeat scheduling ---
   function scheduleHeartbeat() {
-    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    if (heartbeatTimer) clearTimeout(heartbeatTimer);
     heartbeatTimer = null;
 
     if (!currentSettings.heartbeat.enabled || !currentSettings.heartbeat.prompt) {
@@ -252,7 +313,7 @@ export async function start(args: string[] = []) {
     }
 
     const ms = currentSettings.heartbeat.interval * 60_000;
-    nextHeartbeatAt = 0;
+    nextHeartbeatAt = Date.now() + ms;
 
     function tick() {
       resolvePrompt(currentSettings.heartbeat.prompt)
@@ -261,8 +322,10 @@ export async function start(args: string[] = []) {
       nextHeartbeatAt = Date.now() + ms;
     }
 
-    tick();
-    heartbeatTimer = setInterval(tick, ms);
+    heartbeatTimer = setTimeout(function runAndReschedule() {
+      tick();
+      heartbeatTimer = setTimeout(runAndReschedule, ms);
+    }, ms);
   }
 
   // Startup init:
@@ -281,6 +344,9 @@ export async function start(args: string[] = []) {
     // and session.json is created immediately.
     await bootstrap();
   }
+
+  // Install plugins that aren't already present
+  preflight(process.cwd());
 
   if (currentSettings.heartbeat.enabled) scheduleHeartbeat();
 
@@ -313,6 +379,10 @@ export async function start(args: string[] = []) {
       } else {
         currentSettings = newSettings;
       }
+      if (web) {
+        currentSettings.web.enabled = true;
+        currentSettings.web.port = web.port;
+      }
 
       // Detect job changes
       const jobNames = newJobs.map((j) => `${j.name}:${j.schedule}:${j.prompt}`).sort().join("|");
@@ -331,8 +401,6 @@ export async function start(args: string[] = []) {
   }, 30_000);
 
   // --- Cron tick (every 60s) ---
-  const daemonStartedAt = Date.now();
-
   function updateState() {
     const now = new Date();
     const state: StateData = {
@@ -346,6 +414,11 @@ export async function start(args: string[] = []) {
       security: currentSettings.security.level,
       telegram: !!currentSettings.telegram.token,
       startedAt: daemonStartedAt,
+      web: {
+        enabled: !!web,
+        host: currentSettings.web.host,
+        port: currentSettings.web.port,
+      },
     };
     writeState(state);
   }

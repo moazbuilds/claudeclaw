@@ -73,14 +73,49 @@ interface TelegramUser {
 
 interface TelegramMessage {
   message_id: number;
-  from: TelegramUser;
+  from?: TelegramUser;
+  reply_to_message?: { from?: TelegramUser };
   chat: { id: number; type: string };
   text?: string;
+  entities?: Array<{
+    type: "mention" | "bot_command" | string;
+    offset: number;
+    length: number;
+  }>;
+}
+
+interface TelegramChatMember {
+  user: TelegramUser;
+  status: "creator" | "administrator" | "member" | "restricted" | "left" | "kicked";
+}
+
+interface TelegramMyChatMemberUpdate {
+  chat: { id: number; type: string; title?: string };
+  from: TelegramUser;
+  old_chat_member: TelegramChatMember;
+  new_chat_member: TelegramChatMember;
 }
 
 interface TelegramUpdate {
   update_id: number;
   message?: TelegramMessage;
+  edited_message?: TelegramMessage;
+  channel_post?: TelegramMessage;
+  edited_channel_post?: TelegramMessage;
+  my_chat_member?: TelegramMyChatMemberUpdate;
+}
+
+interface TelegramMe {
+  id: number;
+  username?: string;
+  can_read_all_group_messages?: boolean;
+}
+
+let telegramDebug = false;
+
+function debugLog(message: string): void {
+  if (!telegramDebug) return;
+  console.log(`[Telegram][debug] ${message}`);
 }
 
 async function callApi<T>(token: string, method: string, body?: Record<string, unknown>): Promise<T> {
@@ -119,22 +154,108 @@ async function sendTyping(token: string, chatId: number): Promise<void> {
   await callApi(token, "sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {});
 }
 
+let botUsername: string | null = null;
+let botId: number | null = null;
+
+function groupTriggerReason(message: TelegramMessage): string | null {
+  const text = message.text ?? "";
+  if (!text) return null;
+  const lowerText = text.toLowerCase();
+
+  if (botId && message.reply_to_message?.from?.id === botId) return "reply_to_bot";
+  if (botUsername && lowerText.includes(`@${botUsername.toLowerCase()}`)) return "text_contains_mention";
+
+  for (const entity of message.entities ?? []) {
+    const value = text.slice(entity.offset, entity.offset + entity.length);
+    if (entity.type === "mention" && botUsername && value.toLowerCase() === `@${botUsername.toLowerCase()}`) {
+      return "mention_entity_matches_bot";
+    }
+    if (entity.type === "mention" && !botUsername) return "mention_entity_before_botname_loaded";
+    if (entity.type === "bot_command") {
+      if (!value.includes("@")) return "bare_bot_command";
+      if (!botUsername) return "scoped_command_before_botname_loaded";
+      if (botUsername && value.toLowerCase().endsWith(`@${botUsername.toLowerCase()}`)) return "scoped_command_matches_bot";
+    }
+  }
+
+  return null;
+}
+
+async function handleMyChatMember(update: TelegramMyChatMemberUpdate): Promise<void> {
+  const config = getSettings().telegram;
+  const chat = update.chat;
+  if (!botUsername && update.new_chat_member.user.username) botUsername = update.new_chat_member.user.username;
+  if (!botId) botId = update.new_chat_member.user.id;
+  const oldStatus = update.old_chat_member.status;
+  const newStatus = update.new_chat_member.status;
+  const isGroup = chat.type === "group" || chat.type === "supergroup";
+  const wasOut = oldStatus === "left" || oldStatus === "kicked";
+  const isIn = newStatus === "member" || newStatus === "administrator";
+
+  if (!isGroup || !wasOut || !isIn) return;
+
+  const chatName = chat.title ?? String(chat.id);
+  console.log(`[Telegram] Added to ${chat.type}: ${chatName} (${chat.id}) by ${update.from.id}`);
+
+  const addedBy = update.from.username ?? `${update.from.first_name} (${update.from.id})`;
+  const eventPrompt =
+    `[Telegram system event] I was added to a ${chat.type}.\n` +
+    `Group title: ${chatName}\n` +
+    `Group id: ${chat.id}\n` +
+    `Added by: ${addedBy}\n` +
+    "Write a short first message for the group. It should confirm I was added and explain how to trigger me.";
+
+  try {
+    const result = await run("telegram", eventPrompt);
+    if (result.exitCode !== 0) {
+      await sendMessage(config.token, chat.id, "I was added to this group. Mention me with a command to start.");
+      return;
+    }
+    await sendMessage(config.token, chat.id, result.stdout || "I was added to this group.");
+  } catch (err) {
+    console.error(`[Telegram] group-added event error: ${err instanceof Error ? err.message : err}`);
+    await sendMessage(config.token, chat.id, "I was added to this group. Mention me with a command to start.");
+  }
+}
+
 // --- Message handler ---
 
 async function handleMessage(message: TelegramMessage): Promise<void> {
   const config = getSettings().telegram;
-  const userId = message.from.id;
+  const userId = message.from?.id;
   const chatId = message.chat.id;
   const text = message.text;
+  const chatType = message.chat.type;
+  const isPrivate = chatType === "private";
+  const isGroup = chatType === "group" || chatType === "supergroup";
 
-  if (message.chat.type !== "private") return;
+  if (!isPrivate && !isGroup) return;
 
-  if (config.allowedUserIds.length > 0 && !config.allowedUserIds.includes(userId)) {
-    await sendMessage(config.token, chatId, "Unauthorized.");
+  const triggerReason = isGroup ? groupTriggerReason(message) : "private_chat";
+  if (isGroup && !triggerReason) {
+    debugLog(
+      `Skip group message chat=${chatId} from=${userId ?? "unknown"} reason=no_trigger text="${(text ?? "").slice(0, 80)}"`
+    );
+    return;
+  }
+  debugLog(
+    `Handle message chat=${chatId} type=${chatType} from=${userId ?? "unknown"} reason=${triggerReason} text="${(text ?? "").slice(0, 80)}"`
+  );
+
+  if (userId && config.allowedUserIds.length > 0 && !config.allowedUserIds.includes(userId)) {
+    if (isPrivate) {
+      await sendMessage(config.token, chatId, "Unauthorized.");
+    } else {
+      console.log(`[Telegram] Ignored group message from unauthorized user ${userId} in chat ${chatId}`);
+      debugLog(`Skip group message chat=${chatId} from=${userId} reason=unauthorized_user`);
+    }
     return;
   }
 
-  if (!text?.trim()) return;
+  if (!text?.trim()) {
+    debugLog(`Skip message chat=${chatId} from=${userId ?? "unknown"} reason=empty_text`);
+    return;
+  }
 
   if (text.trim() === "/start") {
     await sendMessage(
@@ -151,7 +272,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     return;
   }
 
-  const label = message.from.username ?? String(userId);
+  const label = message.from?.username ?? String(userId ?? "unknown");
   console.log(
     `[${new Date().toLocaleTimeString()}] Telegram ${label}: "${text.slice(0, 60)}${text.length > 60 ? "..." : ""}"`
   );
@@ -185,25 +306,51 @@ let running = true;
 async function poll(): Promise<void> {
   const config = getSettings().telegram;
   let offset = 0;
+  try {
+    const me = await callApi<{ ok: boolean; result: TelegramMe }>(config.token, "getMe");
+    if (me.ok) {
+      botUsername = me.result.username ?? null;
+      botId = me.result.id;
+      console.log(`  Bot: ${botUsername ? `@${botUsername}` : botId}`);
+      console.log(`  Group privacy: ${me.result.can_read_all_group_messages ? "disabled (reads all messages)" : "enabled (commands & mentions only)"}`);
+    }
+  } catch (err) {
+    console.error(`[Telegram] getMe failed: ${err instanceof Error ? err.message : err}`);
+  }
 
   console.log("Telegram bot started (long polling)");
   console.log(`  Allowed users: ${config.allowedUserIds.length === 0 ? "all" : config.allowedUserIds.join(", ")}`);
+  if (telegramDebug) console.log("  Debug: enabled");
 
   while (running) {
     try {
       const data = await callApi<{ ok: boolean; result: TelegramUpdate[] }>(
         config.token,
         "getUpdates",
-        { offset, timeout: 30, allowed_updates: ["message"] }
+        { offset, timeout: 30, allowed_updates: ["message", "my_chat_member"] }
       );
 
       if (!data.ok || !data.result.length) continue;
 
       for (const update of data.result) {
+        debugLog(
+          `Update ${update.update_id} keys=${Object.keys(update).join(",")}`
+        );
         offset = update.update_id + 1;
-        if (update.message) {
-          handleMessage(update.message).catch((err) => {
+        const incomingMessages = [
+          update.message,
+          update.edited_message,
+          update.channel_post,
+          update.edited_channel_post,
+        ].filter((m): m is TelegramMessage => Boolean(m));
+        for (const incoming of incomingMessages) {
+          handleMessage(incoming).catch((err) => {
             console.error(`[Telegram] Unhandled: ${err}`);
+          });
+        }
+        if (update.my_chat_member) {
+          handleMyChatMember(update.my_chat_member).catch((err) => {
+            console.error(`[Telegram] my_chat_member unhandled: ${err}`);
           });
         }
       }
@@ -224,7 +371,8 @@ process.on("SIGTERM", () => { running = false; });
 process.on("SIGINT", () => { running = false; });
 
 /** Start polling in-process (called by start.ts when token is configured) */
-export function startPolling(): void {
+export function startPolling(debug = false): void {
+  telegramDebug = debug;
   poll().catch((err) => {
     console.error(`[Telegram] Fatal: ${err}`);
   });

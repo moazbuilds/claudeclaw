@@ -119,20 +119,6 @@ CRITICAL: Output the ASCII art block below EXACTLY as-is inside a markdown code 
 /heartbeat:config  - show config
 ```
 
-After printing the running state above, use AskUserQuestion:
-- Question: "Want to make me smarter?"
-- Header: "Upgrade"
-- Options:
-  - "Yes (Recommended)" (description: "Install claude-mem for larger memory and better continuity")
-  - "No" (description: "Skip plugin install for now")
-
-If user chooses "Yes (Recommended)", print:
-Just copy this into your prompt box:
-```bash
-/plugin marketplace add thedotmack/claude-mem
-/plugin install claude-mem
-```
-
 **Talk to your agent anytime from Claude Code**
 ```bash
 claude --resume <SESSION_ID>

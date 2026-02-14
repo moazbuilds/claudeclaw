@@ -11,6 +11,7 @@ const DEFAULT_SETTINGS: Settings = {
   heartbeat: { enabled: false, interval: 15, prompt: "" },
   telegram: { token: "", allowedUserIds: [] },
   security: { level: "moderate", allowedTools: [], disallowedTools: [] },
+  web: { enabled: false, host: "127.0.0.1", port: 4632 },
 };
 
 export interface HeartbeatConfig {
@@ -40,6 +41,13 @@ export interface Settings {
   heartbeat: HeartbeatConfig;
   telegram: TelegramConfig;
   security: SecurityConfig;
+  web: WebConfig;
+}
+
+export interface WebConfig {
+  enabled: boolean;
+  host: string;
+  port: number;
 }
 
 let cached: Settings | null = null;
@@ -86,6 +94,11 @@ function parseSettings(raw: Record<string, any>): Settings {
       disallowedTools: Array.isArray(raw.security?.disallowedTools)
         ? raw.security.disallowedTools
         : [],
+    },
+    web: {
+      enabled: raw.web?.enabled ?? false,
+      host: raw.web?.host ?? "127.0.0.1",
+      port: Number.isFinite(raw.web?.port) ? Number(raw.web.port) : 4632,
     },
   };
 }
