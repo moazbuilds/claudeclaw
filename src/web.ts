@@ -257,6 +257,17 @@ function htmlPage(): string {
       animation: rise 700ms ease-out both;
     }
 
+    .logo-art {
+      margin: 0 0 18px;
+      font-family: "JetBrains Mono", monospace;
+      font-size: clamp(0.72rem, 1.8vw, 0.95rem);
+      line-height: 1.15;
+      letter-spacing: 0.02em;
+      color: #dbe7ff;
+      text-shadow: 0 8px 20px #00000040;
+      white-space: pre;
+    }
+
     @keyframes rise {
       from { opacity: 0; transform: translateY(18px); }
       to { opacity: 1; transform: translateY(0); }
@@ -344,6 +355,10 @@ function htmlPage(): string {
   <div class="grain" aria-hidden="true"></div>
   <main class="stage">
     <section class="hero">
+      <pre class="logo-art" aria-hidden="true">🦞         🦞
+   ▐▛███▜▌
+  ▝▜█████▛▘
+    ▘▘ ▝▝</pre>
       <div class="time" id="clock">--:--:--</div>
       <div class="date" id="date">Loading date...</div>
       <div class="message" id="message">Welcome back.</div>
