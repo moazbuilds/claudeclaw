@@ -33,6 +33,7 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
     let use12Hour = localStorage.getItem("clock.format") === "12";
     let quickView = "jobs";
     let quickViewInitialized = false;
+    let scrollAnimFrame = 0;
 
     const dateFmt = new Intl.DateTimeFormat(undefined, {
       weekday: "long",
@@ -197,11 +198,34 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
         .join("");
     }
 
+    function smoothScrollTo(top) {
+      if (scrollAnimFrame) cancelAnimationFrame(scrollAnimFrame);
+      const start = window.scrollY;
+      const target = Math.max(0, top);
+      const distance = target - start;
+      if (Math.abs(distance) < 1) return;
+      const duration = 560;
+      const t0 = performance.now();
+
+      const step = (now) => {
+        const p = Math.min(1, (now - t0) / duration);
+        const eased = p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
+        window.scrollTo(0, start + distance * eased);
+        if (p < 1) {
+          scrollAnimFrame = requestAnimationFrame(step);
+        } else {
+          scrollAnimFrame = 0;
+        }
+      };
+
+      scrollAnimFrame = requestAnimationFrame(step);
+    }
+
     function focusQuickView(view) {
       const target = view === "jobs" ? quickJobsView : quickJobForm;
       if (!target) return;
       const y = Math.max(0, window.scrollY + target.getBoundingClientRect().top - 44);
-      window.scrollTo({ top: y, behavior: "smooth" });
+      smoothScrollTo(y);
     }
 
     function setQuickView(view, options) {
