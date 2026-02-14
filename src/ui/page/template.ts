@@ -51,7 +51,10 @@ ${pageStyles}
           <div class="settings-label">💓 Heartbeat</div>
           <div class="settings-meta" id="hb-info">syncing...</div>
         </div>
-        <button class="hb-toggle" id="hb-toggle" type="button">Loading...</button>
+        <div class="setting-actions">
+          <button class="hb-config" id="hb-config" type="button">Configure</button>
+          <button class="hb-toggle" id="hb-toggle" type="button">Loading...</button>
+        </div>
       </div>
       <div class="setting-item">
         <div class="setting-main">
@@ -69,6 +72,31 @@ ${pageStyles}
       </div>
     </div>
   </aside>
+  <section class="info-modal" id="hb-modal" aria-live="polite" aria-hidden="true">
+    <article class="hb-card">
+      <div class="info-head">
+        <span>Heartbeat Configuration</span>
+        <button class="settings-close" id="hb-modal-close" type="button" aria-label="Close heartbeat configuration">×</button>
+      </div>
+      <form class="hb-form" id="hb-form">
+        <label class="hb-field" for="hb-interval-input">
+          <span class="hb-label">Interval (minutes)</span>
+          <input class="hb-input" id="hb-interval-input" type="number" min="1" max="1440" step="1" required />
+        </label>
+        <label class="hb-field" for="hb-prompt-input">
+          <span class="hb-label">Prompt</span>
+          <textarea class="hb-textarea" id="hb-prompt-input" placeholder="What should heartbeat run?" required></textarea>
+        </label>
+        <div class="hb-actions">
+          <div class="hb-status" id="hb-modal-status"></div>
+          <div class="hb-buttons">
+            <button class="hb-btn ghost" id="hb-cancel-btn" type="button">Cancel</button>
+            <button class="hb-btn solid" id="hb-save-btn" type="submit">Save</button>
+          </div>
+        </div>
+      </form>
+    </article>
+  </section>
   <section class="info-modal" id="info-modal" aria-live="polite" aria-hidden="true">
     <article class="info-card">
       <div class="info-head">
@@ -117,7 +145,13 @@ ${pageStyles}
         <div class="quick-job-grid">
           <div class="quick-field quick-time-wrap">
             <div class="quick-label">Delay From Now (Minutes)</div>
-            <input class="quick-input" id="quick-job-offset" type="number" min="1" max="1440" step="5" placeholder="10" required />
+            <div class="quick-input-wrap">
+              <input class="quick-input" id="quick-job-offset" type="number" min="1" max="1440" step="5" placeholder="10" required />
+              <label class="quick-check quick-check-inline" for="quick-job-daily">
+                <input id="quick-job-daily" type="checkbox" checked />
+                <span>Daily</span>
+              </label>
+            </div>
             <div class="quick-time-buttons">
               <button class="quick-add" type="button" data-add-minutes="15">+15m</button>
               <button class="quick-add" type="button" data-add-minutes="30">+30m</button>
@@ -125,10 +159,6 @@ ${pageStyles}
               <button class="quick-add" type="button" data-add-minutes="180">+3h</button>
             </div>
             <div class="quick-preview" id="quick-job-preview">Runs in -- min</div>
-            <label class="quick-check" for="quick-job-daily">
-              <input id="quick-job-daily" type="checkbox" checked />
-              <span>Daily</span>
-            </label>
           </div>
           <div class="quick-field">
             <div class="quick-label">Prompt</div>

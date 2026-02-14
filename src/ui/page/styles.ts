@@ -232,6 +232,19 @@ export const pageStyles = String.raw`    :root {
       border-radius: 10px;
       border: 1px solid #ffffff2e;
       background: #ffffff09;
+      appearance: textfield;
+      -moz-appearance: textfield;
+    }
+    .quick-input::-webkit-outer-spin-button,
+    .quick-input::-webkit-inner-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+    .quick-input-wrap {
+      position: relative;
+    }
+    .quick-input-wrap .quick-input {
+      padding-right: 76px;
     }
     .quick-input:focus-visible,
     .quick-prompt:focus-visible {
@@ -286,8 +299,20 @@ export const pageStyles = String.raw`    :root {
       transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease, transform 0.16s ease;
       user-select: none;
     }
+    .quick-check-inline {
+      position: absolute;
+      right: 6px;
+      top: 50%;
+      transform: translateY(-50%);
+      min-height: 28px;
+      padding: 0 10px;
+      z-index: 1;
+    }
     .quick-check:hover {
       transform: translateY(-1px);
+    }
+    .quick-check-inline:hover {
+      transform: translateY(calc(-50% - 1px));
     }
     .quick-check:has(input:checked) {
       background: #11342455;
@@ -628,6 +653,13 @@ export const pageStyles = String.raw`    :root {
       gap: 4px;
       min-width: 0;
     }
+    .setting-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
     .settings-label {
       display: flex;
       align-items: center;
@@ -674,6 +706,124 @@ export const pageStyles = String.raw`    :root {
       background: #34181855;
       border-color: #ff7f7f55;
       color: #ff9b9b;
+    }
+    .hb-config {
+      border: 1px solid #ffffff2a;
+      background: #ffffff0f;
+      color: #dce7f8;
+      border-radius: 999px;
+      min-width: 92px;
+      padding: 7px 10px;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 11px;
+      cursor: pointer;
+      transition: background 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
+    }
+    .hb-config:hover {
+      transform: translateY(-1px);
+      background: #ffffff1d;
+      border-color: #ffffff42;
+    }
+    .hb-card {
+      width: min(700px, 100%);
+      border: 1px solid #d8e4ff20;
+      border-radius: 16px;
+      background: #0b1220f2;
+      box-shadow: 0 20px 44px #00000066;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .hb-form {
+      padding: 14px;
+      display: grid;
+      gap: 12px;
+    }
+    .hb-field {
+      display: grid;
+      gap: 6px;
+    }
+    .hb-label {
+      font-family: "JetBrains Mono", monospace;
+      font-size: 11px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #bfd4ef;
+    }
+    .hb-input,
+    .hb-textarea {
+      width: 100%;
+      border-radius: 10px;
+      border: 1px solid #ffffff2e;
+      background: #ffffff09;
+      color: #eef4ff;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 13px;
+      padding: 10px 11px;
+    }
+    .hb-textarea {
+      min-height: 190px;
+      resize: vertical;
+      line-height: 1.4;
+    }
+    .hb-input:focus-visible,
+    .hb-textarea:focus-visible {
+      outline: 1px solid #7dc5ff88;
+      outline-offset: 1px;
+    }
+    .hb-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      border-top: 1px solid #ffffff12;
+      padding-top: 12px;
+      flex-wrap: wrap;
+    }
+    .hb-status {
+      min-height: 1.2em;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 11px;
+      color: #cde0f7;
+      opacity: 0.95;
+    }
+    .hb-buttons {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .hb-btn {
+      height: 34px;
+      padding: 0 14px;
+      border-radius: 999px;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 11px;
+      letter-spacing: 0.03em;
+      cursor: pointer;
+      transition: transform 0.16s ease, filter 0.16s ease, opacity 0.16s ease, background 0.16s ease, border-color 0.16s ease;
+    }
+    .hb-btn:hover {
+      transform: translateY(-1px);
+    }
+    .hb-btn:disabled {
+      opacity: 0.7;
+      cursor: wait;
+      transform: none;
+      filter: none;
+    }
+    .hb-btn.ghost {
+      border: 1px solid #ffffff2c;
+      background: #ffffff10;
+      color: #daebff;
+    }
+    .hb-btn.solid {
+      border: 1px solid #3cb87980;
+      background: linear-gradient(180deg, #1f6f47d4 0%, #18563ace 100%);
+      color: #c8f8de;
+      font-weight: 600;
+    }
+    .hb-btn.solid:hover {
+      filter: brightness(1.06);
     }
     .info-modal {
       position: fixed;
