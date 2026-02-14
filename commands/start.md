@@ -131,9 +131,9 @@ CRITICAL: Output the ASCII art block below EXACTLY as-is inside a markdown code 
 
 **Talk to your agent anytime from Claude Code**
 ```bash
-claude --resume <SESSION_ID>
+cd <WORKING_DIR> && claude --resume <SESSION_ID>
 ```
-Replace `<SESSION_ID>` with the session ID captured in step 8.
+Replace `<WORKING_DIR>` with the real project directory and `<SESSION_ID>` with the session ID captured in step 8.
 
 Show this direct Web UI URL:
 ```bash
