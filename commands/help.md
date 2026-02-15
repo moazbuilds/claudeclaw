@@ -33,7 +33,7 @@ Display this help information to the user:
 **How it works:**
 - The daemon runs in the background checking your schedule every 60 seconds
 - A **heartbeat** prompt runs at a fixed interval (default: every 15 minutes)
-- **Jobs** are markdown files in `.claude/claudeclaw/jobs/` with cron schedules
+- **Jobs** are markdown files in `.claude/claudeclaw/jobs/` with cron schedules (timezone-aware, evaluated in configured `timezone`)
 - The statusline shows a live countdown to the next run
 
 **Configuration:**

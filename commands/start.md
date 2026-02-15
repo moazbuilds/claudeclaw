@@ -192,5 +192,6 @@ schedule: "0 9 * * *"
 Your prompt here. Claude will run this at the scheduled time.
 ```
 - Schedule uses standard cron syntax: `minute hour day-of-month month day-of-week`
+- **Timezone-aware**: cron times are evaluated in the configured `timezone`. E.g. `0 9 * * *` with `timezone: "UTC+2"` fires at 9:00 AM local time.
 - The filename (without `.md`) becomes the job name
 - Jobs are loaded at daemon startup from `.claude/claudeclaw/jobs/`

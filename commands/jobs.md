@@ -83,11 +83,16 @@ Jobs live in `.claude/claudeclaw/jobs/` as markdown files:
 ```markdown
 ---
 schedule: "0 9 * * *"
+daily: true
 ---
 Your prompt here. Claude will run this at the scheduled time.
 ```
 
 **Cron syntax**: `minute hour day-of-month month day-of-week`
+
+**Timezone-aware**: All cron times are evaluated in the configured `timezone` from `settings.json`. E.g. `0 9 * * *` with `timezone: "UTC+2"` fires at 9:00 AM local time.
+
+**`daily`**: If `true`, the job repeats on schedule. If omitted or `false`, the job is **one-shot** — the schedule is removed from the file after it runs.
 
 | Expression       | Meaning                  |
 |------------------|--------------------------|
