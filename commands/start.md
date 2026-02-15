@@ -60,6 +60,8 @@ Start the heartbeat daemon for this project. Follow these steps exactly:
    - **If yes to heartbeat**: Use AskUserQuestion again with one question:
      - "How often should it run in minutes?" (header: "Interval", options: "5", "15", "30 (Recommended)", "60")
      - Set `heartbeat.enabled` to `true` and `heartbeat.interval` to their answer.
+     - Ask for timezone as simple UTC offset text (example: `UTC+1`, `UTC-5`, `UTC+03:30`) and set top-level `timezone`.
+   - **If heartbeat is no but `timezone` is missing**: set top-level `timezone` to `UTC+0`.
 
    - **If yes to Telegram**: Do NOT use AskUserQuestion for Telegram fields. Ask in normal free-form text for two values (both optional, user can skip either):
      - Telegram bot token (hint: create/get it from `@BotFather`)
@@ -130,6 +132,7 @@ Defaults: `WEB_HOST=127.0.0.1`, `WEB_PORT=4632` unless changed via settings or `
 ### Settings — `.claude/claudeclaw/settings.json`
 ```json
 {
+  "timezone": "UTC+0",
   "heartbeat": {
     "enabled": true,
     "interval": 15,
@@ -148,6 +151,7 @@ Defaults: `WEB_HOST=127.0.0.1`, `WEB_PORT=4632` unless changed via settings or `
   }
 }
 ```
+- `timezone` — canonical app timezone as UTC offset text (example: `UTC+1`, `UTC-5`, `UTC+03:30`). Heartbeat windows, jobs, and UI all use this timezone.
 - `heartbeat.enabled` — whether the recurring heartbeat runs
 - `heartbeat.interval` — minutes between heartbeat runs
 - `heartbeat.prompt` — the prompt sent to Claude on each heartbeat. Can be an inline string or a file path ending in `.md`, `.txt`, or `.prompt` (relative to project root). File contents are re-read on each tick, so edits take effect without restarting the daemon.
