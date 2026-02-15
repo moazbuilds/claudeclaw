@@ -50,13 +50,32 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
     let expandedJobName = "";
     let lastRenderedJobs = [];
     let scrollAnimFrame = 0;
+    let heartbeatTimezoneOffsetMinutes = 0;
 
-    const dateFmt = new Intl.DateTimeFormat(undefined, {
-      weekday: "long",
-      month: "long",
-      day: "numeric",
-      year: "numeric",
-    });
+    function clampTimezoneOffsetMinutes(value) {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return 0;
+      return Math.max(-720, Math.min(840, Math.round(n)));
+    }
+
+    function toOffsetDate(baseDate) {
+      const base = baseDate instanceof Date ? baseDate : new Date(baseDate);
+      return new Date(base.getTime() + heartbeatTimezoneOffsetMinutes * 60_000);
+    }
+
+    function formatOffsetDate(baseDate, options) {
+      return new Intl.DateTimeFormat(undefined, { ...options, timeZone: "UTC" }).format(toOffsetDate(baseDate));
+    }
+
+    function isSameOffsetDay(a, b) {
+      const da = toOffsetDate(a);
+      const db = toOffsetDate(b);
+      return (
+        da.getUTCFullYear() === db.getUTCFullYear() &&
+        da.getUTCMonth() === db.getUTCMonth() &&
+        da.getUTCDate() === db.getUTCDate()
+      );
+    }
 
     function greetingForHour(h) {
       if (h < 5) return "Night shift mode.";
@@ -115,14 +134,20 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
 
     function renderClock() {
       const now = new Date();
-      const rawH = now.getHours();
+      const shifted = toOffsetDate(now);
+      const rawH = shifted.getUTCHours();
       const hh = use12Hour ? String((rawH % 12) || 12).padStart(2, "0") : String(rawH).padStart(2, "0");
-      const mm = String(now.getMinutes()).padStart(2, "0");
-      const ss = String(now.getSeconds()).padStart(2, "0");
+      const mm = String(shifted.getUTCMinutes()).padStart(2, "0");
+      const ss = String(shifted.getUTCSeconds()).padStart(2, "0");
       const suffix = use12Hour ? (rawH >= 12 ? " PM" : " AM") : "";
       clockEl.textContent = hh + ":" + mm + ":" + ss + suffix;
-      dateEl.textContent = dateFmt.format(now);
-      msgEl.textContent = greetingForHour(now.getHours());
+      dateEl.textContent = formatOffsetDate(now, {
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+      });
+      msgEl.textContent = greetingForHour(rawH);
 
       // Subtle 1s pulse to keep the clock feeling alive.
       clockEl.classList.remove("ms-pulse");
@@ -201,10 +226,11 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
     function nextRunAt(schedule, now) {
       const parts = cronTimeParts(schedule);
       if (!parts) return null;
-      const next = new Date(now);
-      next.setHours(parts.hour, parts.minute, 0, 0);
-      if (next.getTime() <= now.getTime()) next.setDate(next.getDate() + 1);
-      return next;
+      const shiftedNow = toOffsetDate(now);
+      const shiftedNext = new Date(shiftedNow);
+      shiftedNext.setUTCHours(parts.hour, parts.minute, 0, 0);
+      if (shiftedNext.getTime() <= shiftedNow.getTime()) shiftedNext.setUTCDate(shiftedNext.getUTCDate() + 1);
+      return new Date(shiftedNext.getTime() - heartbeatTimezoneOffsetMinutes * 60_000);
     }
 
     function clockFromSchedule(schedule) {
@@ -215,13 +241,14 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
       if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
         return schedule;
       }
-      const dt = new Date();
-      dt.setHours(hour, minute, 0, 0);
-      return new Intl.DateTimeFormat(undefined, {
+      const shiftedNow = toOffsetDate(new Date());
+      shiftedNow.setUTCHours(hour, minute, 0, 0);
+      const instant = new Date(shiftedNow.getTime() - heartbeatTimezoneOffsetMinutes * 60_000);
+      return formatOffsetDate(instant, {
         hour: "numeric",
         minute: "2-digit",
         hour12: use12Hour,
-      }).format(dt);
+      });
     }
 
     function renderJobsList(jobs) {
@@ -260,12 +287,12 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
           const time = clockFromSchedule(j.schedule || "");
           const expanded = expandedJobName && expandedJobName === (j.name || "");
           const nextRunText = nextAt
-            ? new Intl.DateTimeFormat(undefined, {
+            ? formatOffsetDate(nextAt, {
                 weekday: "short",
                 hour: "numeric",
                 minute: "2-digit",
                 hour12: use12Hour,
-              }).format(nextAt)
+              })
             : "--";
           return (
           '<div class="quick-job-item">' +
@@ -413,7 +440,11 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
         const on = Boolean(data?.heartbeat?.enabled);
         const intervalMinutes = Number(data?.heartbeat?.interval) || 15;
         const prompt = typeof data?.heartbeat?.prompt === "string" ? data.heartbeat.prompt : "";
+        heartbeatTimezoneOffsetMinutes = clampTimezoneOffsetMinutes(data?.timezoneOffsetMinutes);
         setHeartbeatUi(on, undefined, intervalMinutes, prompt);
+        renderClock();
+        rerenderJobsList();
+        updateQuickJobUi();
       } catch (err) {
         hbToggle.textContent = "Error";
         hbToggle.className = "hb-toggle off";
@@ -673,27 +704,29 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
     }
 
     function computeTimeFromOffset(offsetMinutes) {
-      const dt = new Date(Date.now() + offsetMinutes * 60_000);
-      const hour = dt.getHours();
-      const minute = dt.getMinutes();
+      const targetInstant = new Date(Date.now() + offsetMinutes * 60_000);
+      const dt = toOffsetDate(targetInstant);
+      const hour = dt.getUTCHours();
+      const minute = dt.getUTCMinutes();
       const time = String(hour).padStart(2, "0") + ":" + String(minute).padStart(2, "0");
-      const dayLabel = dt.toDateString() === new Date().toDateString() ? "Today" : "Tomorrow";
-      const human = new Intl.DateTimeFormat(undefined, {
+      const dayLabel = isSameOffsetDay(targetInstant, new Date()) ? "Today" : "Tomorrow";
+      const human = formatOffsetDate(targetInstant, {
         hour: "numeric",
         minute: "2-digit",
         hour12: use12Hour,
-      }).format(dt);
+      });
       return { hour, minute, time, dayLabel, human };
     }
 
     function formatPreviewTime(hour, minute) {
-      const dt = new Date();
-      dt.setHours(hour, minute, 0, 0);
-      return new Intl.DateTimeFormat(undefined, {
+      const shiftedNow = toOffsetDate(new Date());
+      shiftedNow.setUTCHours(hour, minute, 0, 0);
+      const instant = new Date(shiftedNow.getTime() - heartbeatTimezoneOffsetMinutes * 60_000);
+      return formatOffsetDate(instant, {
         hour: "numeric",
         minute: "2-digit",
         hour12: use12Hour,
-      }).format(dt);
+      });
     }
 
     function formatOffsetDuration(offsetMinutes) {
@@ -833,5 +866,6 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
     updateQuickJobUi();
     setQuickView(quickView);
 
+    loadSettings();
     refreshState();
     setInterval(refreshState, 1000);`;

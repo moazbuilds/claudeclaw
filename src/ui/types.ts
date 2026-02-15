@@ -24,7 +24,6 @@ export interface StartWebUiOptions {
     enabled?: boolean;
     interval?: number;
     prompt?: string;
-    timezone?: string;
     excludeWindows?: Array<{ days?: number[]; start: string; end: string }>;
   }) => void | Promise<void>;
   onJobsChanged?: () => void | Promise<void>;

@@ -9,7 +9,6 @@ export interface HeartbeatSettingsPatch {
   enabled?: boolean;
   interval?: number;
   prompt?: string;
-  timezone?: string;
   excludeWindows?: Array<{ days?: number[]; start: string; end: string }>;
 }
 
@@ -17,7 +16,6 @@ export interface HeartbeatSettingsData {
   enabled: boolean;
   interval: number;
   prompt: string;
-  timezone: string;
   excludeWindows: Array<{ days?: number[]; start: string; end: string }>;
 }
 
@@ -29,7 +27,6 @@ export async function readHeartbeatSettings(): Promise<HeartbeatSettingsData> {
     enabled: Boolean(data.heartbeat.enabled),
     interval: Number(data.heartbeat.interval) || 15,
     prompt: typeof data.heartbeat.prompt === "string" ? data.heartbeat.prompt : "",
-    timezone: typeof data.heartbeat.timezone === "string" ? data.heartbeat.timezone : "",
     excludeWindows: Array.isArray(data.heartbeat.excludeWindows) ? data.heartbeat.excludeWindows : [],
   };
 }
@@ -49,9 +46,6 @@ export async function updateHeartbeatSettings(patch: HeartbeatSettingsPatch): Pr
   if (typeof patch.prompt === "string") {
     data.heartbeat.prompt = patch.prompt;
   }
-  if (typeof patch.timezone === "string") {
-    data.heartbeat.timezone = patch.timezone;
-  }
   if (Array.isArray(patch.excludeWindows)) {
     data.heartbeat.excludeWindows = patch.excludeWindows;
   }
@@ -61,7 +55,6 @@ export async function updateHeartbeatSettings(patch: HeartbeatSettingsPatch): Pr
     enabled: Boolean(data.heartbeat.enabled),
     interval: Number(data.heartbeat.interval) || 15,
     prompt: typeof data.heartbeat.prompt === "string" ? data.heartbeat.prompt : "",
-    timezone: typeof data.heartbeat.timezone === "string" ? data.heartbeat.timezone : "",
     excludeWindows: Array.isArray(data.heartbeat.excludeWindows) ? data.heartbeat.excludeWindows : [],
   };
 }

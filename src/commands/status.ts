@@ -86,8 +86,8 @@ async function showStatus(): Promise<boolean> {
     const settings = await Bun.file(SETTINGS_FILE).json();
     const hb = settings.heartbeat;
     const timezone =
-      typeof hb?.timezone === "string" && hb.timezone.trim()
-        ? hb.timezone.trim()
+      typeof settings?.timezone === "string" && settings.timezone.trim()
+        ? settings.timezone.trim()
         : Intl.DateTimeFormat().resolvedOptions().timeZone || "system";
     const windows = Array.isArray(hb?.excludeWindows) ? hb.excludeWindows : [];
     console.log(

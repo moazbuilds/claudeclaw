@@ -29,7 +29,7 @@ Then work through these naturally, **one at a time**, waiting for responses:
 - Their timezone (so you know when to be quiet)
 
 After you know their timezone and preferred quiet hours, update `.claude/claudeclaw/settings.json` heartbeat schedule:
-- Set `heartbeat.timezone` to their IANA timezone (example: `America/New_York`)
+- Set top-level `timezone` to a simple UTC offset label (example: `UTC-5`, `UTC+1`, `UTC+03:30`)
 - Set `heartbeat.excludeWindows` to quiet windows (example: `[{ "days": [1,2,3,4,5], "start": "23:00", "end": "07:00" }]`)
 
 ### 2. Who Are You?

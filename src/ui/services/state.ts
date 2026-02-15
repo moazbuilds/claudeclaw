@@ -5,6 +5,8 @@ import type { WebSnapshot } from "../types";
 
 export function sanitizeSettings(snapshot: WebSnapshot["settings"]) {
   return {
+    timezone: snapshot.timezone,
+    timezoneOffsetMinutes: snapshot.timezoneOffsetMinutes,
     heartbeat: snapshot.heartbeat,
     security: snapshot.security,
     telegram: {

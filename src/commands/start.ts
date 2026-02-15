@@ -7,6 +7,7 @@ import { cronMatches, nextCronMatch } from "../cron";
 import { clearJobSchedule, loadJobs } from "../jobs";
 import { writePidFile, cleanupPidFile, checkExistingDaemon } from "../pid";
 import { initConfig, loadSettings, reloadSettings, resolvePrompt, type HeartbeatConfig, type Settings } from "../config";
+import { getDayAndMinuteAtOffset } from "../timezone";
 import { startWebUi, type WebServerHandle } from "../web";
 import type { Job } from "../jobs";
 
@@ -96,16 +97,6 @@ try {
 }
 `;
 
-const WEEKDAY_TO_NUM: Record<string, number> = {
-  Sun: 0,
-  Mon: 1,
-  Tue: 2,
-  Wed: 3,
-  Thu: 4,
-  Fri: 5,
-  Sat: 6,
-};
-
 const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];
 
 function parseClockMinutes(value: string): number | null {
@@ -114,32 +105,9 @@ function parseClockMinutes(value: string): number | null {
   return Number(match[1]) * 60 + Number(match[2]);
 }
 
-function getCurrentLocalDayAndMinute(timezone: string): { day: number; minute: number } | null {
-  try {
-    const parts = new Intl.DateTimeFormat("en-US", {
-      timeZone: timezone,
-      weekday: "short",
-      hour: "2-digit",
-      minute: "2-digit",
-      hourCycle: "h23",
-    }).formatToParts(new Date());
-    const weekday = parts.find((p) => p.type === "weekday")?.value;
-    const hour = Number(parts.find((p) => p.type === "hour")?.value ?? "");
-    const minute = Number(parts.find((p) => p.type === "minute")?.value ?? "");
-    if (!weekday || !Number.isInteger(hour) || !Number.isInteger(minute)) return null;
-    const day = WEEKDAY_TO_NUM[weekday];
-    if (!Number.isInteger(day)) return null;
-    return { day, minute: hour * 60 + minute };
-  } catch {
-    return null;
-  }
-}
-
-function isHeartbeatExcludedNow(config: HeartbeatConfig): boolean {
+function isHeartbeatExcludedNow(config: HeartbeatConfig, timezoneOffsetMinutes: number): boolean {
   if (!Array.isArray(config.excludeWindows) || config.excludeWindows.length === 0) return false;
-  const timezone = config.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-  const local = getCurrentLocalDayAndMinute(timezone);
-  if (!local) return false;
+  const local = getDayAndMinuteAtOffset(new Date(), timezoneOffsetMinutes);
 
   for (const window of config.excludeWindows) {
     const start = parseClockMinutes(window.start);
@@ -414,10 +382,6 @@ export async function start(args: string[] = []) {
             currentSettings.heartbeat.prompt = patch.prompt;
             changed = true;
           }
-          if (typeof patch.timezone === "string" && currentSettings.heartbeat.timezone !== patch.timezone) {
-            currentSettings.heartbeat.timezone = patch.timezone;
-            changed = true;
-          }
           if (Array.isArray(patch.excludeWindows)) {
             const prev = JSON.stringify(currentSettings.heartbeat.excludeWindows);
             const next = JSON.stringify(patch.excludeWindows);
@@ -497,7 +461,7 @@ export async function start(args: string[] = []) {
     nextHeartbeatAt = Date.now() + ms;
 
     function tick() {
-      if (isHeartbeatExcludedNow(currentSettings.heartbeat)) {
+      if (isHeartbeatExcludedNow(currentSettings.heartbeat, currentSettings.timezoneOffsetMinutes)) {
         console.log(`[${ts()}] Heartbeat skipped (excluded window)`);
         nextHeartbeatAt = Date.now() + ms;
         return;
@@ -561,7 +525,8 @@ export async function start(args: string[] = []) {
         newSettings.heartbeat.enabled !== currentSettings.heartbeat.enabled ||
         newSettings.heartbeat.interval !== currentSettings.heartbeat.interval ||
         newSettings.heartbeat.prompt !== currentSettings.heartbeat.prompt ||
-        newSettings.heartbeat.timezone !== currentSettings.heartbeat.timezone ||
+        newSettings.timezoneOffsetMinutes !== currentSettings.timezoneOffsetMinutes ||
+        newSettings.timezone !== currentSettings.timezone ||
         JSON.stringify(newSettings.heartbeat.excludeWindows) !== JSON.stringify(currentSettings.heartbeat.excludeWindows);
 
       // Detect security config changes
@@ -611,7 +576,7 @@ export async function start(args: string[] = []) {
         : undefined,
       jobs: currentJobs.map((job) => ({
         name: job.name,
-        nextAt: nextCronMatch(job.schedule, now).getTime(),
+        nextAt: nextCronMatch(job.schedule, now, currentSettings.timezoneOffsetMinutes).getTime(),
       })),
       security: currentSettings.security.level,
       telegram: !!currentSettings.telegram.token,
@@ -630,7 +595,7 @@ export async function start(args: string[] = []) {
   setInterval(() => {
     const now = new Date();
     for (const job of currentJobs) {
-      if (cronMatches(job.schedule, now)) {
+      if (cronMatches(job.schedule, now, currentSettings.timezoneOffsetMinutes)) {
         resolvePrompt(job.prompt)
           .then((prompt) => run(job.name, prompt))
           .then((r) => forwardToTelegram(job.name, r))

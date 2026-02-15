@@ -38,14 +38,12 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
             enabled?: unknown;
             interval?: unknown;
             prompt?: unknown;
-            timezone?: unknown;
             excludeWindows?: unknown;
           };
           const patch: {
             enabled?: boolean;
             interval?: number;
             prompt?: string;
-            timezone?: string;
             excludeWindows?: Array<{ days?: number[]; start: string; end: string }>;
           } = {};
 
@@ -56,7 +54,6 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
             patch.interval = iv;
           }
           if ("prompt" in payload) patch.prompt = String(payload.prompt ?? "");
-          if ("timezone" in payload) patch.timezone = String(payload.timezone ?? "");
           if ("excludeWindows" in payload) {
             if (!Array.isArray(payload.excludeWindows)) {
               throw new Error("excludeWindows must be an array");
@@ -84,7 +81,6 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
             !("enabled" in patch) &&
             !("interval" in patch) &&
             !("prompt" in patch) &&
-            !("timezone" in patch) &&
             !("excludeWindows" in patch)
           ) {
             throw new Error("no heartbeat fields provided");

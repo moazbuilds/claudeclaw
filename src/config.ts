@@ -1,6 +1,7 @@
 import { join, isAbsolute } from "path";
 import { mkdir } from "fs/promises";
 import { existsSync } from "fs";
+import { normalizeTimezoneName, resolveTimezoneOffsetMinutes } from "./timezone";
 
 const HEARTBEAT_DIR = join(process.cwd(), ".claude", "claudeclaw");
 const SETTINGS_FILE = join(HEARTBEAT_DIR, "settings.json");
@@ -8,11 +9,12 @@ const JOBS_DIR = join(HEARTBEAT_DIR, "jobs");
 const LOGS_DIR = join(HEARTBEAT_DIR, "logs");
 
 const DEFAULT_SETTINGS: Settings = {
+  timezone: "UTC",
+  timezoneOffsetMinutes: 0,
   heartbeat: {
     enabled: false,
     interval: 15,
     prompt: "",
-    timezone: "",
     excludeWindows: [],
   },
   telegram: { token: "", allowedUserIds: [] },
@@ -30,7 +32,6 @@ export interface HeartbeatConfig {
   enabled: boolean;
   interval: number;
   prompt: string;
-  timezone: string;
   excludeWindows: HeartbeatExcludeWindow[];
 }
 
@@ -52,6 +53,8 @@ export interface SecurityConfig {
 }
 
 export interface Settings {
+  timezone: string;
+  timezoneOffsetMinutes: number;
   heartbeat: HeartbeatConfig;
   telegram: TelegramConfig;
   security: SecurityConfig;
@@ -90,12 +93,15 @@ function parseSettings(raw: Record<string, any>): Settings {
       ? (rawLevel as SecurityLevel)
       : "moderate";
 
+  const parsedTimezone = parseTimezone(raw.timezone);
+
   return {
+    timezone: parsedTimezone,
+    timezoneOffsetMinutes: parseTimezoneOffsetMinutes(raw.timezoneOffsetMinutes, parsedTimezone),
     heartbeat: {
       enabled: raw.heartbeat?.enabled ?? false,
       interval: raw.heartbeat?.interval ?? 15,
       prompt: raw.heartbeat?.prompt ?? "",
-      timezone: parseTimezone(raw.heartbeat?.timezone),
       excludeWindows: parseExcludeWindows(raw.heartbeat?.excludeWindows),
     },
     telegram: {
@@ -123,15 +129,7 @@ const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];
 
 function parseTimezone(value: unknown): string {
-  if (typeof value !== "string") return "";
-  const trimmed = value.trim();
-  if (!trimmed) return "";
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: trimmed }).format(new Date());
-    return trimmed;
-  } catch {
-    return "";
-  }
+  return normalizeTimezoneName(value);
 }
 
 function parseExcludeWindows(value: unknown): HeartbeatExcludeWindow[] {
@@ -156,6 +154,10 @@ function parseExcludeWindows(value: unknown): HeartbeatExcludeWindow[] {
     });
   }
   return out;
+}
+
+function parseTimezoneOffsetMinutes(value: unknown, timezoneFallback?: string): number {
+  return resolveTimezoneOffsetMinutes(value, timezoneFallback);
 }
 
 export async function loadSettings(): Promise<Settings> {

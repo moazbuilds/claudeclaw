@@ -1,3 +1,5 @@
+import { shiftDateToOffset } from "./timezone";
+
 function matchCronField(field: string, value: number): boolean {
   for (const part of field.split(",")) {
     const [range, stepStr] = part.split("/");
@@ -19,14 +21,15 @@ function matchCronField(field: string, value: number): boolean {
   return false;
 }
 
-export function cronMatches(expr: string, date: Date): boolean {
+export function cronMatches(expr: string, date: Date, timezoneOffsetMinutes = 0): boolean {
   const [minute, hour, dayOfMonth, month, dayOfWeek] = expr.trim().split(/\s+/);
+  const shifted = shiftDateToOffset(date, timezoneOffsetMinutes);
   const d = {
-    minute: date.getMinutes(),
-    hour: date.getHours(),
-    dayOfMonth: date.getDate(),
-    month: date.getMonth() + 1,
-    dayOfWeek: date.getDay(),
+    minute: shifted.getUTCMinutes(),
+    hour: shifted.getUTCHours(),
+    dayOfMonth: shifted.getUTCDate(),
+    month: shifted.getUTCMonth() + 1,
+    dayOfWeek: shifted.getUTCDay(),
   };
 
   return (
@@ -38,12 +41,12 @@ export function cronMatches(expr: string, date: Date): boolean {
   );
 }
 
-export function nextCronMatch(expr: string, after: Date): Date {
+export function nextCronMatch(expr: string, after: Date, timezoneOffsetMinutes = 0): Date {
   const d = new Date(after);
   d.setSeconds(0, 0);
   d.setMinutes(d.getMinutes() + 1);
   for (let i = 0; i < 2880; i++) {
-    if (cronMatches(expr, d)) return d;
+    if (cronMatches(expr, d, timezoneOffsetMinutes)) return d;
     d.setMinutes(d.getMinutes() + 1);
   }
   return d;
