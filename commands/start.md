@@ -132,6 +132,9 @@ CRITICAL: Output the ASCII art block below EXACTLY as-is inside a markdown code 
 **To start chatting on Telegram**
 Go to your bot, send `/start`, and start talking.
 
+**To talk to your agent directly on Claude Code**
+Send `@start.<SESSION_ID>`.
+
 Show this direct Web UI URL:
 ```bash
 http://<WEB_HOST>:<WEB_PORT>
