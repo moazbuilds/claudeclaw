@@ -38,6 +38,9 @@ const DIR_SCOPE_PROMPT = [
 ].join("\n");
 
 export async function ensureProjectClaudeMd(): Promise<void> {
+  // Preflight-only initialization: never rewrite an existing project CLAUDE.md.
+  if (existsSync(PROJECT_CLAUDE_MD)) return;
+
   const promptContent = (await loadPrompts()).trim();
   const managedBlock = [
     CLAUDECLAW_BLOCK_START,
@@ -47,14 +50,7 @@ export async function ensureProjectClaudeMd(): Promise<void> {
 
   let content = "";
 
-  if (existsSync(PROJECT_CLAUDE_MD)) {
-    try {
-      content = await readFile(PROJECT_CLAUDE_MD, "utf8");
-    } catch (e) {
-      console.error(`[${new Date().toLocaleTimeString()}] Failed to read project CLAUDE.md:`, e);
-      return;
-    }
-  } else if (existsSync(LEGACY_PROJECT_CLAUDE_MD)) {
+  if (existsSync(LEGACY_PROJECT_CLAUDE_MD)) {
     try {
       const legacy = await readFile(LEGACY_PROJECT_CLAUDE_MD, "utf8");
       content = legacy.trim();
