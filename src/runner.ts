@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, writeFile } from "fs/promises";
+import { mkdir, readFile, writeFile } from "fs/promises";
 import { join } from "path";
 import { existsSync } from "fs";
 import { getSession, createSession } from "./sessions";
@@ -111,38 +111,22 @@ function buildSecurityArgs(security: SecurityConfig): string[] {
 
 /** Load and concatenate all prompt files from the prompts/ directory. */
 async function loadPrompts(): Promise<string> {
-  async function collectPromptFiles(dir: string): Promise<string[]> {
-    const files: string[] = [];
-    const entries = await readdir(dir, { withFileTypes: true });
-    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-      const fullPath = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (entry.name.toLowerCase() === "heartbeat") continue;
-        files.push(...await collectPromptFiles(fullPath));
-        continue;
-      }
-      if (entry.isFile()) {
-        if (entry.name.toLowerCase() === "heartbeat.md") continue;
-        files.push(fullPath);
-      }
+  const selectedPromptFiles = [
+    join(PROMPTS_DIR, "IDENTITY.md"),
+    join(PROMPTS_DIR, "USER.md"),
+    join(PROMPTS_DIR, "SOUL.md"),
+  ];
+  const parts: string[] = [];
+
+  for (const file of selectedPromptFiles) {
+    try {
+      const content = await Bun.file(file).text();
+      if (content.trim()) parts.push(content.trim());
+    } catch (e) {
+      console.error(`[${new Date().toLocaleTimeString()}] Failed to read prompt file ${file}:`, e);
     }
-    return files;
   }
 
-  const parts: string[] = [];
-  try {
-    const files = await collectPromptFiles(PROMPTS_DIR);
-    for (const file of files) {
-      try {
-        const content = await Bun.file(file).text();
-        if (content.trim()) parts.push(content.trim());
-      } catch (e) {
-        console.error(`[${new Date().toLocaleTimeString()}] Failed to read prompt file ${file}:`, e);
-      }
-    }
-  } catch (e) {
-    console.error(`[${new Date().toLocaleTimeString()}] Failed to read prompts directory:`, e);
-  }
   return parts.join("\n\n");
 }
 
