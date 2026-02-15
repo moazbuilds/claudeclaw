@@ -61,6 +61,22 @@ function getWhisperExecutablePathForVersion(whisperPath: string, whisperCppVersi
   return join(resolve(process.cwd(), whisperPath), ...executableFolder, `./${executableName}${suffix}`);
 }
 
+function isMissingWhisperExecutableError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const maybeErr = err as NodeJS.ErrnoException;
+  if (maybeErr.code !== "ENOENT") return false;
+  const message = maybeErr.message ?? "";
+  const syscall = maybeErr.syscall ?? "";
+  const path = maybeErr.path ?? "";
+  return (
+    message.includes("whisper-cli") ||
+    message.includes("spawn") ||
+    syscall.includes("spawn") ||
+    path.includes("whisper-cli") ||
+    path.includes("/main")
+  );
+}
+
 async function prepareWhisperAssets(printOutput: boolean): Promise<void> {
   await mkdir(WHISPER_ROOT, { recursive: true });
   await mkdir(MODEL_FOLDER, { recursive: true });
@@ -128,8 +144,9 @@ export async function transcribeAudioToText(
   const wavPath = await ensureWavInput(inputPath, log);
   const shouldCleanup = wavPath !== inputPath;
   log(`voice transcribe: using wav=${wavPath} cleanup=${shouldCleanup}`);
-  try {
-    const result = await transcribe({
+
+  const runTranscription = async () =>
+    transcribe({
       inputPath: wavPath,
       model: WHISPER_MODEL,
       modelFolder: MODEL_FOLDER,
@@ -139,6 +156,20 @@ export async function transcribeAudioToText(
       printOutput: false,
       language: null,
     });
+
+  try {
+    let result;
+    try {
+      result = await runTranscription();
+    } catch (err) {
+      if (!isMissingWhisperExecutableError(err)) throw err;
+      log("voice transcribe: missing whisper executable, forcing reinstall and retry");
+      warmupPromise = null;
+      await rm(WHISPER_PATH, { recursive: true, force: true });
+      await warmupWhisperAssets();
+      result = await runTranscription();
+    }
+
     log(`voice transcribe: whisper segments=${result.transcription.length}`);
 
     const transcript = result.transcription
