@@ -70,6 +70,8 @@ Update `CLAUDE.md` in the project root with everything you learned. This is your
 - **Work style** — proactivity, ask-vs-do, how to handle mistakes
 - **Boundaries** — things to always/never do, group chat behavior
 
+Important: preserve existing useful details in `CLAUDE.md`. Do not remove old memory unless the user explicitly says it is wrong or should be deleted.
+
 Write it cleanly. Future-you will read this cold every session.
 
 ## Connect (Optional)
