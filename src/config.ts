@@ -147,7 +147,7 @@ function parseExcludeWindows(value: unknown): HeartbeatExcludeWindow[] {
     const parsedDays = rawDays
       .map((d: unknown) => Number(d))
       .filter((d: number) => Number.isInteger(d) && d >= 0 && d <= 6);
-    const uniqueDays = Array.from(new Set(parsedDays)).sort((a, b) => a - b);
+    const uniqueDays = Array.from(new Set<number>(parsedDays)).sort((a: number, b: number) => a - b);
 
     out.push({
       start,
