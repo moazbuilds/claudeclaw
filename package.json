@@ -12,6 +12,7 @@
     "@types/bun": "^1.3.9"
   },
   "dependencies": {
-    "@remotion/install-whisper-cpp": "4.0.422"
+    "@remotion/install-whisper-cpp": "4.0.422",
+    "ogg-opus-decoder": "^1.7.3"
   }
 }
