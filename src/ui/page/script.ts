@@ -30,7 +30,7 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
     const quickOpenCreate = $("quick-open-create");
     const quickBackJobs = $("quick-back-jobs");
     const quickJobOffset = $("quick-job-offset");
-    const quickJobDaily = $("quick-job-daily");
+    const quickJobRecurring = $("quick-job-recurring");
     const quickJobPrompt = $("quick-job-prompt");
     const quickJobSubmit = $("quick-job-submit");
     const quickJobStatus = $("quick-job-status");
@@ -886,7 +886,7 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
             body: JSON.stringify({
               time: target.time,
               prompt,
-              daily: quickJobDaily ? quickJobDaily.checked : true,
+              recurring: quickJobRecurring ? quickJobRecurring.checked : true,
             }),
           });
           const out = await res.json();

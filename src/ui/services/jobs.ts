@@ -5,13 +5,16 @@ import { JOBS_DIR } from "../constants";
 export interface QuickJobInput {
   time?: unknown;
   prompt?: unknown;
+  recurring?: unknown;
   daily?: unknown;
 }
 
-export async function createQuickJob(input: QuickJobInput): Promise<{ name: string; schedule: string; daily: boolean }> {
+export async function createQuickJob(input: QuickJobInput): Promise<{ name: string; schedule: string; recurring: boolean }> {
   const time = typeof input.time === "string" ? input.time.trim() : "";
   const prompt = typeof input.prompt === "string" ? input.prompt.trim() : "";
-  const daily = input.daily == null ? true : Boolean(input.daily);
+  const recurring = input.recurring == null
+    ? (input.daily == null ? true : Boolean(input.daily))
+    : Boolean(input.recurring);
 
   if (!/^\d{2}:\d{2}$/.test(time)) {
     throw new Error("Invalid time. Use HH:MM.");
@@ -33,11 +36,11 @@ export async function createQuickJob(input: QuickJobInput): Promise<{ name: stri
   const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
   const name = `quick-${stamp}-${hour.toString().padStart(2, "0")}${minute.toString().padStart(2, "0")}`;
   const path = join(JOBS_DIR, `${name}.md`);
-  const content = `---\nschedule: "${schedule}"\ndaily: ${daily ? "true" : "false"}\n---\n${prompt}\n`;
+  const content = `---\nschedule: "${schedule}"\nrecurring: ${recurring ? "true" : "false"}\n---\n${prompt}\n`;
 
   await mkdir(JOBS_DIR, { recursive: true });
   await writeFile(path, content, "utf-8");
-  return { name, schedule, daily };
+  return { name, schedule, recurring };
 }
 
 export async function deleteJob(name: string): Promise<void> {

@@ -140,16 +140,16 @@ ${pageStyles}
       <form class="quick-job quick-view-hidden" id="quick-job-form">
         <div class="quick-job-head">
           <div class="quick-job-title">Add Scheduled Job</div>
-          <div class="quick-job-sub">Daily cron with prompt payload</div>
+          <div class="quick-job-sub">Recurring cron with prompt payload</div>
         </div>
         <div class="quick-job-grid">
           <div class="quick-field quick-time-wrap">
             <div class="quick-label">Delay From Now (Minutes)</div>
             <div class="quick-input-wrap">
             <input class="quick-input" id="quick-job-offset" type="number" min="1" max="1440" step="1" placeholder="10" required />
-              <label class="quick-check quick-check-inline" for="quick-job-daily">
-                <input id="quick-job-daily" type="checkbox" checked />
-                <span>Daily</span>
+              <label class="quick-check quick-check-inline" for="quick-job-recurring">
+                <input id="quick-job-recurring" type="checkbox" checked />
+                <span>Recurring</span>
               </label>
             </div>
             <div class="quick-time-buttons">

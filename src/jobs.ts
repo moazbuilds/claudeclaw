@@ -7,7 +7,7 @@ export interface Job {
   name: string;
   schedule: string;
   prompt: string;
-  daily: boolean;
+  recurring: boolean;
 }
 
 function parseFrontmatterValue(raw: string): string {
@@ -32,13 +32,16 @@ function parseJobFile(name: string, content: string): Job | null {
 
   const schedule = parseFrontmatterValue(scheduleLine.replace("schedule:", ""));
 
-  const dailyLine = lines.find((l) => l.startsWith("daily:"));
-  const dailyRaw = dailyLine
+  const recurringLine = lines.find((l) => l.startsWith("recurring:"));
+  const dailyLine = lines.find((l) => l.startsWith("daily:")); // legacy alias
+  const recurringRaw = recurringLine
+    ? parseFrontmatterValue(recurringLine.replace("recurring:", "")).toLowerCase()
+    : dailyLine
     ? parseFrontmatterValue(dailyLine.replace("daily:", "")).toLowerCase()
     : "";
-  const daily = dailyRaw === "true" || dailyRaw === "yes" || dailyRaw === "1";
+  const recurring = recurringRaw === "true" || recurringRaw === "yes" || recurringRaw === "1";
 
-  return { name, schedule, prompt, daily };
+  return { name, schedule, prompt, recurring };
 }
 
 export async function loadJobs(): Promise<Job[]> {

@@ -637,7 +637,7 @@ export async function start(args: string[] = []) {
           .then((prompt) => run(job.name, prompt))
           .then((r) => forwardToTelegram(job.name, r))
           .finally(async () => {
-            if (job.daily) return;
+            if (job.recurring) return;
             try {
               await clearJobSchedule(job.name);
               console.log(`[${ts()}] Cleared schedule for one-time job: ${job.name}`);
