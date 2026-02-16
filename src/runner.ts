@@ -20,6 +20,8 @@ export interface RunResult {
   exitCode: number;
 }
 
+const RATE_LIMIT_PATTERN = /you(?:'|’)ve hit your limit/i;
+
 // Serial queue — prevents concurrent --resume on the same session
 let queue: Promise<unknown> = Promise.resolve();
 
@@ -27,6 +29,15 @@ function enqueue<T>(fn: () => Promise<T>): Promise<T> {
   const task = queue.then(fn, fn);
   queue = task.catch(() => {});
   return task;
+}
+
+function extractRateLimitMessage(stdout: string, stderr: string): string | null {
+  const candidates = [stdout, stderr];
+  for (const text of candidates) {
+    const trimmed = text.trim();
+    if (trimmed && RATE_LIMIT_PATTERN.test(trimmed)) return trimmed;
+  }
+  return null;
 }
 
 const PROJECT_DIR = process.cwd();
@@ -217,9 +228,14 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
 
   let stdout = rawStdout;
   let sessionId = existing?.sessionId ?? "unknown";
+  const rateLimitMessage = extractRateLimitMessage(rawStdout, stderr);
+
+  if (rateLimitMessage) {
+    stdout = rateLimitMessage;
+  }
 
   // For new sessions, parse the JSON to extract session_id and result text
-  if (isNew && proc.exitCode === 0) {
+  if (!rateLimitMessage && isNew && proc.exitCode === 0) {
     try {
       const json = JSON.parse(rawStdout);
       sessionId = json.session_id;
