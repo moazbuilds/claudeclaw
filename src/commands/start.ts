@@ -635,7 +635,11 @@ export async function start(args: string[] = []) {
       if (cronMatches(job.schedule, now, currentSettings.timezoneOffsetMinutes)) {
         resolvePrompt(job.prompt)
           .then((prompt) => run(job.name, prompt))
-          .then((r) => forwardToTelegram(job.name, r))
+          .then((r) => {
+            if (job.notify === false) return;
+            if (job.notify === "error" && r.exitCode === 0) return;
+            forwardToTelegram(job.name, r);
+          })
           .finally(async () => {
             if (job.recurring) return;
             try {

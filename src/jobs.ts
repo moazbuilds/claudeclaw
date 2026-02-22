@@ -8,6 +8,7 @@ export interface Job {
   schedule: string;
   prompt: string;
   recurring: boolean;
+  notify: true | false | "error";
 }
 
 function parseFrontmatterValue(raw: string): string {
@@ -41,7 +42,16 @@ function parseJobFile(name: string, content: string): Job | null {
     : "";
   const recurring = recurringRaw === "true" || recurringRaw === "yes" || recurringRaw === "1";
 
-  return { name, schedule, prompt, recurring };
+  const notifyLine = lines.find((l) => l.startsWith("notify:"));
+  const notifyRaw = notifyLine
+    ? parseFrontmatterValue(notifyLine.replace("notify:", "")).toLowerCase()
+    : "";
+  const notify: true | false | "error" =
+    notifyRaw === "false" || notifyRaw === "no" ? false
+    : notifyRaw === "error" ? "error"
+    : true;
+
+  return { name, schedule, prompt, recurring, notify };
 }
 
 export async function loadJobs(): Promise<Job[]> {
