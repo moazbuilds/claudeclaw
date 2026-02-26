@@ -1,8 +1,9 @@
 import { execSync, spawnSync } from "node:child_process";
-import { chmod, mkdir, rename, rm, stat, access, readdir, open } from "node:fs/promises";
+import { chmod, mkdir, rename, rm, stat, access, readdir, open, readFile } from "node:fs/promises";
 import { statSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getSettings } from "./config";
 
 const WHISPER_MODEL = "base.en";
 const WHISPER_ROOT = join(process.cwd(), ".claude", "claudeclaw", "whisper");
@@ -308,11 +309,50 @@ export function warmupWhisperAssets(options?: { printOutput?: boolean }): Promis
   return warmupPromise;
 }
 
+async function transcribeViaApi(
+  inputPath: string,
+  baseUrl: string,
+  model: string,
+  log: WhisperDebugLog
+): Promise<string> {
+  const apiModel = model || "Systran/faster-whisper-large-v3";
+  const url = `${baseUrl}/v1/audio/transcriptions`;
+  log(`voice transcribe: using STT API url=${url} model=${apiModel}`);
+
+  const audioBytes = await readFile(inputPath);
+  const ext = extname(inputPath).toLowerCase().replace(".", "") || "ogg";
+  const mimeMap: Record<string, string> = {
+    ogg: "audio/ogg", oga: "audio/ogg", wav: "audio/wav",
+    mp3: "audio/mpeg", m4a: "audio/mp4", webm: "audio/webm",
+  };
+  const mimeType = mimeMap[ext] ?? "audio/ogg";
+
+  const form = new FormData();
+  form.append("file", new Blob([audioBytes], { type: mimeType }), `audio.${ext}`);
+  form.append("model", apiModel);
+
+  const response = await fetch(url, { method: "POST", body: form });
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`STT API error (${response.status}): ${body}`);
+  }
+
+  const data = (await response.json()) as { text?: string };
+  const transcript = (data.text ?? "").trim();
+  log(`voice transcribe: API transcript chars=${transcript.length}`);
+  return transcript;
+}
+
 export async function transcribeAudioToText(
   inputPath: string,
   options?: { debug?: boolean; log?: WhisperDebugLog }
 ): Promise<string> {
   const log = options?.debug ? (options?.log ?? console.log) : noopLog;
+
+  const stt = getSettings().stt;
+  if (stt?.baseUrl) {
+    return transcribeViaApi(inputPath, stt.baseUrl, stt.model, log);
+  }
   await warmupWhisperAssets();
   log(`voice transcribe: warmup ready cwd=${process.cwd()} input=${inputPath}`);
   try {
