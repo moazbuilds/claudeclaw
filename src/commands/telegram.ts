@@ -78,7 +78,7 @@ interface TelegramUser {
 interface TelegramMessage {
   message_id: number;
   from?: TelegramUser;
-  reply_to_message?: { from?: TelegramUser };
+  reply_to_message?: { message_id?: number; from?: TelegramUser };
   chat: { id: number; type: string };
   text?: string;
   caption?: string;
@@ -505,6 +505,28 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     await resetSession();
     await sendMessage(config.token, chatId, "Global session reset. Next message starts fresh.");
     return;
+  }
+
+  // Secretary: detect reply to a bot alert message → treat as custom reply
+  const replyToMsgId = message.reply_to_message?.message_id;
+  if (replyToMsgId && text && botId && message.reply_to_message?.from?.id === botId) {
+    try {
+      const lookupResp = await fetch(`http://127.0.0.1:9999/pending/by-bot-msg/${replyToMsgId}`);
+      if (lookupResp.ok) {
+        const item = await lookupResp.json() as { id?: string } | null;
+        if (item?.id) {
+          await fetch(`http://127.0.0.1:9999/confirm/${item.id}/custom`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text }),
+          });
+          await sendMessage(config.token, chatId, `✅ Sent custom reply + pattern learned.`);
+          return;
+        }
+      }
+    } catch {
+      // fall through to normal handling if secretary endpoint unreachable
+    }
   }
 
   const label = message.from?.username ?? String(userId ?? "unknown");
