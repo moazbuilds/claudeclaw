@@ -139,6 +139,13 @@ interface TelegramMyChatMemberUpdate {
   new_chat_member: TelegramChatMember;
 }
 
+interface TelegramCallbackQuery {
+  id: string;
+  from: TelegramUser;
+  message?: TelegramMessage;
+  data?: string;
+}
+
 interface TelegramUpdate {
   update_id: number;
   message?: TelegramMessage;
@@ -146,6 +153,7 @@ interface TelegramUpdate {
   channel_post?: TelegramMessage;
   edited_channel_post?: TelegramMessage;
   my_chat_member?: TelegramMyChatMemberUpdate;
+  callback_query?: TelegramCallbackQuery;
 }
 
 interface TelegramMe {
@@ -580,6 +588,45 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
   }
 }
 
+// --- Callback query handler ---
+
+async function handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> {
+  const config = getSettings().telegram;
+  const data = query.data ?? "";
+
+  // Secretary pattern: "sec_yes_<8hex>" or "sec_no_<8hex>"
+  const secMatch = data.match(/^sec_(yes|no)_([0-9a-f]{8})$/);
+  if (secMatch) {
+    const action = secMatch[1];
+    const pendingId = secMatch[2];
+    let answerText = "⚠️ Server error";
+    try {
+      const resp = await fetch(`http://127.0.0.1:9999/confirm/${pendingId}/${action}`);
+      const result = await resp.json() as { ok: boolean };
+      answerText = action === "yes" && result.ok ? "✅ Đã gửi!" : result.ok ? "❌ Dismissed" : "⚠️ Not found";
+      if (query.message) {
+        const statusLine = action === "yes" ? "\n\n✅ Sent" : "\n\n❌ Dismissed";
+        const newText = (query.message.text ?? "").replace(/\n\nReply:.*$/s, statusLine);
+        await callApi(config.token, "editMessageText", {
+          chat_id: query.message.chat.id,
+          message_id: query.message.message_id,
+          text: newText,
+        }).catch(() => {});
+      }
+    } catch {
+      // server not running or error
+    }
+    await callApi(config.token, "answerCallbackQuery", {
+      callback_query_id: query.id,
+      text: answerText,
+    }).catch(() => {});
+    return;
+  }
+
+  // Default: ack with no text
+  await callApi(config.token, "answerCallbackQuery", { callback_query_id: query.id }).catch(() => {});
+}
+
 // --- Polling loop ---
 
 let running = true;
@@ -608,7 +655,7 @@ async function poll(): Promise<void> {
       const data = await callApi<{ ok: boolean; result: TelegramUpdate[] }>(
         config.token,
         "getUpdates",
-        { offset, timeout: 30, allowed_updates: ["message", "my_chat_member"] }
+        { offset, timeout: 30, allowed_updates: ["message", "my_chat_member", "callback_query"] }
       );
 
       if (!data.ok || !data.result.length) continue;
@@ -632,6 +679,11 @@ async function poll(): Promise<void> {
         if (update.my_chat_member) {
           handleMyChatMember(update.my_chat_member).catch((err) => {
             console.error(`[Telegram] my_chat_member unhandled: ${err}`);
+          });
+        }
+        if (update.callback_query) {
+          handleCallbackQuery(update.callback_query).catch((err) => {
+            console.error(`[Telegram] callback_query unhandled: ${err}`);
           });
         }
       }
