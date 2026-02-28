@@ -26,6 +26,7 @@ const DEFAULT_SETTINGS: Settings = {
   telegram: { token: "", allowedUserIds: [] },
   security: { level: "moderate", allowedTools: [], disallowedTools: [] },
   web: { enabled: false, host: "127.0.0.1", port: 4632 },
+  stt: { baseUrl: "", model: "" },
 };
 
 export interface HeartbeatExcludeWindow {
@@ -68,6 +69,7 @@ export interface Settings {
   telegram: TelegramConfig;
   security: SecurityConfig;
   web: WebConfig;
+  stt: SttConfig;
 }
 
 export interface ModelConfig {
@@ -79,6 +81,15 @@ export interface WebConfig {
   enabled: boolean;
   host: string;
   port: number;
+}
+
+export interface SttConfig {
+  /** Base URL of an OpenAI-compatible STT API, e.g. "http://127.0.0.1:8000".
+   *  When set, claudeclaw routes voice transcription through this API instead
+   *  of the bundled whisper.cpp binary. */
+  baseUrl: string;
+  /** Model name passed to the API (default: "Systran/faster-whisper-large-v3") */
+  model: string;
 }
 
 let cached: Settings | null = null;
@@ -141,6 +152,10 @@ function parseSettings(raw: Record<string, any>): Settings {
       enabled: raw.web?.enabled ?? false,
       host: raw.web?.host ?? "127.0.0.1",
       port: Number.isFinite(raw.web?.port) ? Number(raw.web.port) : 4632,
+    },
+    stt: {
+      baseUrl: typeof raw.stt?.baseUrl === "string" ? raw.stt.baseUrl.trim() : "",
+      model: typeof raw.stt?.model === "string" ? raw.stt.model.trim() : "",
     },
   };
 }
