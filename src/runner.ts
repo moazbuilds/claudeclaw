@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { join } from "path";
 import { existsSync } from "fs";
-import { getSession, createSession } from "./sessions";
+import { getSession, createSession, resetSession } from "./sessions";
 import { getSettings, type ModelConfig, type SecurityConfig } from "./config";
 import { buildClockPromptPrefix } from "./timezone";
 
@@ -206,7 +206,7 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
   await mkdir(LOGS_DIR, { recursive: true });
 
   const existing = await getSession();
-  const isNew = !existing;
+  let isNew = !existing;
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const logFile = join(LOGS_DIR, `${name}-${timestamp}.log`);
 
@@ -269,6 +269,29 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
     );
     exec = await runClaudeOnce(args, fallbackConfig.model, fallbackConfig.api, baseEnv);
     usedFallback = true;
+  }
+
+  // Auto-reset: if resumed session is too long, reset and retry as new
+  const PROMPT_TOO_LONG = /prompt is too long/i;
+  if (
+    !isNew &&
+    exec.exitCode !== 0 &&
+    (PROMPT_TOO_LONG.test(exec.rawStdout) || PROMPT_TOO_LONG.test(exec.stderr))
+  ) {
+    console.warn(
+      `[${new Date().toLocaleTimeString()}] Session context overflow — resetting and retrying as new session...`
+    );
+    await resetSession();
+
+    // Rebuild args for a new session (json output, no --resume)
+    const freshArgs = ["claude", "-p", prompt, "--output-format", "json", ...securityArgs];
+    if (appendParts.length > 0) {
+      freshArgs.push("--append-system-prompt", appendParts.join("\n\n"));
+    }
+
+    exec = await runClaudeOnce(freshArgs, primaryConfig.model, primaryConfig.api, baseEnv);
+    isNew = true; // So the session-ID parsing below picks it up
+    usedFallback = false;
   }
 
   const rawStdout = exec.rawStdout;
