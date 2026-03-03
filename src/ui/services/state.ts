@@ -13,6 +13,10 @@ export function sanitizeSettings(snapshot: WebSnapshot["settings"]) {
       configured: Boolean(snapshot.telegram.token),
       allowedUserCount: snapshot.telegram.allowedUserIds.length,
     },
+    discord: {
+      configured: Boolean(snapshot.discord.token),
+      allowedUserCount: snapshot.discord.allowedUserIds.length,
+    },
     web: snapshot.web,
   };
 }
@@ -42,6 +46,10 @@ export async function buildState(snapshot: WebSnapshot) {
     telegram: {
       configured: Boolean(snapshot.settings.telegram.token),
       allowedUserCount: snapshot.settings.telegram.allowedUserIds.length,
+    },
+    discord: {
+      configured: Boolean(snapshot.settings.discord.token),
+      allowedUserCount: snapshot.settings.discord.allowedUserIds.length,
     },
     session: session
       ? {
