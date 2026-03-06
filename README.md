@@ -56,45 +56,20 @@ The setup wizard walks you through model, heartbeat, Telegram, and security, the
 
 ## Features
 
-### Core Automation
-
-#### Heartbeat
-Run periodic check-ins on a configurable interval with quiet-hours support.
-- Adjust heartbeat timing at any time.
-- Customize the heartbeat prompt to match your workflow.
-
-#### Cron Jobs
-Schedule any prompt with timezone awareness:
-- Repeating schedules (daily/weekly/custom cron).
-- One-time runs for specific tasks.
-- Reliable execution managed by the runtime.
+### Automation
+- **Heartbeat:** Periodic check-ins with configurable intervals, quiet hours, and editable prompts.
+- **Cron Jobs:** Timezone-aware schedules for repeating or one-time tasks with reliable execution.
 
 ### Communication
+- **Telegram:** Text, image, and voice support.
+- **Discord:** Coming soon.
+- **Time Awareness:** Message time prefixes help the agent understand delays and daily patterns.
 
-#### Channels
-- Telegram: text, image, and voice support.
-- Discord: coming soon.
-
-#### Time Awareness
-Each message can include a time prefix so the agent stays context-aware:
-- Understands delays and timing gaps.
-- Aligns responses with your daily patterns and expected tasks.
-
-### Reliability
-
-#### GLM Fallback
-If your primary model/subscription limit is reached, fallback to GLM models keeps your agent running without interruption.
-
-### Control and Visibility
-
-#### Web Dashboard
-Monitor runs, edit jobs, and inspect logs in real time from a clean, manageable UI.
-
-#### Security Levels
-Choose from four access levels, from read-only to full system access, based on the control you want to grant.
-
-#### Model Selection
-Select the model setup that fits your workload and switch when needed.
+### Reliability and Control
+- **GLM Fallback:** Automatically continue with GLM models if your primary limit is reached.
+- **Web Dashboard:** Manage jobs, monitor runs, and inspect logs in real time.
+- **Security Levels:** Four access levels from read-only to full system access.
+- **Model Selection:** Switch models based on your workload.
 
 ## FAQ
 
