@@ -6,14 +6,17 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/topics/claude-code">
-    <img src="https://img.shields.io/badge/Awesome-Claude%20Projects-0A66C2?style=for-the-badge" alt="Awesome Claude Projects" />
+  <a href="https://awesome.re">
+    <img src="https://awesome.re/badge.svg" alt="Awesome" />
   </a>
-  <a href="https://www.anthropic.com/claude-code">
-    <img src="https://img.shields.io/badge/Built%20for-Claude%20Code-1F8EFA?style=for-the-badge" alt="Built for Claude Code" />
+  <a href="https://github.com/moazbuilds/ClaudeClaw/stargazers">
+    <img src="https://img.shields.io/github/stars/moazbuilds/ClaudeClaw?style=flat-square" alt="GitHub Stars" />
   </a>
-  <a href="https://bun.sh/">
-    <img src="https://img.shields.io/badge/Runtime-Bun-111111?style=for-the-badge" alt="Runtime Bun" />
+  <a href="https://github.com/moazbuilds/ClaudeClaw/commits/master">
+    <img src="https://img.shields.io/github/last-commit/moazbuilds/ClaudeClaw?style=flat-square" alt="Last Commit" />
+  </a>
+  <a href="https://github.com/moazbuilds/ClaudeClaw/issues">
+    <img src="https://img.shields.io/github/issues/moazbuilds/ClaudeClaw?style=flat-square" alt="Open Issues" />
   </a>
 </p>
 
