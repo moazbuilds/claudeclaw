@@ -1,4 +1,5 @@
-![ClaudeClaw](images/banner.png)
+![ClaudeClaw Banner](images/claudeclaw-banner.svg)
+![ClaudeClaw Wordmark](images/claudeclaw-wordmark.png)
 
 <p align="center"><b>A lightweight, open-source OpenClaw version built into your Claude Code.</b></p>
 
