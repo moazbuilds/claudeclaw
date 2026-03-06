@@ -98,6 +98,13 @@ The setup wizard walks you through model, heartbeat, Telegram, and security, the
   </p>
 </details>
 
+<details open>
+  <summary><strong>Are you ready to change this project name?</strong></summary>
+  <p>
+    If it bothers Anthropic, I might rename it to OpenClawd. Not sure yet.
+  </p>
+</details>
+
 ## Screenshots
 
 ### Claude Code Folder-Based Status Bar
