@@ -73,7 +73,7 @@ Pick the model setup that fits your workload and switch when needed.
 
 ## FAQ
 
-### 1. Does ClaudeClaw can do anything?
+### 1. Does ClaudeClaw can do `<something>`?
 Anything that can be done by Claude Code can be done by ClaudeClaw. ClaudeClaw adds cron jobs, heartbeats, and works as a bridge to Telegram.
 
 ### Is this project breaking Anthropic ToS?
