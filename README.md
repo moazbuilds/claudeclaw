@@ -83,9 +83,6 @@ No. Technically, this project is not a third-party OAuth integration. It is loca
 ### 2. Does Anthropic will sue you?
 I hope no.
 
-### 3. Is ClaudeClaw powerful?
-According to your use case.
-
 ## Screenshots
 
 ### Claude Code Folder-Based Status Bar
