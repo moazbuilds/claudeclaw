@@ -38,28 +38,36 @@ The setup wizard walks you through model, heartbeat, Telegram, and security, the
 
 ## Features
 
-### Heartbeat
+### Core Automation
+
+#### Heartbeat
 Periodic check-ins on a configurable interval with quiet hours support. Fully manageable: you can change both the heartbeat schedule and the heartbeat prompt whenever needed.
 
-### Cron Jobs
+#### Cron Jobs
 Run any job on a schedule with timezone awareness, either in repeated patterns or one-time runs. The runtime handles execution flow and keeps the system reliable.
 
-### Channels
+### Communication
+
+#### Channels
 Use Telegram today with text, image, and voice support. Discord support is planned next.
 
-### Time Awareness
+#### Time Awareness
 Every message can include a time prefix so the agent stays aware of timing, understands delays, and aligns better with your daily patterns and expected tasks.
 
-### GLM Fallback
+### Reliability
+
+#### GLM Fallback
 If your main subscription/model limit is hit, you can configure fallback to GLM models so your agent keeps running without stopping.
 
-### Web Dashboard
+### Control and Visibility
+
+#### Web Dashboard
 Monitor runs, edit jobs, and inspect logs in real time from a manageable UI.
 
-### Security Levels
+#### Security Levels
 Use four access levels from read-only to full system access, depending on how much control you want to grant.
 
-### Model Selection
+#### Model Selection
 Pick the model setup that fits your workload and switch when needed.
 
 ## Screenshots
