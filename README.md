@@ -87,6 +87,7 @@ The setup wizard walks you through model, heartbeat, Telegram, and security, the
   <p>
     No. ClaudeClaw is local usage inside the Claude Code ecosystem. It wraps Claude Code
     directly and does not require third-party OAuth outside that flow.
+    If you build your own scripts to do the same thing, it would be the same.
   </p>
 </details>
 
