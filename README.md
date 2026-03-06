@@ -49,7 +49,8 @@ Run any job on a schedule with timezone awareness, either in repeated patterns o
 ### Communication
 
 #### Channels
-Use Telegram today with text, image, and voice support. Discord support is planned next.
+- Telegram: text, image, and voice support.
+- Discord: coming soon.
 
 #### Time Awareness
 Every message can include a time prefix so the agent stays aware of timing, understands delays, and aligns better with your daily patterns and expected tasks.
