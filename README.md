@@ -91,7 +91,7 @@ Pick the model setup that fits your workload and switch when needed.
 
 ## FAQ
 
-<details>
+<details open>
   <summary><strong>Can ClaudeClaw do &lt;something&gt;?</strong></summary>
   <p>
     If Claude Code can do it, ClaudeClaw can do it too. ClaudeClaw adds cron jobs,
@@ -100,7 +100,7 @@ Pick the model setup that fits your workload and switch when needed.
   </p>
 </details>
 
-<details>
+<details open>
   <summary><strong>Is this project breaking Anthropic ToS?</strong></summary>
   <p>
     No. ClaudeClaw is local usage inside the Claude Code ecosystem. It wraps Claude Code
@@ -108,7 +108,7 @@ Pick the model setup that fits your workload and switch when needed.
   </p>
 </details>
 
-<details>
+<details open>
   <summary><strong>Will Anthropic come after me for using ClaudeClaw?</strong></summary>
   <p>
     This project is designed for normal local automation use. Use it responsibly and
