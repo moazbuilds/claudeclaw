@@ -11,11 +11,16 @@ ClaudeClaw turns your Claude Code into a personal assistant that never sleeps. I
 
 ## Why ClaudeClaw?
 
-**Zero API overhead.** No separate API keys, no token accounting, no billing surprises. Runs entirely within your Claude Code subscription with smart context management.
-
-**Deploy in minutes.** One plugin install and one command gets you a running daemon with Telegram. No containers, no infrastructure, no dependency headaches.
-
-**Built-in observability.** A web dashboard to monitor runs, edit scheduled jobs, and inspect logs in real time.
+| Category | OpenClaw | ClaudeClaw |
+| --- | --- | --- |
+| API Overhead | Extra API overhead | Directly uses your Claude Code subscription |
+| Setup & Installation | Nightmare | ~5 minutes |
+| Deployment | Nightmare | Install Claude Code on any device and run |
+| Feature Scope | 600k+ LOC; you'll likely use a small part | Lightweight features you actually use |
+| UI & Observability | No | Yes, with a manageable dashboard |
+| Legal Risk | High concern | No |
+| Cost Efficiency | Burns tokens fast | Efficient usage |
+| Memory | Nightmare | Uses Claude internal memory system + `CLAUDE.md` |
 
 ## Getting Started in 5 Minutes
 
