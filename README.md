@@ -91,7 +91,7 @@ The setup wizard walks you through model, heartbeat, Telegram, and security, the
 </details>
 
 <details open>
-  <summary><strong>Will Anthropic come after me for using ClaudeClaw?</strong></summary>
+  <summary><strong>Will Anthropic sue you for using ClaudeClaw?</strong></summary>
   <p>
     This project is designed for normal local automation use. Use it responsibly and
     follow applicable terms and laws.
