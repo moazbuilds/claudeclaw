@@ -18,9 +18,8 @@ ClaudeClaw turns your Claude Code into a personal assistant that never sleeps. I
 | Deployment | Install Claude Code on any device or VPS and run | Nightmare |
 | Isolation Model | Folder-based and isolated as needed | Global by default (security risk) |
 | Feature Scope | Lightweight features you actually use | 600k+ LOC nightmare |
-| UI & Observability | Yes, with a manageable dashboard | No |
 | Security | Average Claude Code usage | Nightmare |
-| Legal Risk | No | High concern |
+| Anthropic Will Sue You | No | Yes |
 | Cost Efficiency | Efficient usage | Burns tokens fast |
 | Memory | Uses Claude internal memory system + `CLAUDE.md` | Nightmare |
 
