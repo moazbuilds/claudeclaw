@@ -91,15 +91,30 @@ Pick the model setup that fits your workload and switch when needed.
 
 ## FAQ
 
-### 1. Does ClaudeClaw can do `<something>`?
-Anything that can be done by Claude Code can be done by ClaudeClaw. ClaudeClaw adds cron jobs, heartbeats, and works as a bridge to Telegram.
-Give your ClaudeClaw any skills or teach it anything.
+<details>
+  <summary><strong>Can ClaudeClaw do &lt;something&gt;?</strong></summary>
+  <p>
+    If Claude Code can do it, ClaudeClaw can do it too. ClaudeClaw adds cron jobs,
+    heartbeats, and a Telegram bridge on top. You can also give your ClaudeClaw new
+    skills and teach it custom workflows.
+  </p>
+</details>
 
-### Is this project breaking Anthropic ToS?
-No. Technically, this project is not a third-party OAuth integration. It is local usage inside the Claude Code ecosystem and directly wraps Claude Code. If you build your own scripts to do the same, it would not be considered ToS-breaking.
+<details>
+  <summary><strong>Is this project breaking Anthropic ToS?</strong></summary>
+  <p>
+    No. ClaudeClaw is local usage inside the Claude Code ecosystem. It wraps Claude Code
+    directly and does not require third-party OAuth outside that flow.
+  </p>
+</details>
 
-### 2. Does Anthropic will sue you?
-I hope no.
+<details>
+  <summary><strong>Will Anthropic come after me for using ClaudeClaw?</strong></summary>
+  <p>
+    This project is designed for normal local automation use. Use it responsibly and
+    follow applicable terms and laws.
+  </p>
+</details>
 
 ## Screenshots
 
