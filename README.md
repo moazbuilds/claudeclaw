@@ -73,6 +73,8 @@ Pick the model setup that fits your workload and switch when needed.
 
 ## Screenshots
 
+### Claude Code Folder-Based Status Bar
 ![Claude Code folder-based status bar](images/bar.png)
 
+### Cool UI to Manage and Check Your ClaudeClaw
 ![Cool UI to manage and check your ClaudeClaw](images/dashboard.png)
