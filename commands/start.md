@@ -93,6 +93,10 @@ Start the heartbeat daemon for this project. Follow these steps exactly:
      - "Allow any specific tools on top of the security level? (e.g. Bash(git:*) to allow only git commands)" (header: "Allow tools", options: "None — use level defaults (Recommended)", "Bash(git:*) — git only", "Bash(git:*) Bash(npm:*) — git + npm")
      - If they pick an option with tools or type custom ones, set `security.allowedTools` to the list.
 
+   - **If security is NOT "unrestricted"**: Use AskUserQuestion to ask:
+     - "Want to grant access to directories outside this project? (e.g. ~/.ssh, shared config)" (header: "Additional Directories", options: "None", "Yes, I'll list them")
+     - If yes, ask in normal free-form text for absolute directory paths (one per line or comma-separated). Validate each path exists and is absolute. Set `additionalDirs` to the validated list.
+
    Update `.claude/claudeclaw/settings.json` with their answers.
 
 6. **Launch/start action**:
@@ -171,7 +175,8 @@ Defaults: `WEB_HOST=127.0.0.1`, `WEB_PORT=4632` unless changed via settings or `
     "level": "moderate",
     "allowedTools": [],
     "disallowedTools": []
-  }
+  },
+  "additionalDirs": ["/Users/morgan/.ssh"]
 }
 ```
 - `model` — Claude model to use (`opus`, `sonnet`, `haiku`, `glm`, or full model ID). Empty string uses default.
@@ -187,6 +192,7 @@ Defaults: `WEB_HOST=127.0.0.1`, `WEB_PORT=4632` unless changed via settings or `
 - `security.level` — one of: `locked`, `strict`, `moderate`, `unrestricted`
 - `security.allowedTools` — extra tools to allow on top of the level (e.g. `["Bash(git:*)"]`)
 - `security.disallowedTools` — tools to block on top of the level
+- `additionalDirs` — absolute paths to directories Claude can access beyond the project root (only relevant when security is not `unrestricted`)
 
 ### Security Levels
 All levels run without permission prompts (headless). Security is enforced via tool restrictions and project-directory scoping.

@@ -93,12 +93,22 @@ async function runClaudeOnce(
 
 const PROJECT_DIR = process.cwd();
 
-const DIR_SCOPE_PROMPT = [
-  `CRITICAL SECURITY CONSTRAINT: You are scoped to the project directory: ${PROJECT_DIR}`,
-  "You MUST NOT read, write, edit, or delete any file outside this directory.",
-  "You MUST NOT run bash commands that modify anything outside this directory (no cd /, no /etc, no ~/, no ../.. escapes).",
-  "If a request requires accessing files outside the project, refuse and explain why.",
-].join("\n");
+function buildDirScopePrompt(additionalDirs: string[]): string {
+  const parts = [
+    `CRITICAL SECURITY CONSTRAINT: You are scoped to the project directory: ${PROJECT_DIR}`,
+  ];
+  if (additionalDirs.length > 0) {
+    parts.push(
+      `You also have access to these additional directories:\n${additionalDirs.map((d) => `  - ${d}`).join("\n")}`
+    );
+  }
+  parts.push(
+    "You MUST NOT read, write, edit, or delete any file outside these allowed directories.",
+    "You MUST NOT run bash commands that modify anything outside these directories.",
+    "If a request requires accessing files outside the allowed directories, refuse and explain why.",
+  );
+  return parts.join("\n");
+}
 
 export async function ensureProjectClaudeMd(): Promise<void> {
   // Preflight-only initialization: never rewrite an existing project CLAUDE.md.
@@ -210,7 +220,7 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const logFile = join(LOGS_DIR, `${name}-${timestamp}.log`);
 
-  const { security, model, api, fallback } = getSettings();
+  const { security, model, api, fallback, additionalDirs } = getSettings();
   const primaryConfig: ModelConfig = { model, api };
   const fallbackConfig: ModelConfig = {
     model: fallback?.model ?? "",
@@ -226,6 +236,10 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
   // Resumed session: use text output with --resume
   const outputFormat = isNew ? "json" : "text";
   const args = ["claude", "-p", prompt, "--output-format", outputFormat, ...securityArgs];
+
+  for (const dir of additionalDirs) {
+    args.push("--add-dir", dir);
+  }
 
   if (!isNew) {
     args.push("--resume", existing.sessionId);
@@ -250,7 +264,7 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
     }
   }
 
-  if (security.level !== "unrestricted") appendParts.push(DIR_SCOPE_PROMPT);
+  if (security.level !== "unrestricted") appendParts.push(buildDirScopePrompt(additionalDirs));
   if (appendParts.length > 0) {
     args.push("--append-system-prompt", appendParts.join("\n\n"));
   }

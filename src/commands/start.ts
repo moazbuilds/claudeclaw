@@ -323,6 +323,8 @@ export async function start(args: string[] = []) {
     console.log(`    + allowed: ${settings.security.allowedTools.join(", ")}`);
   if (settings.security.disallowedTools.length > 0)
     console.log(`    - blocked: ${settings.security.disallowedTools.join(", ")}`);
+  if (settings.additionalDirs.length > 0)
+    console.log(`  Additional dirs: ${settings.additionalDirs.join(", ")}`);
   console.log(`  Heartbeat: ${settings.heartbeat.enabled ? `every ${settings.heartbeat.interval}m` : "disabled"}`);
   console.log(`  Web UI: ${webEnabled ? `http://${settings.web.host}:${webPort}` : "disabled"}`);
   if (debugFlag) console.log("  Debug: enabled");
@@ -574,6 +576,12 @@ export async function start(args: string[] = []) {
 
       if (secChanged) {
         console.log(`[${ts()}] Security level changed → ${newSettings.security.level}`);
+      }
+
+      const dirsChanged =
+        newSettings.additionalDirs.join(",") !== currentSettings.additionalDirs.join(",");
+      if (dirsChanged) {
+        console.log(`[${ts()}] Additional directories changed → [${newSettings.additionalDirs.join(", ")}]`);
       }
 
       if (hbChanged) {

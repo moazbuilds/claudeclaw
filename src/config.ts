@@ -27,6 +27,7 @@ const DEFAULT_SETTINGS: Settings = {
   security: { level: "moderate", allowedTools: [], disallowedTools: [] },
   web: { enabled: false, host: "127.0.0.1", port: 4632 },
   stt: { baseUrl: "", model: "" },
+  additionalDirs: [],
 };
 
 export interface HeartbeatExcludeWindow {
@@ -70,6 +71,7 @@ export interface Settings {
   security: SecurityConfig;
   web: WebConfig;
   stt: SttConfig;
+  additionalDirs: string[];
 }
 
 export interface ModelConfig {
@@ -157,6 +159,11 @@ function parseSettings(raw: Record<string, any>): Settings {
       baseUrl: typeof raw.stt?.baseUrl === "string" ? raw.stt.baseUrl.trim() : "",
       model: typeof raw.stt?.model === "string" ? raw.stt.model.trim() : "",
     },
+    additionalDirs: Array.isArray(raw.additionalDirs)
+      ? raw.additionalDirs
+          .filter((d: unknown) => typeof d === "string" && d.trim().length > 0 && isAbsolute(d.trim()))
+          .map((d: string) => d.trim())
+      : [],
   };
 }
 
