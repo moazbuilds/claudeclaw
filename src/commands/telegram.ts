@@ -80,6 +80,7 @@ interface TelegramMessage {
   from?: TelegramUser;
   reply_to_message?: { message_id?: number; from?: TelegramUser };
   chat: { id: number; type: string };
+  message_thread_id?: number;
   text?: string;
   caption?: string;
   photo?: TelegramPhotoSize[];
@@ -268,7 +269,7 @@ async function callApi<T>(token: string, method: string, body?: Record<string, u
   return (await res.json()) as T;
 }
 
-async function sendMessage(token: string, chatId: number, text: string): Promise<void> {
+async function sendMessage(token: string, chatId: number, text: string, threadId?: number): Promise<void> {
   const normalized = normalizeTelegramText(text).replace(/\[react:[^\]\r\n]+\]/gi, "");
   const html = markdownToTelegramHtml(normalized);
   const MAX_LEN = 4096;
@@ -278,19 +279,25 @@ async function sendMessage(token: string, chatId: number, text: string): Promise
         chat_id: chatId,
         text: html.slice(i, i + MAX_LEN),
         parse_mode: "HTML",
+        ...(threadId ? { message_thread_id: threadId } : {}),
       });
     } catch {
       // Fallback to plain text if HTML parsing fails
       await callApi(token, "sendMessage", {
         chat_id: chatId,
         text: normalized.slice(i, i + MAX_LEN),
+        ...(threadId ? { message_thread_id: threadId } : {}),
       });
     }
   }
 }
 
-async function sendTyping(token: string, chatId: number): Promise<void> {
-  await callApi(token, "sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {});
+async function sendTyping(token: string, chatId: number, threadId?: number): Promise<void> {
+  await callApi(token, "sendChatAction", {
+    chat_id: chatId,
+    action: "typing",
+    ...(threadId ? { message_thread_id: threadId } : {}),
+  }).catch(() => {});
 }
 
 function extractReactionDirective(text: string): { cleanedText: string; reactionEmoji: string | null } {
@@ -456,6 +463,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
   const config = getSettings().telegram;
   const userId = message.from?.id;
   const chatId = message.chat.id;
+  const threadId = message.message_thread_id;
   const { text } = getMessageTextAndEntities(message);
   const chatType = message.chat.type;
   const isPrivate = chatType === "private";
@@ -496,14 +504,15 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     await sendMessage(
       config.token,
       chatId,
-      "Hello! Send me a message and I'll respond using Claude.\nUse /reset to start a fresh session."
+      "Hello! Send me a message and I'll respond using Claude.\nUse /reset to start a fresh session.",
+      threadId
     );
     return;
   }
 
   if (command === "/reset") {
     await resetSession();
-    await sendMessage(config.token, chatId, "Global session reset. Next message starts fresh.");
+    await sendMessage(config.token, chatId, "Global session reset. Next message starts fresh.", threadId);
     return;
   }
 
@@ -520,7 +529,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ text }),
           });
-          await sendMessage(config.token, chatId, `✅ Sent custom reply + pattern learned.`);
+          await sendMessage(config.token, chatId, `✅ Sent custom reply + pattern learned.`, threadId);
           return;
         }
       }
@@ -537,10 +546,10 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
   );
 
   // Keep typing indicator alive while queued/running
-  const typingInterval = setInterval(() => sendTyping(config.token, chatId), 4000);
+  const typingInterval = setInterval(() => sendTyping(config.token, chatId, threadId), 4000);
 
   try {
-    await sendTyping(config.token, chatId);
+    await sendTyping(config.token, chatId, threadId);
     let imagePath: string | null = null;
     let voicePath: string | null = null;
     let voiceTranscript: string | null = null;
@@ -572,6 +581,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     }
 
     const promptParts = [`[Telegram from ${label}]`];
+    if (threadId) promptParts.push(`[thread:${threadId}]`);
     if (text.trim()) promptParts.push(`Message: ${text}`);
     if (imagePath) {
       promptParts.push(`Image path: ${imagePath}`);
@@ -591,7 +601,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     const result = await runUserMessage("telegram", prefixedPrompt);
 
     if (result.exitCode !== 0) {
-      await sendMessage(config.token, chatId, `Error (exit ${result.exitCode}): ${result.stderr || "Unknown error"}`);
+      await sendMessage(config.token, chatId, `Error (exit ${result.exitCode}): ${result.stderr || "Unknown error"}`, threadId);
     } else {
       const { cleanedText, reactionEmoji } = extractReactionDirective(result.stdout || "");
       if (reactionEmoji) {
@@ -599,12 +609,12 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
           console.error(`[Telegram] Failed to send reaction for ${label}: ${err instanceof Error ? err.message : err}`);
         });
       }
-      await sendMessage(config.token, chatId, cleanedText || "(empty response)");
+      await sendMessage(config.token, chatId, cleanedText || "(empty response)", threadId);
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     console.error(`[Telegram] Error for ${label}: ${errMsg}`);
-    await sendMessage(config.token, chatId, `Error: ${errMsg}`);
+    await sendMessage(config.token, chatId, `Error: ${errMsg}`, threadId);
   } finally {
     clearInterval(typingInterval);
   }
