@@ -222,10 +222,10 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
     `[${new Date().toLocaleTimeString()}] Running: ${name} (${isNew ? "new session" : `resume ${existing.sessionId.slice(0, 8)}`}, security: ${security.level})`
   );
 
-  // New session: use json output to capture Claude's session_id
-  // Resumed session: use text output with --resume
-  const outputFormat = isNew ? "json" : "text";
-  const args = ["claude", "-p", prompt, "--output-format", outputFormat, ...securityArgs];
+  // Always use json output to get the full concatenated result text.
+  // With --output-format text, only the last text segment (after the final
+  // tool call) is emitted, silently dropping earlier assistant text.
+  const args = ["claude", "-p", prompt, "--output-format", "json", ...securityArgs];
 
   if (!isNew) {
     args.push("--resume", existing.sessionId);
@@ -282,17 +282,22 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
     stdout = rateLimitMessage;
   }
 
-  // For new sessions, parse the JSON to extract session_id and result text
-  if (!rateLimitMessage && isNew && exitCode === 0) {
+  // Parse JSON output to extract the full result text.
+  // json format always returns {session_id, result, ...} and the result
+  // field contains ALL assistant text segments concatenated, unlike text
+  // format which only emits the final segment after the last tool call.
+  if (!rateLimitMessage && exitCode === 0) {
     try {
       const json = JSON.parse(rawStdout);
-      sessionId = json.session_id;
+      sessionId = json.session_id ?? sessionId;
       stdout = json.result ?? "";
-      // Save the real session ID from Claude Code
-      await createSession(sessionId);
-      console.log(`[${new Date().toLocaleTimeString()}] Session created: ${sessionId}`);
+      if (isNew) {
+        await createSession(sessionId);
+        console.log(`[${new Date().toLocaleTimeString()}] Session created: ${sessionId}`);
+      }
     } catch (e) {
-      console.error(`[${new Date().toLocaleTimeString()}] Failed to parse session from Claude output:`, e);
+      // If JSON parsing fails, fall back to raw stdout
+      console.error(`[${new Date().toLocaleTimeString()}] Failed to parse JSON output, using raw:`, e);
     }
   }
 
