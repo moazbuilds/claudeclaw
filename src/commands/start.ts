@@ -513,7 +513,7 @@ export async function start(args: string[] = []) {
           return run("heartbeat", mergedPrompt);
         })
         .then((r) => {
-          if (r) forwardToTelegram("", r);
+          if (r && !r.stdout.trim().startsWith("HEARTBEAT_OK")) forwardToTelegram("", r);
         });
       nextHeartbeatAt = nextAllowedHeartbeatAt(
         currentSettings.heartbeat,
