@@ -23,7 +23,7 @@
 
 <p align="center"><b>A lightweight, open-source OpenClaw version built into your Claude Code.</b></p>
 
-ClaudeClaw turns your Claude Code into a personal assistant that never sleeps. It runs as a background daemon, executing tasks on a schedule, responding to messages on Telegram, transcribing voice commands, and integrating with any service you need.
+ClaudeClaw turns your Claude Code into a personal assistant that never sleeps. It runs as a background daemon, executing tasks on a schedule, responding to messages on Telegram and Discord, transcribing voice commands, and integrating with any service you need.
 
 > Note: Please don't use ClaudeClaw for hacking any bank system or doing any illegal activities. Thank you.
 
@@ -52,7 +52,7 @@ Then open a Claude Code session and run:
 ```
 /claudeclaw:start
 ```
-The setup wizard walks you through model, heartbeat, Telegram, and security, then your daemon is live with a web dashboard.
+The setup wizard walks you through model, heartbeat, Telegram, Discord, and security, then your daemon is live with a web dashboard.
 
 ## What Would Be Built Next?
 
@@ -73,7 +73,7 @@ The setup wizard walks you through model, heartbeat, Telegram, and security, the
 
 ### Communication
 - **Telegram:** Text, image, and voice support.
-- **Discord:** Coming soon.
+- **Discord:** DMs, server mentions/replies, slash commands, voice messages, and image attachments.
 - **Time Awareness:** Message time prefixes help the agent understand delays and daily patterns.
 
 ### Reliability and Control
@@ -88,7 +88,7 @@ The setup wizard walks you through model, heartbeat, Telegram, and security, the
   <summary><strong>Can ClaudeClaw do &lt;something&gt;?</strong></summary>
   <p>
     If Claude Code can do it, ClaudeClaw can do it too. ClaudeClaw adds cron jobs,
-    heartbeats, and a Telegram bridge on top. You can also give your ClaudeClaw new
+    heartbeats, and Telegram/Discord bridges on top. You can also give your ClaudeClaw new
     skills and teach it custom workflows.
   </p>
 </details>
