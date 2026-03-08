@@ -89,7 +89,7 @@ Start the heartbeat daemon for this project. Follow these steps exactly:
      - Discord bot token (hint: create a bot at https://discord.com/developers/applications → Bot → Token. Enable **Message Content Intent** under Privileged Gateway Intents.)
      - Allowed Discord user IDs (hint: enable Developer Mode in Discord settings → right-click your profile → Copy User ID). These are large numbers — they will be stored as strings.
      - Set `discord.token` and `discord.allowedUserIds` (as array of strings) accordingly.
-     - Note: Discord bot connects via WebSocket gateway in-process with the daemon. It supports DMs, guild mentions/replies, slash commands (/start, /reset), voice messages, and image attachments.
+     - Note: Discord bot connects via WebSocket gateway in-process with the daemon. It supports DMs, guild mentions/replies, slash commands (/start, /reset), voice messages, and image attachments. `discord.allowedUserIds` is an allowlist that applies to messages, slash commands, and button interactions.
 
    - **Security level mapping** — set `security.level` in settings based on their choice:
      - "Locked" → `"locked"`
@@ -142,7 +142,7 @@ CRITICAL: Output the ASCII art block below EXACTLY as-is inside a markdown code 
 Go to your bot, send `/start`, and start talking.
 
 **To start chatting on Discord**
-Add your bot to a server, then mention it or DM it. Use `/start` and `/reset` slash commands.
+Add your bot to a server, then mention it or DM it. Use `/start` and `/reset` slash commands (restricted by `discord.allowedUserIds` when configured).
 
 **To talk to your agent directly on Claude Code**
 `cd <WORKING_DIR> && claude --resume <SESSION_ID>`

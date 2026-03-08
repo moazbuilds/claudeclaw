@@ -8,7 +8,7 @@ export async function send(args: string[]) {
   const message = args.filter((a) => a !== "--telegram" && a !== "--discord").join(" ");
 
   if (!message) {
-    console.error("Usage: claudeclaw send <message> [--telegram]");
+    console.error("Usage: claudeclaw send <message> [--telegram] [--discord]");
     process.exit(1);
   }
 

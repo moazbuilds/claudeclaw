@@ -95,6 +95,7 @@ interface GatewayPayload {
 let ws: WebSocket | null = null;
 let heartbeatIntervalMs = 0;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let heartbeatJitterTimer: ReturnType<typeof setTimeout> | null = null;
 let lastSequence: number | null = null;
 let gatewaySessionId: string | null = null;
 let resumeGatewayUrl: string | null = null;
@@ -456,6 +457,14 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
 // --- Interaction handler (slash commands + secretary buttons) ---
 
 async function handleInteractionCreate(token: string, interaction: DiscordInteraction): Promise<void> {
+  const config = getSettings().discord;
+  const actorId = interaction.member?.user?.id ?? interaction.user?.id;
+
+  if (config.allowedUserIds.length > 0 && (!actorId || !config.allowedUserIds.includes(actorId))) {
+    await respondToInteraction(interaction, { content: "Unauthorized.", flags: 64 });
+    return;
+  }
+
   // Slash commands (type 2)
   if (interaction.type === 2 && interaction.data?.name) {
     if (interaction.data.name === "start") {
@@ -565,7 +574,10 @@ function sendHeartbeat(): void {
 function startHeartbeat(): void {
   stopHeartbeat();
   // First heartbeat with jitter per Discord spec
-  setTimeout(sendHeartbeat, Math.random() * heartbeatIntervalMs);
+  heartbeatJitterTimer = setTimeout(() => {
+    heartbeatJitterTimer = null;
+    sendHeartbeat();
+  }, Math.random() * heartbeatIntervalMs);
   heartbeatTimer = setInterval(() => {
     if (!heartbeatAcked) {
       debugLog("Heartbeat not acked, reconnecting");
@@ -579,6 +591,20 @@ function startHeartbeat(): void {
 function stopHeartbeat(): void {
   if (heartbeatTimer) clearInterval(heartbeatTimer);
   heartbeatTimer = null;
+  if (heartbeatJitterTimer) clearTimeout(heartbeatJitterTimer);
+  heartbeatJitterTimer = null;
+}
+
+function resetGatewayState(): void {
+  heartbeatIntervalMs = 0;
+  heartbeatAcked = true;
+  lastSequence = null;
+  gatewaySessionId = null;
+  resumeGatewayUrl = null;
+  readyGuildIds = null;
+  botUserId = null;
+  botUsername = null;
+  applicationId = null;
 }
 
 function sendIdentify(token: string): void {
@@ -757,19 +783,34 @@ function connectGateway(token: string, url?: string): void {
 /** Send a message to a specific channel (used by heartbeat forwarding) */
 export { sendMessage, sendMessageToUser };
 
-process.on("SIGTERM", () => {
+/** Stop gateway connection and clear runtime state (used for token rotation/hot reload). */
+export function stopGateway(): void {
   running = false;
-  ws?.close(1000);
+  stopHeartbeat();
+  if (ws) {
+    try {
+      ws.close(1000, "Gateway stop requested");
+    } catch {
+      // best-effort
+    }
+    ws = null;
+  }
+  resetGatewayState();
+}
+
+process.on("SIGTERM", () => {
+  stopGateway();
 });
 process.on("SIGINT", () => {
-  running = false;
-  ws?.close(1000);
+  stopGateway();
 });
 
 /** Start gateway connection in-process (called by start.ts when token is configured) */
 export function startGateway(debug = false): void {
   discordDebug = debug;
   const config = getSettings().discord;
+  if (ws) stopGateway();
+  running = true;
   console.log("Discord bot started (gateway)");
   console.log(`  Allowed users: ${config.allowedUserIds.length === 0 ? "all" : config.allowedUserIds.join(", ")}`);
   if (discordDebug) console.log("  Debug: enabled");

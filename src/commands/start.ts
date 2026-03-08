@@ -241,7 +241,7 @@ export async function start(args: string[] = []) {
   }
   const payload = payloadParts.join(" ").trim();
   if (hasPromptFlag && !payload) {
-    console.error("Usage: claudeclaw start --prompt <prompt> [--trigger] [--telegram] [--debug] [--web] [--web-port <port>] [--replace-existing]");
+    console.error("Usage: claudeclaw start --prompt <prompt> [--trigger] [--telegram] [--discord] [--debug] [--web] [--web-port <port>] [--replace-existing]");
     process.exit(1);
   }
   if (!hasPromptFlag && payload) {
@@ -266,7 +266,7 @@ export async function start(args: string[] = []) {
     const existingPid = await checkExistingDaemon();
     if (existingPid) {
       console.error(`\x1b[31mAborted: daemon already running in this directory (PID ${existingPid})\x1b[0m`);
-      console.error("Use `claudeclaw send <message> [--telegram]` while daemon is running.");
+      console.error("Use `claudeclaw send <message> [--telegram] [--discord]` while daemon is running.");
       process.exit(1);
     }
 
@@ -317,8 +317,10 @@ export async function start(args: string[] = []) {
   await setupStatusline();
   await writePidFile();
   let web: WebServerHandle | null = null;
+  let discordStopGateway: (() => void) | null = null;
 
   async function shutdown() {
+    if (discordStopGateway) discordStopGateway();
     if (web) web.stop();
     await teardownStatusline();
     await cleanupPidFile();
@@ -374,12 +376,16 @@ export async function start(args: string[] = []) {
 
   async function initDiscord(token: string) {
     if (token && token !== discordToken) {
-      const { startGateway, sendMessageToUser } = await import("./discord");
+      const { startGateway, sendMessageToUser, stopGateway } = await import("./discord");
+      if (discordToken) stopGateway();
       startGateway(debugFlag);
+      discordStopGateway = stopGateway;
       discordSendToUser = (userId, text) => sendMessageToUser(token, userId, text);
       discordToken = token;
       console.log(`[${ts()}] Discord: enabled`);
     } else if (!token && discordToken) {
+      if (discordStopGateway) discordStopGateway();
+      discordStopGateway = null;
       discordSendToUser = null;
       discordToken = "";
       console.log(`[${ts()}] Discord: disabled`);
