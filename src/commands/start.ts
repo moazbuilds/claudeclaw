@@ -563,8 +563,12 @@ export async function start(args: string[] = []) {
           return run("heartbeat", mergedPrompt);
         })
         .then((r) => {
-          if (r) forwardToTelegram("", r);
-          if (r) forwardToDiscord("", r);
+          if (!r) return;
+          const shouldForward = currentSettings.heartbeat.forwardToTelegram || !r.stdout.trim().startsWith("HEARTBEAT_OK");
+          if (shouldForward) {
+            forwardToTelegram("", r);
+            forwardToDiscord("", r);
+          }
         });
       nextHeartbeatAt = nextAllowedHeartbeatAt(
         currentSettings.heartbeat,
