@@ -5,7 +5,6 @@ description: Show Discord bot status and manage global session
 Show the Discord bot integration status. Check the following:
 
 1. **Configuration**: Read `.claude/claudeclaw/settings.json` and check if `discord.token` is set (show masked token: first 5 chars + "..."). Show `allowedUserIds`.
-   - Note: `allowedUserIds` is an allowlist for all Discord interactions (DM/guild messages, slash commands, and buttons). Empty list means allow all users.
 
 2. **Global Session**: Read `.claude/claudeclaw/session.json` and show:
    - Session UUID (first 8 chars)

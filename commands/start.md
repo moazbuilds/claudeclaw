@@ -142,7 +142,7 @@ CRITICAL: Output the ASCII art block below EXACTLY as-is inside a markdown code 
 Go to your bot, send `/start`, and start talking.
 
 **To start chatting on Discord**
-Add your bot to a server, then mention it or DM it. Use `/start` and `/reset` slash commands (restricted by `discord.allowedUserIds` when configured).
+Add your bot to a server, then mention it or DM it. Use `/start` and `/reset` slash commands.
 
 **To talk to your agent directly on Claude Code**
 `cd <WORKING_DIR> && claude --resume <SESSION_ID>`
