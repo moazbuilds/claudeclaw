@@ -9,6 +9,8 @@ const LOGS_DIR = join(process.cwd(), ".claude/claudeclaw/logs");
 // Resolve prompts relative to the claudeclaw installation, not the project dir
 const PROMPTS_DIR = join(import.meta.dir, "..", "prompts");
 const HEARTBEAT_PROMPT_FILE = join(PROMPTS_DIR, "heartbeat", "HEARTBEAT.md");
+// Project-level prompt overrides live here (gitignored, user-owned)
+const PROJECT_PROMPTS_DIR = join(process.cwd(), ".claude", "claudeclaw", "prompts");
 const PROJECT_CLAUDE_MD = join(process.cwd(), "CLAUDE.md");
 const LEGACY_PROJECT_CLAUDE_MD = join(process.cwd(), ".claude", "CLAUDE.md");
 const CLAUDECLAW_BLOCK_START = "<!-- claudeclaw:managed:start -->";
@@ -46,6 +48,14 @@ function sameModelConfig(a: ModelConfig, b: ModelConfig): boolean {
 
 function hasModelConfig(value: ModelConfig): boolean {
   return value.model.trim().length > 0 || value.api.trim().length > 0;
+}
+
+function isNotFoundError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = (error as { code?: unknown }).code;
+  if (code === "ENOENT") return true;
+  const message = String((error as { message?: unknown }).message ?? "");
+  return /enoent|no such file or directory/i.test(message);
 }
 
 function buildChildEnv(baseEnv: Record<string, string>, model: string, api: string): Record<string, string> {
@@ -193,13 +203,24 @@ async function loadPrompts(): Promise<string> {
   return parts.join("\n\n");
 }
 
+/**
+ * Load the heartbeat prompt template.
+ * Project-level override takes precedence: place a file at
+ * .claude/claudeclaw/prompts/HEARTBEAT.md to fully replace the built-in template.
+ */
 export async function loadHeartbeatPromptTemplate(): Promise<string> {
-  try {
-    const content = await Bun.file(HEARTBEAT_PROMPT_FILE).text();
-    return content.trim();
-  } catch {
-    return "";
+  const projectOverride = join(PROJECT_PROMPTS_DIR, "HEARTBEAT.md");
+  for (const file of [projectOverride, HEARTBEAT_PROMPT_FILE]) {
+    try {
+      const content = await Bun.file(file).text();
+      if (content.trim()) return content.trim();
+    } catch (e) {
+      if (!isNotFoundError(e)) {
+        console.warn(`[${new Date().toLocaleTimeString()}] Failed to read heartbeat prompt file ${file}:`, e);
+      }
+    }
   }
+  return "";
 }
 
 async function execClaude(name: string, prompt: string): Promise<RunResult> {
