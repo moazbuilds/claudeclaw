@@ -15,6 +15,11 @@ const DEFAULT_SETTINGS: Settings = {
     model: "",
     api: "",
   },
+  agentic: {
+    enabled: false,
+    planningModel: "opus",
+    implementationModel: "sonnet",
+  },
   timezone: "UTC",
   timezoneOffsetMinutes: 0,
   heartbeat: {
@@ -63,6 +68,7 @@ export interface Settings {
   model: string;
   api: string;
   fallback: ModelConfig;
+  agentic: AgenticConfig;
   timezone: string;
   timezoneOffsetMinutes: number;
   heartbeat: HeartbeatConfig;
@@ -70,6 +76,12 @@ export interface Settings {
   security: SecurityConfig;
   web: WebConfig;
   stt: SttConfig;
+}
+
+export interface AgenticConfig {
+  enabled: boolean;
+  planningModel: string;
+  implementationModel: string;
 }
 
 export interface ModelConfig {
@@ -126,6 +138,11 @@ function parseSettings(raw: Record<string, any>): Settings {
     fallback: {
       model: typeof raw.fallback?.model === "string" ? raw.fallback.model.trim() : "",
       api: typeof raw.fallback?.api === "string" ? raw.fallback.api.trim() : "",
+    },
+    agentic: {
+      enabled: raw.agentic?.enabled ?? false,
+      planningModel: typeof raw.agentic?.planningModel === "string" ? raw.agentic.planningModel.trim() : "opus",
+      implementationModel: typeof raw.agentic?.implementationModel === "string" ? raw.agentic.implementationModel.trim() : "sonnet",
     },
     timezone: parsedTimezone,
     timezoneOffsetMinutes: parseTimezoneOffsetMinutes(raw.timezoneOffsetMinutes, parsedTimezone),

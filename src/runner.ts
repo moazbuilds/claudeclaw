@@ -4,6 +4,7 @@ import { existsSync } from "fs";
 import { getSession, createSession } from "./sessions";
 import { getSettings, type ModelConfig, type SecurityConfig } from "./config";
 import { buildClockPromptPrefix } from "./timezone";
+import { selectModel } from "./model-router";
 
 const LOGS_DIR = join(process.cwd(), ".claude/claudeclaw/logs");
 // Resolve prompts relative to the claudeclaw installation, not the project dir
@@ -210,8 +211,25 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const logFile = join(LOGS_DIR, `${name}-${timestamp}.log`);
 
-  const { security, model, api, fallback } = getSettings();
-  const primaryConfig: ModelConfig = { model, api };
+  const { security, model, api, fallback, agentic } = getSettings();
+
+  // Determine which model to use based on agentic routing
+  let primaryConfig: ModelConfig;
+  let taskType = "unknown";
+  let routingReasoning = "";
+
+  if (agentic.enabled) {
+    const routing = selectModel(prompt, agentic.planningModel, agentic.implementationModel);
+    primaryConfig = { model: routing.model, api };
+    taskType = routing.taskType;
+    routingReasoning = routing.reasoning;
+    console.log(
+      `[${new Date().toLocaleTimeString()}] Agentic routing: ${routing.taskType} → ${routing.model} (${routing.reasoning})`
+    );
+  } else {
+    primaryConfig = { model, api };
+  }
+
   const fallbackConfig: ModelConfig = {
     model: fallback?.model ?? "",
     api: fallback?.api ?? "",
@@ -307,6 +325,7 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
     `Date: ${new Date().toISOString()}`,
     `Session: ${sessionId} (${isNew ? "new" : "resumed"})`,
     `Model config: ${usedFallback ? "fallback" : "primary"}`,
+    ...(agentic.enabled ? [`Task type: ${taskType}`, `Routing: ${routingReasoning}`] : []),
     `Prompt: ${prompt}`,
     `Exit code: ${result.exitCode}`,
     "",
