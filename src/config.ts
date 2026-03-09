@@ -79,6 +79,7 @@ export interface Settings {
   security: SecurityConfig;
   web: WebConfig;
   stt: SttConfig;
+  apiToken?: string;
 }
 
 export interface ModelConfig {
@@ -175,6 +176,7 @@ function parseSettings(raw: Record<string, any>, discordUserIds?: string[]): Set
       baseUrl: typeof raw.stt?.baseUrl === "string" ? raw.stt.baseUrl.trim() : "",
       model: typeof raw.stt?.model === "string" ? raw.stt.model.trim() : "",
     },
+    apiToken: typeof raw.apiToken === "string" && raw.apiToken.trim() ? raw.apiToken.trim() : undefined,
   };
 }
 
