@@ -24,7 +24,7 @@ const DEFAULT_SETTINGS: Settings = {
     excludeWindows: [],
     forwardToTelegram: true,
   },
-  telegram: { token: "", allowedUserIds: [] },
+  telegram: { token: "", allowedUserIds: [], receiveEnabled: true },
   discord: { token: "", allowedUserIds: [] },
   security: { level: "moderate", allowedTools: [], disallowedTools: [] },
   web: { enabled: false, host: "127.0.0.1", port: 4632 },
@@ -48,6 +48,8 @@ export interface HeartbeatConfig {
 export interface TelegramConfig {
   token: string;
   allowedUserIds: number[];
+  /** When false, skip Telegram polling (incoming messages). Useful for send-only instances. Default: true */
+  receiveEnabled: boolean;
 }
 
 export interface DiscordConfig {
@@ -149,6 +151,7 @@ function parseSettings(raw: Record<string, any>, discordUserIds?: string[]): Set
     telegram: {
       token: raw.telegram?.token ?? "",
       allowedUserIds: raw.telegram?.allowedUserIds ?? [],
+      receiveEnabled: raw.telegram?.receiveEnabled !== false,
     },
     discord: {
       token: typeof raw.discord?.token === "string" ? raw.discord.token.trim() : "",

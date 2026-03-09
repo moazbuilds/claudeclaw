@@ -158,6 +158,16 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
           const message = typeof body.message === "string" ? body.message.trim() : "";
           if (!message) return json({ ok: false, error: "message is required" }, 400);
           const result = await runUserMessage("inject", message);
+          const text = result.stdout.trim();
+          const { telegram } = opts.getSnapshot().settings;
+          if (text && telegram.token && telegram.allowedUserIds.length > 0) {
+            const chatId = telegram.allowedUserIds[0];
+            fetch(`https://api.telegram.org/bot${telegram.token}/sendMessage`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ chat_id: chatId, text }),
+            }).catch(() => {});
+          }
           return json({ ok: true, result: result.stdout, exitCode: result.exitCode });
         } catch (err) {
           return json({ ok: false, error: String(err) }, 500);
