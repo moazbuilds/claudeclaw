@@ -33,6 +33,17 @@ function enqueue<T>(fn: () => Promise<T>): Promise<T> {
   return task;
 }
 
+// Active process tracking — allows kill from outside
+let activeProc: ReturnType<typeof Bun.spawn> | null = null;
+
+/** Kill the currently running claude subprocess. Returns true if something was killed. */
+export function killActive(): boolean {
+  if (!activeProc) return false;
+  try { activeProc.kill(); } catch {}
+  activeProc = null;
+  return true;
+}
+
 function extractRateLimitMessage(stdout: string, stderr: string): string | null {
   const candidates = [stdout, stderr];
   for (const text of candidates) {
@@ -88,11 +99,13 @@ async function runClaudeOnce(
     env: buildChildEnv(baseEnv, model, api),
   });
 
+  activeProc = proc;
   const [rawStdout, stderr] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
   ]);
   await proc.exited;
+  if (activeProc === proc) activeProc = null;
 
   return {
     rawStdout,
@@ -359,6 +372,65 @@ function prefixUserMessageWithClock(prompt: string): string {
 
 export async function runUserMessage(name: string, prompt: string): Promise<RunResult> {
   return run(name, prefixUserMessageWithClock(prompt));
+}
+
+// Path where Claude Code stores session JSONL transcripts for this project
+const CLAUDE_SESSIONS_DIR = join(
+  process.env.HOME ?? "/root",
+  ".claude",
+  "projects",
+  PROJECT_DIR.replace(/\//g, "-")
+);
+
+const FORK_SYSTEM_PROMPT = [
+  "You are a FORK AGENT — a lightweight, fast-response watcher running in parallel with the main agent.",
+  "",
+  "Your job: answer quick questions and peek at the main agent's progress via its session transcript.",
+  "",
+  "DENY immediately (with a short explanation) any request that would take more than ~30 seconds:",
+  "• Compiling / building anything (kernels, projects, binaries)",
+  "• Downloads or network fetches",
+  "• Fuzzing, long analysis, heavy computations",
+  "• Anything that would block you and prevent monitoring/killing the main agent",
+  "",
+  "ALLOW:",
+  "• Reading files (especially JSONL transcripts to report main agent progress)",
+  "• Short factual answers",
+  "• Reporting on what the main agent is currently doing",
+  "",
+  `Main session info lives at: /project/.claude/claudeclaw/session.json`,
+  `Session JSONL transcripts dir: ${CLAUDE_SESSIONS_DIR}`,
+  "To peek at main agent progress: read session.json for the session ID, then read the .jsonl file in the transcripts dir.",
+  "Each JSONL line is a turn. The last few lines show what the main agent is currently doing.",
+].join("\n");
+
+/** Run a fork agent — parallel, does NOT touch the main serial queue or main session. */
+export async function runFork(prompt: string): Promise<RunResult> {
+  const { model, api } = getSettings();
+  const primaryConfig: ModelConfig = { model, api };
+
+  const args = [
+    "claude", "-p", prompt,
+    "--output-format", "json",
+    "--dangerously-skip-permissions",
+    "--append-system-prompt", FORK_SYSTEM_PROMPT,
+  ];
+  if (model.trim() && model.trim().toLowerCase() !== "glm") args.push("--model", model.trim());
+
+  const { CLAUDECODE: _, ...cleanEnv } = process.env;
+  const baseEnv = { ...cleanEnv } as Record<string, string>;
+
+  const exec = await runClaudeOnce(args, primaryConfig.model, primaryConfig.api, baseEnv);
+
+  let stdout = exec.rawStdout;
+  if (exec.exitCode === 0) {
+    try {
+      const json = JSON.parse(exec.rawStdout);
+      stdout = json.result ?? exec.rawStdout;
+    } catch {}
+  }
+
+  return { stdout, stderr: exec.stderr, exitCode: exec.exitCode };
 }
 
 /**
