@@ -4,7 +4,7 @@ import { fileURLToPath } from "url";
 import { run, runUserMessage, bootstrap, ensureProjectClaudeMd, loadHeartbeatPromptTemplate } from "../runner";
 import { writeState, type StateData } from "../statusline";
 import { cronMatches, nextCronMatch } from "../cron";
-import { clearJobSchedule, loadJobs } from "../jobs";
+import { clearJobSchedule, loadJobs, snapshotJobFrontmatter } from "../jobs";
 import { writePidFile, cleanupPidFile, checkExistingDaemon } from "../pid";
 import { initConfig, loadSettings, reloadSettings, resolvePrompt, type HeartbeatConfig, type Settings } from "../config";
 import { getDayAndMinuteAtOffset } from "../timezone";
@@ -693,23 +693,30 @@ export async function start(args: string[] = []) {
     const now = new Date();
     for (const job of currentJobs) {
       if (cronMatches(job.schedule, now, currentSettings.timezoneOffsetMinutes)) {
-        resolvePrompt(job.prompt)
-          .then((prompt) => run(job.name, prompt))
-          .then((r) => {
-            if (job.notify === false) return;
-            if (job.notify === "error" && r.exitCode === 0) return;
-            forwardToTelegram(job.name, r);
-            forwardToDiscord(job.name, r);
-          })
-          .finally(async () => {
-            if (job.recurring) return;
-            try {
-              await clearJobSchedule(job.name);
-              console.log(`[${ts()}] Cleared schedule for one-time job: ${job.name}`);
-            } catch (err) {
-              console.error(`[${ts()}] Failed to clear schedule for ${job.name}:`, err);
-            }
-          });
+        snapshotJobFrontmatter(job.name)
+          .then((restoreFrontmatter) =>
+            resolvePrompt(job.prompt)
+              .then((prompt) => run(job.name, prompt))
+              .then(async (r) => {
+                const restored = await restoreFrontmatter();
+                if (restored) {
+                  console.log(`[${ts()}] Restored frontmatter for job: ${job.name}`);
+                }
+                if (job.notify === false) return;
+                if (job.notify === "error" && r.exitCode === 0) return;
+                forwardToTelegram(job.name, r);
+                forwardToDiscord(job.name, r);
+              })
+              .finally(async () => {
+                if (job.recurring) return;
+                try {
+                  await clearJobSchedule(job.name);
+                  console.log(`[${ts()}] Cleared schedule for one-time job: ${job.name}`);
+                } catch (err) {
+                  console.error(`[${ts()}] Failed to clear schedule for ${job.name}:`, err);
+                }
+              })
+          );
       }
     }
     updateState();
