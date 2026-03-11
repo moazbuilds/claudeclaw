@@ -2,8 +2,8 @@ import { ensureProjectClaudeMd, run, runUserMessage } from "../runner";
 import { getSettings, loadSettings } from "../config";
 import { resetSession } from "../sessions";
 import { transcribeAudioToText } from "../whisper";
-import { mkdir } from "node:fs/promises";
-import { extname, join } from "node:path";
+import { mkdir, stat } from "node:fs/promises";
+import { extname, basename, join } from "node:path";
 
 // --- Markdown → Telegram HTML conversion (ported from nanobot) ---
 
@@ -322,6 +322,95 @@ async function sendReaction(token: string, chatId: number, messageId: number, em
   });
 }
 
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
+
+function isImageExtension(filePath: string): boolean {
+  return IMAGE_EXTENSIONS.has(extname(filePath).toLowerCase());
+}
+
+async function sendFileDocument(
+  token: string,
+  chatId: number,
+  filePath: string,
+  caption?: string,
+  threadId?: number
+): Promise<void> {
+  const fileData = await Bun.file(filePath).arrayBuffer();
+  const fileName = basename(filePath);
+  const blob = new Blob([fileData]);
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  form.append("document", blob, fileName);
+  if (caption) form.append("caption", caption);
+  if (threadId) form.append("message_thread_id", String(threadId));
+
+  const res = await fetch(`${API_BASE}${token}/sendDocument`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Telegram sendDocument: ${res.status} ${res.statusText} ${body}`);
+  }
+}
+
+async function sendPhotoFile(
+  token: string,
+  chatId: number,
+  filePath: string,
+  caption?: string,
+  threadId?: number
+): Promise<void> {
+  const fileData = await Bun.file(filePath).arrayBuffer();
+  const fileName = basename(filePath);
+  const blob = new Blob([fileData]);
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  form.append("photo", blob, fileName);
+  if (caption) form.append("caption", caption);
+  if (threadId) form.append("message_thread_id", String(threadId));
+
+  const res = await fetch(`${API_BASE}${token}/sendPhoto`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Telegram sendPhoto: ${res.status} ${res.statusText} ${body}`);
+  }
+}
+
+async function sendLocalFile(
+  token: string,
+  chatId: number,
+  filePath: string,
+  caption?: string,
+  threadId?: number
+): Promise<void> {
+  if (isImageExtension(filePath)) {
+    await sendPhotoFile(token, chatId, filePath, caption, threadId);
+  } else {
+    await sendFileDocument(token, chatId, filePath, caption, threadId);
+  }
+}
+
+interface FileDirective {
+  path: string;
+}
+
+function extractFileDirectives(text: string): { cleanedText: string; files: FileDirective[] } {
+  const files: FileDirective[] = [];
+  const cleanedText = text
+    .replace(/\[file:(\/[^\]\r\n]+)\]/g, (_match, filePath) => {
+      files.push({ path: filePath.trim() });
+      return "";
+    })
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return { cleanedText, files };
+}
+
 let botUsername: string | null = null;
 let botId: number | null = null;
 
@@ -603,12 +692,29 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     if (result.exitCode !== 0) {
       await sendMessage(config.token, chatId, `Error (exit ${result.exitCode}): ${result.stderr || "Unknown error"}`, threadId);
     } else {
-      const { cleanedText, reactionEmoji } = extractReactionDirective(result.stdout || "");
+      const { cleanedText: afterReaction, reactionEmoji } = extractReactionDirective(result.stdout || "");
       if (reactionEmoji) {
         await sendReaction(config.token, chatId, message.message_id, reactionEmoji).catch((err) => {
           console.error(`[Telegram] Failed to send reaction for ${label}: ${err instanceof Error ? err.message : err}`);
         });
       }
+
+      // Extract [file:/path/to/file] directives from response
+      const { cleanedText, files } = extractFileDirectives(afterReaction);
+
+      // Send files
+      for (const file of files) {
+        try {
+          await stat(file.path);
+          await sendLocalFile(config.token, chatId, file.path, undefined, threadId);
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          console.error(`[Telegram] Failed to send file ${file.path} for ${label}: ${errMsg}`);
+          await sendMessage(config.token, chatId, `Could not send file ${file.path}: ${errMsg}`, threadId);
+        }
+      }
+
+      // Send remaining text
       await sendMessage(config.token, chatId, cleanedText || "(empty response)", threadId);
     }
   } catch (err) {
@@ -730,7 +836,7 @@ async function poll(): Promise<void> {
 // --- Exports ---
 
 /** Send a message to a specific chat (used by heartbeat forwarding) */
-export { sendMessage };
+export { sendMessage, sendLocalFile, sendPhotoFile, sendFileDocument };
 
 process.on("SIGTERM", () => { running = false; });
 process.on("SIGINT", () => { running = false; });
