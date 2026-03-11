@@ -22,7 +22,7 @@ export interface RunResult {
   exitCode: number;
 }
 
-const RATE_LIMIT_PATTERN = /you(?:'|’)ve hit your limit/i;
+const RATE_LIMIT_PATTERN = /you.ve hit your limit|out of extra usage/i;
 
 // Serial queue — prevents concurrent --resume on the same session
 let queue: Promise<unknown> = Promise.resolve();
