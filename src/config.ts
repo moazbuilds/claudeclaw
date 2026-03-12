@@ -55,8 +55,8 @@ export interface TelegramConfig {
 
 export interface DiscordConfig {
   token: string;
-  allowedUserIds: string[];
-  listenChannels: string[];
+  allowedUserIds: string[]; // Discord snowflake IDs exceed Number.MAX_SAFE_INTEGER
+  listenChannels: string[]; // Channel IDs where bot responds to all messages (no mention needed)
 }
 
 export type SecurityLevel =
@@ -97,7 +97,11 @@ export interface WebConfig {
 }
 
 export interface SttConfig {
+  /** Base URL of an OpenAI-compatible STT API, e.g. "http://127.0.0.1:8000".
+   *  When set, claudeclaw routes voice transcription through this API instead
+   *  of the bundled whisper.cpp binary. */
   baseUrl: string;
+  /** Model name passed to the API (default: "Systran/faster-whisper-large-v3") */
   model: string;
 }
 
@@ -217,12 +221,19 @@ function parseTimezoneOffsetMinutes(value: unknown, timezoneFallback?: string): 
   return resolveTimezoneOffsetMinutes(value, timezoneFallback);
 }
 
+/**
+ * Extract discord.allowedUserIds as raw strings from the JSON text.
+ * JSON.parse destroys precision on large numeric snowflakes (>2^53),
+ * so we regex them out of the raw text first.
+ */
 function extractDiscordUserIds(rawText: string): string[] {
+  // Match the "discord" object's "allowedUserIds" array values
   const discordBlock = rawText.match(/"discord"\s*:\s*\{[\s\S]*?\}/);
   if (!discordBlock) return [];
   const arrayMatch = discordBlock[0].match(/"allowedUserIds"\s*:\s*\[([\s\S]*?)\]/);
   if (!arrayMatch) return [];
   const items: string[] = [];
+  // Match both quoted strings and bare numbers
   for (const m of arrayMatch[1].matchAll(/("(\d+)"|(\d+))/g)) {
     items.push(m[2] ?? m[3]);
   }
@@ -237,6 +248,7 @@ export async function loadSettings(): Promise<Settings> {
   return cached;
 }
 
+/** Re-read settings from disk, bypassing cache. */
 export async function reloadSettings(): Promise<Settings> {
   const rawText = await Bun.file(SETTINGS_FILE).text();
   const raw = JSON.parse(rawText);
@@ -251,6 +263,11 @@ export function getSettings(): Settings {
 
 const PROMPT_EXTENSIONS = [".md", ".txt", ".prompt"];
 
+/**
+ * If the prompt string looks like a file path (ends with .md, .txt, or .prompt),
+ * read and return the file contents. Otherwise return the string as-is.
+ * Relative paths are resolved from the project root (cwd).
+ */
 export async function resolvePrompt(prompt: string): Promise<string> {
   const trimmed = prompt.trim();
   if (!trimmed) return trimmed;
