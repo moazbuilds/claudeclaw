@@ -240,6 +240,10 @@ function guildTriggerReason(message: DiscordMessage): string | null {
   // Mention in content (fallback)
   if (botUserId && message.content.includes(`<@${botUserId}>`)) return "mention_in_content";
 
+  // Listen channel (respond to all messages, no mention needed)
+  const config = getSettings().discord;
+  if (config.listenChannels.includes(message.channel_id)) return "listen_channel";
+
   return null;
 }
 
@@ -835,6 +839,9 @@ export function startGateway(debug = false): void {
   running = true;
   console.log("Discord bot started (gateway)");
   console.log(`  Allowed users: ${config.allowedUserIds.length === 0 ? "all" : config.allowedUserIds.join(", ")}`);
+  if (config.listenChannels.length > 0) {
+    console.log(`  Listen channels: ${config.listenChannels.join(", ")}`);
+  }
   if (discordDebug) console.log("  Debug: enabled");
 
   (async () => {

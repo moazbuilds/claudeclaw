@@ -25,7 +25,7 @@ const DEFAULT_SETTINGS: Settings = {
     forwardToTelegram: true,
   },
   telegram: { token: "", allowedUserIds: [] },
-  discord: { token: "", allowedUserIds: [] },
+  discord: { token: "", allowedUserIds: [], listenChannels: [] },
   security: { level: "moderate", allowedTools: [], disallowedTools: [] },
   web: { enabled: false, host: "127.0.0.1", port: 4632 },
   stt: { baseUrl: "", model: "" },
@@ -53,6 +53,7 @@ export interface TelegramConfig {
 export interface DiscordConfig {
   token: string;
   allowedUserIds: string[]; // Discord snowflake IDs exceed Number.MAX_SAFE_INTEGER
+  listenChannels: string[]; // Channel IDs where bot responds to all messages (no mention needed)
 }
 
 export type SecurityLevel =
@@ -156,6 +157,9 @@ function parseSettings(raw: Record<string, any>, discordUserIds?: string[]): Set
         : Array.isArray(raw.discord?.allowedUserIds)
           ? raw.discord.allowedUserIds.map(String)
           : [],
+      listenChannels: Array.isArray(raw.discord?.listenChannels)
+        ? raw.discord.listenChannels.map(String)
+        : [],
     },
     security: {
       level,
