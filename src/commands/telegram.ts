@@ -2,6 +2,7 @@ import { ensureProjectClaudeMd, run, runUserMessage } from "../runner";
 import { getSettings, loadSettings } from "../config";
 import { resetSession } from "../sessions";
 import { transcribeAudioToText } from "../whisper";
+import { resolveSkillPrompt } from "../skills";
 import { mkdir } from "node:fs/promises";
 import { extname, join } from "node:path";
 
@@ -580,9 +581,30 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
       }
     }
 
+    // Skill routing: resolve slash commands to SKILL.md prompts
+    let skillContext: string | null = null;
+    if (command && command !== "/start" && command !== "/reset") {
+      try {
+        skillContext = await resolveSkillPrompt(command);
+        if (skillContext) {
+          debugLog(`Skill resolved for ${command}: ${skillContext.length} chars`);
+        }
+      } catch (err) {
+        debugLog(`Skill resolution failed for ${command}: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+
     const promptParts = [`[Telegram from ${label}]`];
     if (threadId) promptParts.push(`[thread:${threadId}]`);
-    if (text.trim()) promptParts.push(`Message: ${text}`);
+    if (skillContext) {
+      // Strip the slash command from the message text and pass remaining args
+      const args = text.trim().slice(command!.length).trim();
+      promptParts.push(`<command-name>${command}</command-name>`);
+      promptParts.push(skillContext);
+      if (args) promptParts.push(`User arguments: ${args}`);
+    } else if (text.trim()) {
+      promptParts.push(`Message: ${text}`);
+    }
     if (imagePath) {
       promptParts.push(`Image path: ${imagePath}`);
       promptParts.push("The user attached an image. Inspect this image file directly before answering.");
@@ -659,6 +681,80 @@ async function handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> 
   await callApi(config.token, "answerCallbackQuery", { callback_query_id: query.id }).catch(() => {});
 }
 
+// --- Debounce buffer ---
+
+interface DebouncedEntry {
+  messages: TelegramMessage[];
+  timer: ReturnType<typeof setTimeout>;
+}
+
+const debounceBuffer = new Map<number, DebouncedEntry>();
+
+function flushDebounced(chatId: number): void {
+  const entry = debounceBuffer.get(chatId);
+  if (!entry || entry.messages.length === 0) {
+    debounceBuffer.delete(chatId);
+    return;
+  }
+  debounceBuffer.delete(chatId);
+
+  // If only one message, handle normally
+  if (entry.messages.length === 1) {
+    handleMessage(entry.messages[0]).catch((err) => {
+      console.error(`[Telegram] Unhandled: ${err}`);
+    });
+    return;
+  }
+
+  // Merge multiple messages into one synthetic message
+  const first = entry.messages[0];
+  const merged: TelegramMessage = {
+    message_id: first.message_id,
+    from: first.from,
+    reply_to_message: first.reply_to_message,
+    chat: first.chat,
+    message_thread_id: first.message_thread_id,
+    text: entry.messages
+      .map((m) => {
+        const { text } = getMessageTextAndEntities(m);
+        return text;
+      })
+      .filter(Boolean)
+      .join("\n"),
+    entities: first.entities,
+  };
+
+  // Carry over photo/voice/document from any message in the batch
+  for (const m of entry.messages) {
+    if (m.photo && m.photo.length > 0 && !merged.photo) merged.photo = m.photo;
+    if (m.voice && !merged.voice) merged.voice = m.voice;
+    if (m.audio && !merged.audio) merged.audio = m.audio;
+    if (m.document && !merged.document) merged.document = m.document;
+  }
+
+  const count = entry.messages.length;
+  debugLog(`Debounce flush: chat=${chatId} merged=${count} messages`);
+  console.log(`[Telegram] Debounced ${count} messages from chat ${chatId}`);
+
+  handleMessage(merged).catch((err) => {
+    console.error(`[Telegram] Unhandled: ${err}`);
+  });
+}
+
+function enqueueDebounced(message: TelegramMessage, debounceMs: number): void {
+  const chatId = message.chat.id;
+  const existing = debounceBuffer.get(chatId);
+
+  if (existing) {
+    clearTimeout(existing.timer);
+    existing.messages.push(message);
+    existing.timer = setTimeout(() => flushDebounced(chatId), debounceMs);
+  } else {
+    const timer = setTimeout(() => flushDebounced(chatId), debounceMs);
+    debounceBuffer.set(chatId, { messages: [message], timer });
+  }
+}
+
 // --- Polling loop ---
 
 let running = true;
@@ -680,6 +776,7 @@ async function poll(): Promise<void> {
 
   console.log("Telegram bot started (long polling)");
   console.log(`  Allowed users: ${config.allowedUserIds.length === 0 ? "all" : config.allowedUserIds.join(", ")}`);
+  if (config.debounceMs > 0) console.log(`  Debounce: ${config.debounceMs}ms`);
   if (telegramDebug) console.log("  Debug: enabled");
 
   while (running) {
@@ -704,9 +801,13 @@ async function poll(): Promise<void> {
           update.edited_channel_post,
         ].filter((m): m is TelegramMessage => Boolean(m));
         for (const incoming of incomingMessages) {
-          handleMessage(incoming).catch((err) => {
-            console.error(`[Telegram] Unhandled: ${err}`);
-          });
+          if (config.debounceMs > 0) {
+            enqueueDebounced(incoming, config.debounceMs);
+          } else {
+            handleMessage(incoming).catch((err) => {
+              console.error(`[Telegram] Unhandled: ${err}`);
+            });
+          }
         }
         if (update.my_chat_member) {
           handleMyChatMember(update.my_chat_member).catch((err) => {
