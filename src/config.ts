@@ -24,7 +24,7 @@ const DEFAULT_SETTINGS: Settings = {
     excludeWindows: [],
     forwardToTelegram: true,
   },
-  telegram: { token: "", allowedUserIds: [] },
+  telegram: { token: "", allowedUserIds: [], debounceMs: 0 },
   discord: { token: "", allowedUserIds: [], listenChannels: [] },
   security: { level: "moderate", allowedTools: [], disallowedTools: [] },
   web: { enabled: false, host: "127.0.0.1", port: 4632 },
@@ -48,6 +48,9 @@ export interface HeartbeatConfig {
 export interface TelegramConfig {
   token: string;
   allowedUserIds: number[];
+  /** Debounce window in ms. Messages from the same chat arriving within this
+   *  window are merged into a single prompt. 0 = disabled (default). */
+  debounceMs: number;
 }
 
 export interface DiscordConfig {
@@ -149,6 +152,7 @@ function parseSettings(raw: Record<string, any>, discordUserIds?: string[]): Set
     telegram: {
       token: raw.telegram?.token ?? "",
       allowedUserIds: raw.telegram?.allowedUserIds ?? [],
+      debounceMs: Number.isFinite(raw.telegram?.debounceMs) ? Number(raw.telegram.debounceMs) : 0,
     },
     discord: {
       token: typeof raw.discord?.token === "string" ? raw.discord.token.trim() : "",
