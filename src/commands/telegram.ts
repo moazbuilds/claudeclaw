@@ -2,6 +2,7 @@ import { ensureProjectClaudeMd, run, runUserMessage } from "../runner";
 import { getSettings, loadSettings } from "../config";
 import { resetSession } from "../sessions";
 import { transcribeAudioToText } from "../whisper";
+import { resolveSkillPrompt } from "../skills";
 import { mkdir } from "node:fs/promises";
 import { extname, join } from "node:path";
 
@@ -580,9 +581,30 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
       }
     }
 
+    // Skill routing: resolve slash commands to SKILL.md prompts
+    let skillContext: string | null = null;
+    if (command && command !== "/start" && command !== "/reset") {
+      try {
+        skillContext = await resolveSkillPrompt(command);
+        if (skillContext) {
+          debugLog(`Skill resolved for ${command}: ${skillContext.length} chars`);
+        }
+      } catch (err) {
+        debugLog(`Skill resolution failed for ${command}: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+
     const promptParts = [`[Telegram from ${label}]`];
     if (threadId) promptParts.push(`[thread:${threadId}]`);
-    if (text.trim()) promptParts.push(`Message: ${text}`);
+    if (skillContext) {
+      // Strip the slash command from the message text and pass remaining args
+      const args = text.trim().slice(command!.length).trim();
+      promptParts.push(`<command-name>${command}</command-name>`);
+      promptParts.push(skillContext);
+      if (args) promptParts.push(`User arguments: ${args}`);
+    } else if (text.trim()) {
+      promptParts.push(`Message: ${text}`);
+    }
     if (imagePath) {
       promptParts.push(`Image path: ${imagePath}`);
       promptParts.push("The user attached an image. Inspect this image file directly before answering.");
