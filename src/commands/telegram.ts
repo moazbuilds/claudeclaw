@@ -1,7 +1,6 @@
 import { ensureProjectClaudeMd, run, runUserMessage } from "../runner";
 import { getSettings, loadSettings } from "../config";
 import { resetSession } from "../sessions";
-import { transcribeAudioToText } from "../whisper";
 import { resolveSkillPrompt, listSkills } from "../skills";
 import { mkdir } from "node:fs/promises";
 import { extname, join } from "node:path";
@@ -553,7 +552,6 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     await sendTyping(config.token, chatId, threadId);
     let imagePath: string | null = null;
     let voicePath: string | null = null;
-    let voiceTranscript: string | null = null;
     if (hasImage) {
       try {
         imagePath = await downloadImageFromMessage(config.token, message);
@@ -564,20 +562,9 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     if (hasVoice) {
       try {
         voicePath = await downloadVoiceFromMessage(config.token, message);
+        if (voicePath) debugLog(`Voice file saved: path=${voicePath}`);
       } catch (err) {
         console.error(`[Telegram] Failed to download voice for ${label}: ${err instanceof Error ? err.message : err}`);
-      }
-
-      if (voicePath) {
-        try {
-          debugLog(`Voice file saved: path=${voicePath}`);
-          voiceTranscript = await transcribeAudioToText(voicePath, {
-            debug: telegramDebug,
-            log: (message) => debugLog(message),
-          });
-        } catch (err) {
-          console.error(`[Telegram] Failed to transcribe voice for ${label}: ${err instanceof Error ? err.message : err}`);
-        }
       }
     }
 
@@ -611,12 +598,12 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     } else if (hasImage) {
       promptParts.push("The user attached an image, but downloading it failed. Respond and ask them to resend.");
     }
-    if (voiceTranscript) {
-      promptParts.push(`Voice transcript: ${voiceTranscript}`);
-      promptParts.push("The user attached voice audio. Use the transcript as their spoken message.");
+    if (voicePath) {
+      promptParts.push(`Voice file path: ${voicePath}`);
+      promptParts.push("The user sent a voice message. Transcribe it using an available transcription tool, then respond to the transcribed text as their spoken message.");
     } else if (hasVoice) {
       promptParts.push(
-        "The user attached voice audio, but it could not be transcribed. Respond and ask them to resend a clearer clip."
+        "The user attached voice audio, but downloading it failed. Respond and ask them to resend."
       );
     }
     const prefixedPrompt = promptParts.join("\n");
