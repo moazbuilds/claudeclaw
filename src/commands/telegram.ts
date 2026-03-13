@@ -2,7 +2,7 @@ import { ensureProjectClaudeMd, run, runUserMessage } from "../runner";
 import { getSettings, loadSettings } from "../config";
 import { resetSession } from "../sessions";
 import { transcribeAudioToText } from "../whisper";
-import { resolveSkillPrompt } from "../skills";
+import { resolveSkillPrompt, listSkills } from "../skills";
 import { mkdir } from "node:fs/promises";
 import { extname, join } from "node:path";
 
@@ -681,6 +681,37 @@ async function handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> 
   await callApi(config.token, "answerCallbackQuery", { callback_query_id: query.id }).catch(() => {});
 }
 
+// --- Bot command menu registration ---
+
+async function registerBotCommands(token: string): Promise<void> {
+  try {
+    const skills = await listSkills();
+    const commands = [
+      { command: "start", description: "Show welcome message" },
+      { command: "reset", description: "Reset session and start fresh" },
+    ];
+    for (const skill of skills) {
+      // Telegram commands: 1-32 chars, lowercase a-z, 0-9, underscores only
+      const cmd = skill.name
+        .toLowerCase()
+        .replace(/[-.:]/g, "_")
+        .replace(/[^a-z0-9_]/g, "")
+        .slice(0, 32);
+      if (!cmd || cmd === "start" || cmd === "reset") continue;
+      if (cmd.length > 30) continue;
+      const desc = skill.description.length >= 3
+        ? skill.description.slice(0, 256)
+        : `Run ${skill.name} skill`;
+      commands.push({ command: cmd, description: desc });
+    }
+    if (commands.length > 100) commands.length = 100;
+    await callApi(token, "setMyCommands", { commands });
+    console.log(`  Commands registered: ${commands.length} (${commands.map((c) => "/" + c.command).join(", ")})`);
+  } catch (err) {
+    console.error(`[Telegram] Failed to register commands: ${err instanceof Error ? err.message : err}`);
+  }
+}
+
 // --- Polling loop ---
 
 let running = true;
@@ -703,6 +734,9 @@ async function poll(): Promise<void> {
   console.log("Telegram bot started (long polling)");
   console.log(`  Allowed users: ${config.allowedUserIds.length === 0 ? "all" : config.allowedUserIds.join(", ")}`);
   if (telegramDebug) console.log("  Debug: enabled");
+
+  // Register available skills as bot command menu (non-blocking)
+  registerBotCommands(config.token).catch(() => {});
 
   while (running) {
     try {
