@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { join } from "path";
 import { existsSync } from "fs";
-import { getSession, createSession } from "./sessions";
+import { getSession, createSession, backupSession } from "./sessions";
 import { getSettings, type ModelConfig, type SecurityConfig } from "./config";
 import { buildClockPromptPrefix } from "./timezone";
 
@@ -23,6 +23,7 @@ export interface RunResult {
 }
 
 const RATE_LIMIT_PATTERN = /you.ve hit your limit|out of extra usage/i;
+const SIGNATURE_ERROR = /Invalid.*signature.*thinking block/i;
 
 // Serial queue — prevents concurrent --resume on the same session
 let queue: Promise<unknown> = Promise.resolve();
@@ -288,23 +289,58 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
     console.warn(
       `[${new Date().toLocaleTimeString()}] Claude limit reached; retrying with fallback${fallbackConfig.model ? ` (${fallbackConfig.model})` : ""}...`
     );
-    exec = await runClaudeOnce(args, fallbackConfig.model, fallbackConfig.api, baseEnv);
+    // Strip --resume to avoid mixing thinking block signatures from
+    // different providers in the same session history (see issue #18).
+    const fallbackArgs = args.filter(
+      (a) => a !== "--resume" && a !== existing?.sessionId
+    );
+    // Force text output for fallback one-shot calls
+    const fmtIdx = fallbackArgs.indexOf("--output-format");
+    if (fmtIdx !== -1 && fmtIdx + 1 < fallbackArgs.length) {
+      fallbackArgs[fmtIdx + 1] = "text";
+    }
+    exec = await runClaudeOnce(fallbackArgs, fallbackConfig.model, fallbackConfig.api, baseEnv);
     usedFallback = true;
   }
 
-  const rawStdout = exec.rawStdout;
-  const stderr = exec.stderr;
-  const exitCode = exec.exitCode;
+  let rawStdout = exec.rawStdout;
+  let stderr = exec.stderr;
+  let exitCode = exec.exitCode;
   let stdout = rawStdout;
   let sessionId = existing?.sessionId ?? "unknown";
+
+  // Auto-detect corrupted session from thinking block signature mismatch.
+  // Back up the broken session and retry with a fresh one (issue #18).
+  let recoveredSession = false;
+  if (exitCode !== 0 && !isNew && SIGNATURE_ERROR.test(rawStdout + stderr)) {
+    const backupName = await backupSession();
+    console.warn(
+      `[${new Date().toLocaleTimeString()}] Detected corrupted session (thinking block signature mismatch). Backed up to ${backupName}, retrying with fresh session...`
+    );
+    // Retry as a fresh one-shot call (no --resume, json output to capture new session_id)
+    const freshArgs = args.filter(
+      (a) => a !== "--resume" && a !== existing?.sessionId
+    );
+    const fmtIdx = freshArgs.indexOf("--output-format");
+    if (fmtIdx !== -1 && fmtIdx + 1 < freshArgs.length) {
+      freshArgs[fmtIdx + 1] = "json";
+    }
+    exec = await runClaudeOnce(freshArgs, primaryConfig.model, primaryConfig.api, baseEnv);
+    rawStdout = exec.rawStdout;
+    stderr = exec.stderr;
+    exitCode = exec.exitCode;
+    stdout = rawStdout;
+    recoveredSession = true;
+  }
+
   const rateLimitMessage = extractRateLimitMessage(rawStdout, stderr);
 
   if (rateLimitMessage) {
     stdout = rateLimitMessage;
   }
 
-  // For new sessions, parse the JSON to extract session_id and result text
-  if (!rateLimitMessage && isNew && exitCode === 0) {
+  // For new sessions (or recovered sessions), parse JSON to extract session_id
+  if (!rateLimitMessage && (isNew || recoveredSession) && exitCode === 0) {
     try {
       const json = JSON.parse(rawStdout);
       sessionId = json.session_id;
