@@ -36,6 +36,10 @@ Parse `$ARGUMENTS` to identify what the user wants. If no arguments are given, s
    - Allowed tools: (list or "default")
    - Disallowed tools: (list or "none")
 
+   **Directories**
+   - Project: (current working directory)
+   - Additional: (list each path, or "none")
+
    **Web UI**
    - Enabled: yes/no
    - Address: host:port
@@ -200,6 +204,40 @@ Configure web UI bind address or port.
 3. Set `web.port` (number) or `web.host` (string) accordingly.
 4. Write and confirm.
 
+### `dirs` / `dirs list`
+
+List current additional directories.
+
+1. Read `.claude/claudeclaw/settings.json`.
+2. Display the `additionalDirs` array, or "none" if empty.
+
+### `dirs add <path1,path2,...>`
+
+Add directories to the additional directories list.
+
+1. Parse comma-separated absolute paths from `$ARGUMENTS`.
+2. Validate each path is absolute and exists on disk.
+3. Read `.claude/claudeclaw/settings.json`.
+4. Append validated paths to `additionalDirs` (deduplicated).
+5. Write and confirm.
+
+### `dirs remove <path>`
+
+Remove a directory from the additional directories list.
+
+1. Parse the path from `$ARGUMENTS`.
+2. Read `.claude/claudeclaw/settings.json`.
+3. Filter the path out of `additionalDirs`.
+4. Write and confirm.
+
+### `dirs clear`
+
+Clear all additional directories.
+
+1. Read `.claude/claudeclaw/settings.json`.
+2. Set `additionalDirs` to `[]`.
+3. Write and confirm.
+
 ### `reset`
 
 Reset all settings to defaults.
@@ -236,7 +274,8 @@ Reset all settings to defaults.
        "enabled": false,
        "host": "127.0.0.1",
        "port": 4632
-     }
+     },
+     "additionalDirs": []
    }
    ```
 3. Confirm the reset. Note: this does not delete cron jobs — use `/heartbeat:jobs delete` for that.
@@ -279,7 +318,8 @@ Location: `.claude/claudeclaw/settings.json`
     "enabled": true,
     "host": "127.0.0.1",
     "port": 4632
-  }
+  },
+  "additionalDirs": ["/Users/morgan/.ssh"]
 }
 ```
 
@@ -307,5 +347,6 @@ Location: `.claude/claudeclaw/settings.json`
 | `web.enabled`              | boolean    | Whether the web UI is served                   |
 | `web.host`                 | string     | Bind address (default `127.0.0.1`)             |
 | `web.port`                 | number     | Port number (default `4632`)                   |
+| `additionalDirs`           | string[]   | Absolute paths to directories Claude can access beyond the project root |
 
 The daemon hot-reloads this file every 30 seconds. No restart needed after changes.
