@@ -33,6 +33,25 @@ function enqueue<T>(fn: () => Promise<T>): Promise<T> {
   return task;
 }
 
+// Active process tracking — allows kill from outside
+let activeProc: ReturnType<typeof Bun.spawn> | null = null;
+
+/** Kill the currently running claude subprocess. Returns true if something was killed. */
+export function killActive(): boolean {
+  if (!activeProc) return false;
+  try { activeProc.kill(); } catch {}
+  activeProc = null;
+  return true;
+}
+
+// Tracks whether the main serial queue is currently executing
+let mainRunning = false;
+
+/** True while the main agent is processing a task (excludes fork). */
+export function isMainBusy(): boolean {
+  return mainRunning;
+}
+
 function extractRateLimitMessage(stdout: string, stderr: string): string | null {
   const candidates = [stdout, stderr];
   for (const text of candidates) {
@@ -88,17 +107,152 @@ async function runClaudeOnce(
     env: buildChildEnv(baseEnv, model, api),
   });
 
+  activeProc = proc;
   const [rawStdout, stderr] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
   ]);
   await proc.exited;
+  if (activeProc === proc) activeProc = null;
 
   return {
     rawStdout,
     stderr,
     exitCode: proc.exitCode ?? 1,
   };
+}
+
+function formatToolCallSummary(name: string, input: Record<string, unknown>): string {
+  const s = (v: unknown, max = 50) => String(v ?? "").slice(0, max);
+  switch (name) {
+    case "Write":
+    case "Edit":
+    case "Read":    return `${name}(${s(input.file_path)})`;
+    case "Bash":    return `Bash(${s(input.command, 60)})`;
+    case "Grep":    return `Grep(${s(input.pattern)} in ${s(input.path ?? ".")})`;
+    case "Glob":    return `Glob(${s(input.pattern)})`;
+    case "WebSearch": return `WebSearch(${s(input.query)})`;
+    case "WebFetch":  return `WebFetch(${s(input.url, 60)})`;
+    default:        return `${name}(...)`;
+  }
+}
+
+function extractToolResultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return (content as Array<{ type?: string; text?: string }>)
+      .filter(b => b.type === "text")
+      .map(b => b.text ?? "")
+      .join("");
+  }
+  return String(content ?? "");
+}
+
+/**
+ * Run claude with --output-format stream-json, emitting text chunks via onChunk
+ * and tool call/result lines via onToolEvent as they arrive.
+ * Session ID and final result come from the result event.
+ */
+async function runClaudeStreaming(
+  baseArgs: string[],
+  model: string,
+  api: string,
+  baseEnv: Record<string, string>,
+  onChunk?: (text: string) => void,
+  onToolEvent?: (line: string) => void
+): Promise<{ result: string; stderr: string; exitCode: number; sessionId?: string; isRateLimit: boolean }> {
+  const args = [...baseArgs];
+  const normalizedModel = model.trim().toLowerCase();
+  if (model.trim() && normalizedModel !== "glm") args.push("--model", model.trim());
+
+  const proc = Bun.spawn(args, {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: buildChildEnv(baseEnv, model, api),
+  });
+
+  activeProc = proc;
+  const stderrPromise = new Response(proc.stderr).text();
+
+  let finalResult = "";
+  let sessionId: string | undefined;
+  let isRateLimit = false;
+  let delivered = ""; // text already sent to onChunk for the current message
+  let lastMsgId = ""; // reset delivered tracking when a new assistant message starts
+  const pendingToolCalls = new Map<string, string>(); // tool_use_id → tool name
+
+  const reader = proc.stdout.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+
+    let nl: number;
+    while ((nl = buf.indexOf("\n")) !== -1) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+
+      try {
+        const event = JSON.parse(line);
+
+        if (event.type === "assistant" && event.message?.content) {
+          const msgId: string = event.message.id ?? "";
+          if (msgId !== lastMsgId) {
+            // Insert newline separator between assistant messages so text
+            // from successive turns doesn't merge onto one line.
+            if (onChunk && delivered) onChunk("\n");
+            delivered = "";
+            lastMsgId = msgId;
+          }
+          let full = "";
+          for (const block of event.message.content) {
+            if (block.type === "text" && typeof block.text === "string") {
+              full += block.text;
+            } else if (block.type === "tool_use" && onToolEvent) {
+              pendingToolCalls.set(block.id, block.name);
+              onToolEvent(`● ${formatToolCallSummary(block.name, block.input ?? {})}`);
+            }
+          }
+          if (onChunk && full.length > delivered.length) {
+            onChunk(full.slice(delivered.length));
+            delivered = full;
+          }
+        }
+
+        if (event.type === "user" && onToolEvent) {
+          for (const block of event.message?.content ?? []) {
+            if (block.type === "tool_result") {
+              const name = pendingToolCalls.get(block.tool_use_id) ?? "?";
+              pendingToolCalls.delete(block.tool_use_id);
+              const text = extractToolResultText(block.content);
+              const firstLine = text.split("\n")[0].slice(0, 80);
+              const summary = block.is_error ? `Error: ${firstLine}` : (firstLine || "done");
+              onToolEvent(`  ⎿  [${name}] ${summary}`);
+            }
+          }
+        }
+
+        if (event.type === "result") {
+          sessionId = event.session_id;
+          finalResult = typeof event.result === "string" ? event.result : finalResult;
+          isRateLimit = RATE_LIMIT_PATTERN.test(finalResult);
+        }
+      } catch {}
+    }
+  }
+
+  await proc.exited;
+  if (activeProc === proc) activeProc = null;
+
+  const stderr = await stderrPromise;
+  // Also check stderr for rate limit signals
+  if (!isRateLimit) isRateLimit = RATE_LIMIT_PATTERN.test(stderr);
+
+  return { result: finalResult, stderr, exitCode: proc.exitCode ?? 1, sessionId, isRateLimit };
 }
 
 const PROJECT_DIR = process.cwd();
@@ -223,127 +377,99 @@ export async function loadHeartbeatPromptTemplate(): Promise<string> {
   return "";
 }
 
-async function execClaude(name: string, prompt: string): Promise<RunResult> {
-  await mkdir(LOGS_DIR, { recursive: true });
+async function execClaude(name: string, prompt: string, onChunk?: (text: string) => void, onToolEvent?: (line: string) => void): Promise<RunResult> {
+  mainRunning = true;
+  try {
+    await mkdir(LOGS_DIR, { recursive: true });
 
-  const existing = await getSession();
-  const isNew = !existing;
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const logFile = join(LOGS_DIR, `${name}-${timestamp}.log`);
+    const existing = await getSession();
+    const isNew = !existing;
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const logFile = join(LOGS_DIR, `${name}-${timestamp}.log`);
 
-  const { security, model, api, fallback } = getSettings();
-  const primaryConfig: ModelConfig = { model, api };
-  const fallbackConfig: ModelConfig = {
-    model: fallback?.model ?? "",
-    api: fallback?.api ?? "",
-  };
-  const securityArgs = buildSecurityArgs(security);
+    const { security, model, api, fallback } = getSettings();
+    const primaryConfig: ModelConfig = { model, api };
+    const fallbackConfig: ModelConfig = {
+      model: fallback?.model ?? "",
+      api: fallback?.api ?? "",
+    };
+    const securityArgs = buildSecurityArgs(security);
 
-  console.log(
-    `[${new Date().toLocaleTimeString()}] Running: ${name} (${isNew ? "new session" : `resume ${existing.sessionId.slice(0, 8)}`}, security: ${security.level})`
-  );
-
-  // New session: use json output to capture Claude's session_id
-  // Resumed session: use text output with --resume
-  const outputFormat = isNew ? "json" : "text";
-  const args = ["claude", "-p", prompt, "--output-format", outputFormat, ...securityArgs];
-
-  if (!isNew) {
-    args.push("--resume", existing.sessionId);
-  }
-
-  // Build the appended system prompt: prompt files + directory scoping
-  // This is passed on EVERY invocation (not just new sessions) because
-  // --append-system-prompt does not persist across --resume.
-  const promptContent = await loadPrompts();
-  const appendParts: string[] = [
-    "You are running inside ClaudeClaw.",
-  ];
-  if (promptContent) appendParts.push(promptContent);
-
-  // Load the project's CLAUDE.md if it exists
-  if (existsSync(PROJECT_CLAUDE_MD)) {
-    try {
-      const claudeMd = await Bun.file(PROJECT_CLAUDE_MD).text();
-      if (claudeMd.trim()) appendParts.push(claudeMd.trim());
-    } catch (e) {
-      console.error(`[${new Date().toLocaleTimeString()}] Failed to read project CLAUDE.md:`, e);
-    }
-  }
-
-  if (security.level !== "unrestricted") appendParts.push(DIR_SCOPE_PROMPT);
-  if (appendParts.length > 0) {
-    args.push("--append-system-prompt", appendParts.join("\n\n"));
-  }
-
-  // Strip CLAUDECODE env var so child claude processes don't think they're nested
-  const { CLAUDECODE: _, ...cleanEnv } = process.env;
-  const baseEnv = { ...cleanEnv } as Record<string, string>;
-
-  let exec = await runClaudeOnce(args, primaryConfig.model, primaryConfig.api, baseEnv);
-  const primaryRateLimit = extractRateLimitMessage(exec.rawStdout, exec.stderr);
-  let usedFallback = false;
-
-  if (primaryRateLimit && hasModelConfig(fallbackConfig) && !sameModelConfig(primaryConfig, fallbackConfig)) {
-    console.warn(
-      `[${new Date().toLocaleTimeString()}] Claude limit reached; retrying with fallback${fallbackConfig.model ? ` (${fallbackConfig.model})` : ""}...`
+    console.log(
+      `[${new Date().toLocaleTimeString()}] Running: ${name} (${isNew ? "new session" : `resume ${existing.sessionId.slice(0, 8)}`}, security: ${security.level})`
     );
-    exec = await runClaudeOnce(args, fallbackConfig.model, fallbackConfig.api, baseEnv);
-    usedFallback = true;
-  }
 
-  const rawStdout = exec.rawStdout;
-  const stderr = exec.stderr;
-  const exitCode = exec.exitCode;
-  let stdout = rawStdout;
-  let sessionId = existing?.sessionId ?? "unknown";
-  const rateLimitMessage = extractRateLimitMessage(rawStdout, stderr);
+    // Always use stream-json — session_id comes from the result event for both new and resumed
+    // --verbose is required by claude when using stream-json with --print
+    const args = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose", ...securityArgs];
+    if (!isNew) args.push("--resume", existing.sessionId);
 
-  if (rateLimitMessage) {
-    stdout = rateLimitMessage;
-  }
+    // Build the appended system prompt (re-sent every turn since --append-system-prompt doesn't persist)
+    const promptContent = await loadPrompts();
+    const appendParts: string[] = ["You are running inside ClaudeClaw."];
+    if (promptContent) appendParts.push(promptContent);
 
-  // For new sessions, parse the JSON to extract session_id and result text
-  if (!rateLimitMessage && isNew && exitCode === 0) {
-    try {
-      const json = JSON.parse(rawStdout);
-      sessionId = json.session_id;
-      stdout = json.result ?? "";
-      // Save the real session ID from Claude Code
-      await createSession(sessionId);
-      console.log(`[${new Date().toLocaleTimeString()}] Session created: ${sessionId}`);
-    } catch (e) {
-      console.error(`[${new Date().toLocaleTimeString()}] Failed to parse session from Claude output:`, e);
+    if (existsSync(PROJECT_CLAUDE_MD)) {
+      try {
+        const claudeMd = await Bun.file(PROJECT_CLAUDE_MD).text();
+        if (claudeMd.trim()) appendParts.push(claudeMd.trim());
+      } catch (e) {
+        console.error(`[${new Date().toLocaleTimeString()}] Failed to read project CLAUDE.md:`, e);
+      }
     }
+
+    if (security.level !== "unrestricted") appendParts.push(DIR_SCOPE_PROMPT);
+    if (appendParts.length > 0) args.push("--append-system-prompt", appendParts.join("\n\n"));
+
+    const { CLAUDECODE: _, ...cleanEnv } = process.env;
+    const baseEnv = { ...cleanEnv } as Record<string, string>;
+
+    let exec = await runClaudeStreaming(args, primaryConfig.model, primaryConfig.api, baseEnv, onChunk, onToolEvent);
+    let usedFallback = false;
+
+    if (exec.isRateLimit && hasModelConfig(fallbackConfig) && !sameModelConfig(primaryConfig, fallbackConfig)) {
+      console.warn(
+        `[${new Date().toLocaleTimeString()}] Claude limit reached; retrying with fallback${fallbackConfig.model ? ` (${fallbackConfig.model})` : ""}...`
+      );
+      exec = await runClaudeStreaming(args, fallbackConfig.model, fallbackConfig.api, baseEnv, onChunk, onToolEvent);
+      usedFallback = true;
+    }
+
+    const { result: stdout, stderr, exitCode, sessionId: streamedSessionId } = exec;
+    let sessionId = streamedSessionId ?? existing?.sessionId ?? "unknown";
+
+    // Persist session ID — works for both new and resumed (stream-json always emits it)
+    if (streamedSessionId && (isNew || streamedSessionId !== existing?.sessionId)) {
+      await createSession(streamedSessionId);
+      if (isNew) console.log(`[${new Date().toLocaleTimeString()}] Session created: ${streamedSessionId}`);
+    }
+
+    const result: RunResult = { stdout, stderr, exitCode };
+
+    const output = [
+      `# ${name}`,
+      `Date: ${new Date().toISOString()}`,
+      `Session: ${sessionId} (${isNew ? "new" : "resumed"})`,
+      `Model config: ${usedFallback ? "fallback" : "primary"}`,
+      `Prompt: ${prompt}`,
+      `Exit code: ${exitCode}`,
+      "",
+      "## Output",
+      stdout,
+      ...(stderr ? ["## Stderr", stderr] : []),
+    ].join("\n");
+
+    await Bun.write(logFile, output);
+    console.log(`[${new Date().toLocaleTimeString()}] Done: ${name} → ${logFile}`);
+
+    return result;
+  } finally {
+    mainRunning = false;
   }
-
-  const result: RunResult = {
-    stdout,
-    stderr,
-    exitCode,
-  };
-
-  const output = [
-    `# ${name}`,
-    `Date: ${new Date().toISOString()}`,
-    `Session: ${sessionId} (${isNew ? "new" : "resumed"})`,
-    `Model config: ${usedFallback ? "fallback" : "primary"}`,
-    `Prompt: ${prompt}`,
-    `Exit code: ${result.exitCode}`,
-    "",
-    "## Output",
-    stdout,
-    ...(stderr ? ["## Stderr", stderr] : []),
-  ].join("\n");
-
-  await Bun.write(logFile, output);
-  console.log(`[${new Date().toLocaleTimeString()}] Done: ${name} → ${logFile}`);
-
-  return result;
 }
 
-export async function run(name: string, prompt: string): Promise<RunResult> {
-  return enqueue(() => execClaude(name, prompt));
+export async function run(name: string, prompt: string, onChunk?: (text: string) => void, onToolEvent?: (line: string) => void): Promise<RunResult> {
+  return enqueue(() => execClaude(name, prompt, onChunk, onToolEvent));
 }
 
 function prefixUserMessageWithClock(prompt: string): string {
@@ -357,8 +483,71 @@ function prefixUserMessageWithClock(prompt: string): string {
   }
 }
 
-export async function runUserMessage(name: string, prompt: string): Promise<RunResult> {
-  return run(name, prefixUserMessageWithClock(prompt));
+export async function runUserMessage(name: string, prompt: string, onChunk?: (text: string) => void, onToolEvent?: (line: string) => void): Promise<RunResult> {
+  return run(name, prefixUserMessageWithClock(prompt), onChunk, onToolEvent);
+}
+
+// Path where Claude Code stores session JSONL transcripts for this project
+const CLAUDE_SESSIONS_DIR = join(
+  process.env.HOME ?? "/root",
+  ".claude",
+  "projects",
+  PROJECT_DIR.replace(/\//g, "-")
+);
+
+const FORK_SYSTEM_PROMPT = [
+  "You are a FORK AGENT — a fast, lightweight watcher running in parallel with the main agent.",
+  "",
+  "SPEED IS YOUR PRIORITY. Be brief. Answer in 1-3 sentences. No preamble, no padding.",
+  "Do NOT over-analyze. Do NOT think through edge cases. Just answer and stop.",
+  "",
+  "Your job: answer quick questions and peek at the main agent's progress via its session transcript.",
+  "",
+  "DENY immediately (one sentence explanation) any request that would take more than ~30 seconds:",
+  "• Compiling / building anything (kernels, projects, binaries)",
+  "• Downloads or network fetches",
+  "• Fuzzing, long analysis, heavy computations",
+  "• Anything that would block you and prevent monitoring/killing the main agent",
+  "",
+  "ALLOW:",
+  "• Reading files (especially JSONL transcripts to report main agent progress)",
+  "• Short factual answers",
+  "• Reporting on what the main agent is currently doing",
+  "",
+  `Main session info lives at: /project/.claude/claudeclaw/session.json`,
+  `Session JSONL transcripts dir: ${CLAUDE_SESSIONS_DIR}`,
+  "To peek at main agent progress: read session.json for the session ID, then read the .jsonl file in the transcripts dir.",
+  "Each JSONL line is a turn. The last few lines show what the main agent is currently doing.",
+].join("\n");
+
+const FORK_MODEL = "claude-haiku-4-5-20251001";
+
+/** Run a fork agent — parallel, does NOT touch the main serial queue or main session. */
+export async function runFork(prompt: string): Promise<RunResult> {
+  const { api } = getSettings();
+
+  const args = [
+    "claude", "-p", prompt,
+    "--output-format", "json",
+    "--dangerously-skip-permissions",
+    "--model", FORK_MODEL,
+    "--append-system-prompt", FORK_SYSTEM_PROMPT,
+  ];
+
+  const { CLAUDECODE: _, ...cleanEnv } = process.env;
+  const baseEnv = { ...cleanEnv } as Record<string, string>;
+
+  const exec = await runClaudeOnce(args, FORK_MODEL, api, baseEnv);
+
+  let stdout = exec.rawStdout;
+  if (exec.exitCode === 0) {
+    try {
+      const json = JSON.parse(exec.rawStdout);
+      stdout = json.result ?? exec.rawStdout;
+    } catch {}
+  }
+
+  return { stdout, stderr: exec.stderr, exitCode: exec.exitCode };
 }
 
 /**
