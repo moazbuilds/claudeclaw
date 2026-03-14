@@ -1,4 +1,4 @@
-import { ensureProjectClaudeMd, run, runUserMessage } from "../runner";
+import { ensureProjectClaudeMd, run, runUserMessage, runFork, killActive, isMainBusy } from "../runner";
 import { getSettings, loadSettings } from "../config";
 import { resetSession } from "../sessions";
 import { transcribeAudioToText } from "../whisper";
@@ -517,6 +517,36 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     return;
   }
 
+  if (command === "/kill") {
+    const killed = killActive();
+    await sendMessage(config.token, chatId, killed ? "Killed active agent." : "No active agent running.", threadId);
+    return;
+  }
+
+  if (command === "/fork") {
+    const forkPrompt = text.replace(/^\/fork\s*/i, "").trim();
+    if (!forkPrompt) {
+      await sendMessage(config.token, chatId, "Usage: /fork <prompt>", threadId);
+      return;
+    }
+    const typingInterval = setInterval(() => sendTyping(config.token, chatId, threadId), 4000);
+    try {
+      await sendTyping(config.token, chatId, threadId);
+      const senderLabel = message.from?.username ?? String(userId ?? "unknown");
+      const result = await runFork(`[Telegram from ${senderLabel}]\nMessage: ${forkPrompt}`);
+      if (result.exitCode !== 0) {
+        await sendMessage(config.token, chatId, `Fork error (exit ${result.exitCode}): ${result.stderr || "Unknown error"}`, threadId);
+      } else {
+        await sendMessage(config.token, chatId, result.stdout || "(empty response)", threadId);
+      }
+    } catch (err) {
+      await sendMessage(config.token, chatId, `Fork error: ${err instanceof Error ? err.message : String(err)}`, threadId);
+    } finally {
+      clearInterval(typingInterval);
+    }
+    return;
+  }
+
   // Secretary: detect reply to a bot alert message → treat as custom reply
   const replyToMsgId = message.reply_to_message?.message_id;
   if (replyToMsgId && text && botId && message.reply_to_message?.from?.id === botId) {
@@ -620,7 +650,10 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
       );
     }
     const prefixedPrompt = promptParts.join("\n");
-    const result = await runUserMessage("telegram", prefixedPrompt);
+    const busy = isMainBusy();
+    const result = busy
+      ? await runFork(prefixedPrompt)
+      : await runUserMessage("telegram", prefixedPrompt);
 
     if (result.exitCode !== 0) {
       await sendMessage(config.token, chatId, `Error (exit ${result.exitCode}): ${result.stderr || "Unknown error"}`, threadId);
