@@ -25,10 +25,11 @@ const DEFAULT_SETTINGS: Settings = {
     forwardToTelegram: true,
   },
   telegram: { token: "", allowedUserIds: [] },
-  discord: { token: "", allowedUserIds: [], listenChannels: [] },
+  discord: { token: "", allowedUserIds: [] },
   security: { level: "moderate", allowedTools: [], disallowedTools: [] },
   web: { enabled: false, host: "127.0.0.1", port: 4632 },
   stt: { baseUrl: "", model: "" },
+  timeouts: { telegram: 5, heartbeat: 15, job: 30, default: 5 },
 };
 
 export interface HeartbeatExcludeWindow {
@@ -53,7 +54,6 @@ export interface TelegramConfig {
 export interface DiscordConfig {
   token: string;
   allowedUserIds: string[]; // Discord snowflake IDs exceed Number.MAX_SAFE_INTEGER
-  listenChannels: string[]; // Channel IDs where bot responds to all messages (no mention needed)
 }
 
 export type SecurityLevel =
@@ -68,6 +68,17 @@ export interface SecurityConfig {
   disallowedTools: string[];
 }
 
+export interface TimeoutsConfig {
+  /** Max seconds for a telegram message subprocess. Default: 5 min. */
+  telegram: number;
+  /** Max minutes for a heartbeat subprocess. Default: 5 min. */
+  heartbeat: number;
+  /** Max minutes for a scheduled job subprocess. Default: 30 min. */
+  job: number;
+  /** Max minutes for all other subprocesses (bootstrap, trigger, etc). Default: 5 min. */
+  default: number;
+}
+
 export interface Settings {
   model: string;
   api: string;
@@ -80,6 +91,7 @@ export interface Settings {
   security: SecurityConfig;
   web: WebConfig;
   stt: SttConfig;
+  timeouts: TimeoutsConfig;
 }
 
 export interface ModelConfig {
@@ -157,9 +169,6 @@ function parseSettings(raw: Record<string, any>, discordUserIds?: string[]): Set
         : Array.isArray(raw.discord?.allowedUserIds)
           ? raw.discord.allowedUserIds.map(String)
           : [],
-      listenChannels: Array.isArray(raw.discord?.listenChannels)
-        ? raw.discord.listenChannels.map(String)
-        : [],
     },
     security: {
       level,
@@ -178,6 +187,12 @@ function parseSettings(raw: Record<string, any>, discordUserIds?: string[]): Set
     stt: {
       baseUrl: typeof raw.stt?.baseUrl === "string" ? raw.stt.baseUrl.trim() : "",
       model: typeof raw.stt?.model === "string" ? raw.stt.model.trim() : "",
+    },
+    timeouts: {
+      telegram: Number.isFinite(raw.timeouts?.telegram) ? Number(raw.timeouts.telegram) : 5,
+      heartbeat: Number.isFinite(raw.timeouts?.heartbeat) ? Number(raw.timeouts.heartbeat) : 15,
+      job: Number.isFinite(raw.timeouts?.job) ? Number(raw.timeouts.job) : 30,
+      default: Number.isFinite(raw.timeouts?.default) ? Number(raw.timeouts.default) : 5,
     },
   };
 }
