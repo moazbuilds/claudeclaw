@@ -623,7 +623,11 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     const result = await runUserMessage("telegram", prefixedPrompt);
 
     if (result.exitCode !== 0) {
-      await sendMessage(config.token, chatId, `Error (exit ${result.exitCode}): ${result.stderr || "Unknown error"}`, threadId);
+      const isKilled = result.exitCode === 143 || result.exitCode === 137;
+      const errorMsg = isKilled
+        ? `⏱ Request timed out (exit ${result.exitCode}: ${result.exitCode === 143 ? "SIGTERM" : "SIGKILL"}) — the subprocess took too long and was killed. Try again or split into smaller steps.`
+        : `Error (exit ${result.exitCode}): ${result.stderr || "Unknown error"}`;
+      await sendMessage(config.token, chatId, errorMsg, threadId);
     } else {
       const { cleanedText, reactionEmoji } = extractReactionDirective(result.stdout || "");
       if (reactionEmoji) {
