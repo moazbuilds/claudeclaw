@@ -5,6 +5,7 @@ import { buildState, buildTechnicalInfo, sanitizeSettings } from "./services/sta
 import { readHeartbeatSettings, updateHeartbeatSettings } from "./services/settings";
 import { createQuickJob, deleteJob } from "./services/jobs";
 import { readLogs } from "./services/logs";
+import { readKanban, writeKanban, type KanbanBoard } from "./services/kanban";
 
 export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
   const server = Bun.serve({
@@ -146,6 +147,20 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
       if (url.pathname === "/api/logs") {
         const tail = clampInt(url.searchParams.get("tail"), 200, 20, 2000);
         return json(await readLogs(tail));
+      }
+
+      if (url.pathname === "/api/kanban" && req.method === "GET") {
+        return json(await readKanban());
+      }
+
+      if (url.pathname === "/api/kanban" && req.method === "POST") {
+        try {
+          const body = await req.json() as KanbanBoard;
+          await writeKanban(body);
+          return json({ ok: true });
+        } catch (err) {
+          return json({ ok: false, error: String(err) });
+        }
       }
 
       return new Response("Not found", { status: 404 });
