@@ -930,4 +930,230 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
 
     loadSettings();
     refreshState();
-    setInterval(refreshState, 1000);`;
+    setInterval(refreshState, 1000);
+
+    // ── Chat ──
+    const tabDashboardBtn = $("tab-dashboard");
+    const tabChatBtn = $("tab-chat");
+    const dashboardPanel = $("dashboard-panel");
+    const chatPanel = $("chat-panel");
+    const chatMessages = $("chat-messages");
+    const chatForm = $("chat-form");
+    const chatInput = $("chat-input");
+    const chatSend = $("chat-send");
+
+    var CHAT_STORAGE_KEY = "claudeclaw.chat.history";
+    let chatBusy = false;
+    let chatAbortController = null;
+    let chatElapsedTimer = null;
+    let chatStartedAt = 0;
+    let chatHistory = (function() {
+      try {
+        var saved = localStorage.getItem(CHAT_STORAGE_KEY);
+        return saved ? JSON.parse(saved) : [];
+      } catch (_) { return []; }
+    })();
+
+    function setActiveTab(tab) {
+      const allBtns = [tabDashboardBtn, tabChatBtn];
+      const allPanels = [dashboardPanel, chatPanel];
+      allBtns.forEach(b => { if (b) { b.classList.remove("tab-btn-active"); b.setAttribute("aria-selected", "false"); } });
+      allPanels.forEach(p => { if (p) p.hidden = true; });
+
+      if (tab === "dashboard") {
+        tabDashboardBtn && tabDashboardBtn.classList.add("tab-btn-active");
+        tabDashboardBtn && tabDashboardBtn.setAttribute("aria-selected", "true");
+        if (dashboardPanel) dashboardPanel.hidden = false;
+      } else {
+        tabChatBtn && tabChatBtn.classList.add("tab-btn-active");
+        tabChatBtn && tabChatBtn.setAttribute("aria-selected", "true");
+        if (chatPanel) chatPanel.hidden = false;
+        if (chatInput) chatInput.focus();
+      }
+    }
+
+    if (tabDashboardBtn) tabDashboardBtn.addEventListener("click", () => setActiveTab("dashboard"));
+    if (tabChatBtn) tabChatBtn.addEventListener("click", () => setActiveTab("chat"));
+
+    renderChatHistory();
+
+    function saveChatHistory() {
+      try {
+        var toSave = chatHistory.filter(function(m) { return !m.streaming; });
+        localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(toSave));
+      } catch (_) {}
+    }
+
+    function fmtElapsed(ms) {
+      var s = Math.floor(ms / 1000);
+      if (s < 60) return s + "s";
+      return Math.floor(s / 60) + "m " + (s % 60) + "s";
+    }
+
+    function setChatBusy(busy) {
+      chatBusy = busy;
+      var cancelBtn = $("chat-cancel");
+      if (chatSend) chatSend.disabled = busy;
+      if (cancelBtn) cancelBtn.hidden = !busy;
+      if (busy) {
+        chatStartedAt = Date.now();
+        chatElapsedTimer = setInterval(function() {
+          var el = document.querySelector(".chat-msg-elapsed");
+          if (el) el.textContent = fmtElapsed(Date.now() - chatStartedAt);
+        }, 1000);
+      } else {
+        if (chatElapsedTimer) { clearInterval(chatElapsedTimer); chatElapsedTimer = null; }
+        chatAbortController = null;
+      }
+    }
+
+    function cancelChat() {
+      if (chatAbortController) chatAbortController.abort();
+    }
+
+    function renderChatHistory() {
+      if (!chatMessages) return;
+      if (!chatHistory.length) {
+        chatMessages.innerHTML = '<div class="chat-empty">Send a message to start chatting with the daemon.</div>';
+        return;
+      }
+      var elapsedMs = Date.now() - chatStartedAt;
+      chatMessages.innerHTML = chatHistory.map(function(msg) {
+        var cls = "chat-msg " + (msg.role === "user" ? "chat-msg-user" : "chat-msg-assistant");
+        if (msg.streaming) cls += " chat-msg-streaming";
+        var meta = "";
+        if (msg.streaming && chatBusy) {
+          meta = '<div class="chat-msg-elapsed">' + fmtElapsed(elapsedMs) + "</div>";
+        } else if (msg.background) {
+          meta = '<div class="chat-msg-background">⚙ working in background...</div>';
+        }
+        return (
+          '<div class="' + cls + '">' +
+            '<div class="chat-msg-role">' + (msg.role === "user" ? "You" : "Claude") + "</div>" +
+            '<div class="chat-msg-text">' + (msg.text ? esc(msg.text) : "") + "</div>" +
+            meta +
+          "</div>"
+        );
+      }).join("");
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    function autoResizeChatInput() {
+      if (!chatInput) return;
+      chatInput.style.height = "auto";
+      chatInput.style.height = Math.min(chatInput.scrollHeight, 160) + "px";
+    }
+
+    async function sendChat() {
+      if (chatBusy || !chatInput) return;
+      var message = (chatInput.value || "").trim();
+      if (!message) return;
+
+      chatInput.value = "";
+      autoResizeChatInput();
+      setChatBusy(true);
+
+      chatHistory.push({ role: "user", text: message });
+      var assistantIdx = chatHistory.length;
+      chatHistory.push({ role: "assistant", text: "", streaming: true });
+      renderChatHistory();
+
+      chatAbortController = new AbortController();
+
+      try {
+        var res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: message }),
+          signal: chatAbortController.signal,
+        });
+
+        if (!res.body) throw new Error("No response body");
+
+        var reader = res.body.getReader();
+        var dec = new TextDecoder();
+        var buf = "";
+
+        while (true) {
+          var read = await reader.read();
+          if (read.done) break;
+          buf += dec.decode(read.value, { stream: true });
+          var lines = buf.split("\n");
+          buf = lines.pop() || "";
+          for (var i = 0; i < lines.length; i++) {
+            var line = lines[i];
+            if (!line.startsWith("data: ")) continue;
+            try {
+              var ev = JSON.parse(line.slice(6));
+              if (ev.type === "chunk") {
+                chatHistory[assistantIdx].text += ev.text;
+                renderChatHistory();
+              } else if (ev.type === "unblock") {
+                // Claude has acknowledged — unblock the input so user can send more messages
+                // while the background task continues running
+                setChatBusy(false);
+                chatHistory[assistantIdx].background = true;
+                renderChatHistory();
+              } else if (ev.type === "done") {
+                chatHistory[assistantIdx].streaming = false;
+                chatHistory[assistantIdx].background = false;
+                renderChatHistory();
+                saveChatHistory();
+              } else if (ev.type === "error") {
+                chatHistory[assistantIdx].text = chatHistory[assistantIdx].text
+                  ? chatHistory[assistantIdx].text + "\n\n[Error: " + ev.message + "]"
+                  : "[Error: " + ev.message + "]";
+                chatHistory[assistantIdx].streaming = false;
+                chatHistory[assistantIdx].background = false;
+                renderChatHistory();
+                saveChatHistory();
+              }
+            } catch (_) {}
+          }
+        }
+        chatHistory[assistantIdx].streaming = false;
+        renderChatHistory();
+        saveChatHistory();
+      } catch (err) {
+        var cancelled = err && err.name === "AbortError";
+        chatHistory[assistantIdx].text = cancelled
+          ? (chatHistory[assistantIdx].text || "[Cancelled]")
+          : "[Failed: " + String(err) + "]";
+        chatHistory[assistantIdx].streaming = false;
+        renderChatHistory();
+        saveChatHistory();
+      } finally {
+        setChatBusy(false);
+        if (chatInput) chatInput.focus();
+      }
+    }
+
+    if (chatForm) {
+      chatForm.addEventListener("submit", function(e) {
+        e.preventDefault();
+        sendChat();
+      });
+    }
+
+    if (chatInput) {
+      chatInput.addEventListener("input", autoResizeChatInput);
+      chatInput.addEventListener("keydown", function(e) {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          sendChat();
+        }
+      });
+    }
+
+    var chatCancelBtn = $("chat-cancel");
+    if (chatCancelBtn) {
+      chatCancelBtn.addEventListener("click", cancelChat);
+    }
+
+    // Update elapsed timer in-place every second (no full re-render = no blink).
+    setInterval(function() {
+      if (chatBusy && chatMessages) {
+        var elapsedEl = chatMessages.querySelector(".chat-msg-elapsed");
+        if (elapsedEl) elapsedEl.textContent = fmtElapsed(Date.now() - chatStartedAt);
+      }
+    }, 1000);`;

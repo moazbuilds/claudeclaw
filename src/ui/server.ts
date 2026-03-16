@@ -10,6 +10,7 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
   const server = Bun.serve({
     hostname: opts.host,
     port: opts.port,
+    idleTimeout: 0,
     fetch: async (req) => {
       const url = new URL(req.url);
 
@@ -146,6 +147,48 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
       if (url.pathname === "/api/logs") {
         const tail = clampInt(url.searchParams.get("tail"), 200, 20, 2000);
         return json(await readLogs(tail));
+      }
+
+      if (url.pathname === "/api/chat" && req.method === "POST") {
+        if (!opts.onChat) return json({ ok: false, error: "chat not configured" });
+        try {
+          const body = await req.json();
+          const message = String(body?.message ?? "").trim();
+          if (!message) return json({ ok: false, error: "message required" });
+
+          const encoder = new TextEncoder();
+          const onChat = opts.onChat;
+          const stream = new ReadableStream({
+            async start(controller) {
+              const send = (data: object) => {
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+              };
+              try {
+                await onChat(
+                  message,
+                  (chunk) => send({ type: "chunk", text: chunk }),
+                  () => send({ type: "unblock" })
+                );
+                send({ type: "done" });
+              } catch (err) {
+                send({ type: "error", message: String(err) });
+              } finally {
+                controller.close();
+              }
+            },
+          });
+
+          return new Response(stream, {
+            headers: {
+              "Content-Type": "text/event-stream",
+              "Cache-Control": "no-cache",
+              "Connection": "keep-alive",
+              "X-Accel-Buffering": "no",
+            },
+          });
+        } catch (err) {
+          return json({ ok: false, error: String(err) });
+        }
       }
 
       return new Response("Not found", { status: 404 });

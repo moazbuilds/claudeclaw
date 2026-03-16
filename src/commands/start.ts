@@ -1,7 +1,7 @@
 import { writeFile, unlink, mkdir } from "fs/promises";
 import { join } from "path";
 import { fileURLToPath } from "url";
-import { run, runUserMessage, bootstrap, ensureProjectClaudeMd, loadHeartbeatPromptTemplate } from "../runner";
+import { run, runUserMessage, streamUserMessage, bootstrap, ensureProjectClaudeMd, loadHeartbeatPromptTemplate } from "../runner";
 import { writeState, type StateData } from "../statusline";
 import { cronMatches, nextCronMatch } from "../cron";
 import { clearJobSchedule, loadJobs } from "../jobs";
@@ -460,6 +460,9 @@ export async function start(args: string[] = []) {
             scheduleHeartbeat();
             updateState();
             console.log(`[${ts()}] Jobs reloaded from Web UI`);
+          },
+          onChat: async (message, onChunk, onUnblock) => {
+            await streamUserMessage("chat", message, onChunk, onUnblock);
           },
         });
       } catch (err) {

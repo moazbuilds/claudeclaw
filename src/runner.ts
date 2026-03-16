@@ -346,6 +346,137 @@ export async function run(name: string, prompt: string): Promise<RunResult> {
   return enqueue(() => execClaude(name, prompt));
 }
 
+async function streamClaude(
+  name: string,
+  prompt: string,
+  onChunk: (text: string) => void,
+  onUnblock: () => void
+): Promise<void> {
+  await mkdir(LOGS_DIR, { recursive: true });
+
+  const existing = await getSession();
+  const { security, model, api } = getSettings();
+  const securityArgs = buildSecurityArgs(security);
+
+  // stream-json gives us events as they happen — text before tool calls,
+  // so we can unblock the UI as soon as Claude acknowledges, not after sub-agents finish.
+  // --verbose is required for stream-json to produce output in -p (print) mode.
+  const args = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose", ...securityArgs];
+
+  if (existing) args.push("--resume", existing.sessionId);
+
+  const promptContent = await loadPrompts();
+  const appendParts: string[] = ["You are running inside ClaudeClaw."];
+  if (promptContent) appendParts.push(promptContent);
+
+  if (existsSync(PROJECT_CLAUDE_MD)) {
+    try {
+      const claudeMd = await Bun.file(PROJECT_CLAUDE_MD).text();
+      if (claudeMd.trim()) appendParts.push(claudeMd.trim());
+    } catch {}
+  }
+
+  if (security.level !== "unrestricted") appendParts.push(DIR_SCOPE_PROMPT);
+  if (appendParts.length > 0) {
+    args.push("--append-system-prompt", appendParts.join("\n\n"));
+  }
+
+  const normalizedModel = model.trim().toLowerCase();
+  if (model.trim() && normalizedModel !== "glm") args.push("--model", model.trim());
+
+  const { CLAUDECODE: _, ...cleanEnv } = process.env;
+  const childEnv = buildChildEnv(cleanEnv as Record<string, string>, model, api);
+
+  console.log(`[${new Date().toLocaleTimeString()}] Running: ${name} (stream-json, session: ${existing?.sessionId?.slice(0, 8) ?? "new"})`);
+
+  const proc = Bun.spawn(args, {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: childEnv,
+  });
+
+  const reader = proc.stdout.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let unblocked = false;
+  let textEmitted = false;
+
+  const maybeUnblock = () => {
+    if (!unblocked) {
+      unblocked = true;
+      onUnblock();
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+
+    // Parse complete newline-delimited JSON events
+    const lines = buf.split("\n");
+    buf = lines.pop() ?? "";
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const event = JSON.parse(trimmed) as Record<string, unknown>;
+
+        if (event.type === "system" && (event.subtype === "init" || event.session_id)) {
+          // Capture session ID for new sessions
+          const sid = event.session_id as string | undefined;
+          if (sid && !existing) {
+            await createSession(sid);
+            console.log(`[${new Date().toLocaleTimeString()}] Session created (stream-json): ${sid}`);
+          }
+        } else if (event.type === "assistant") {
+          // Text and tool_use blocks from the assistant
+          type ContentBlock = { type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> };
+          const msg = event.message as { content?: ContentBlock[] } | undefined;
+          const blocks = msg?.content ?? [];
+          let hasActivity = false;
+          for (const block of blocks) {
+            if (block.type === "text" && block.text) {
+              onChunk(block.text);
+              textEmitted = true;
+              hasActivity = true;
+            } else if (block.type === "tool_use") {
+              hasActivity = true;
+            }
+          }
+          if (hasActivity) maybeUnblock();
+        } else if (event.type === "tool_use") {
+          // Top-level tool_use event (some stream-json versions) — unblock the UI
+          maybeUnblock();
+        } else if (event.type === "result") {
+          // Final result event — emit text as fallback if no assistant text was seen
+          const resultText = (event as Record<string, unknown>).result as string | undefined;
+          if (resultText && !textEmitted) {
+            onChunk(resultText);
+          }
+          maybeUnblock();
+        }
+      } catch {}
+    }
+  }
+
+  await proc.exited;
+  // Ensure unblock fires even if something unexpected happened
+  maybeUnblock();
+
+  console.log(`[${new Date().toLocaleTimeString()}] Done: ${name}`);
+}
+
+export async function streamUserMessage(
+  name: string,
+  prompt: string,
+  onChunk: (text: string) => void,
+  onUnblock: () => void
+): Promise<void> {
+  return enqueue(() => streamClaude(name, prefixUserMessageWithClock(prompt), onChunk, onUnblock));
+}
+
 function prefixUserMessageWithClock(prompt: string): string {
   try {
     const settings = getSettings();

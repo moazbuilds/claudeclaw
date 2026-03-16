@@ -27,4 +27,9 @@ export interface StartWebUiOptions {
     excludeWindows?: Array<{ days?: number[]; start: string; end: string }>;
   }) => void | Promise<void>;
   onJobsChanged?: () => void | Promise<void>;
+  onChat?: (
+    message: string,
+    onChunk: (text: string) => void,
+    onUnblock: () => void
+  ) => Promise<void>;
 }
