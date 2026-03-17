@@ -72,11 +72,15 @@ function buildChildEnv(baseEnv: Record<string, string>, model: string, api: stri
   return childEnv;
 }
 
+/** Default timeout for a single Claude Code invocation (5 minutes). */
+const CLAUDE_TIMEOUT_MS = 5 * 60 * 1000;
+
 async function runClaudeOnce(
   baseArgs: string[],
   model: string,
   api: string,
-  baseEnv: Record<string, string>
+  baseEnv: Record<string, string>,
+  timeoutMs: number = CLAUDE_TIMEOUT_MS
 ): Promise<{ rawStdout: string; stderr: string; exitCode: number }> {
   const args = [...baseArgs];
   const normalizedModel = model.trim().toLowerCase();
@@ -88,17 +92,40 @@ async function runClaudeOnce(
     env: buildChildEnv(baseEnv, model, api),
   });
 
-  const [rawStdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
-  await proc.exited;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error(`Claude session timed out after ${timeoutMs / 1000}s`)), timeoutMs);
+  });
 
-  return {
-    rawStdout,
-    stderr,
-    exitCode: proc.exitCode ?? 1,
-  };
+  try {
+    const [rawStdout, stderr] = await Promise.race([
+      Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ]),
+      timeoutPromise,
+    ]) as [string, string];
+    await proc.exited;
+
+    return {
+      rawStdout,
+      stderr,
+      exitCode: proc.exitCode ?? 1,
+    };
+  } catch (err) {
+    // Kill the hung process
+    try { proc.kill("SIGTERM"); } catch {}
+    // Give it a moment to exit gracefully, then force kill
+    setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 5000);
+
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[${new Date().toLocaleTimeString()}] ${message}`);
+
+    return {
+      rawStdout: "",
+      stderr: message,
+      exitCode: 124, // same as `timeout` command convention
+    };
+  }
 }
 
 const PROJECT_DIR = process.cwd();
@@ -231,7 +258,8 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const logFile = join(LOGS_DIR, `${name}-${timestamp}.log`);
 
-  const { security, model, api, fallback } = getSettings();
+  const settings = getSettings();
+  const { security, model, api, fallback } = settings;
   const primaryConfig: ModelConfig = { model, api };
   const fallbackConfig: ModelConfig = {
     model: fallback?.model ?? "",
@@ -280,7 +308,8 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
   const { CLAUDECODE: _, ...cleanEnv } = process.env;
   const baseEnv = { ...cleanEnv } as Record<string, string>;
 
-  let exec = await runClaudeOnce(args, primaryConfig.model, primaryConfig.api, baseEnv);
+  const timeoutMs = settings.sessionTimeoutMs || CLAUDE_TIMEOUT_MS;
+  let exec = await runClaudeOnce(args, primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs);
   const primaryRateLimit = extractRateLimitMessage(exec.rawStdout, exec.stderr);
   let usedFallback = false;
 
@@ -288,7 +317,7 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
     console.warn(
       `[${new Date().toLocaleTimeString()}] Claude limit reached; retrying with fallback${fallbackConfig.model ? ` (${fallbackConfig.model})` : ""}...`
     );
-    exec = await runClaudeOnce(args, fallbackConfig.model, fallbackConfig.api, baseEnv);
+    exec = await runClaudeOnce(args, fallbackConfig.model, fallbackConfig.api, baseEnv, timeoutMs);
     usedFallback = true;
   }
 

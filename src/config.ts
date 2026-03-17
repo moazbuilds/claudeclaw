@@ -29,6 +29,7 @@ const DEFAULT_SETTINGS: Settings = {
   security: { level: "moderate", allowedTools: [], disallowedTools: [] },
   web: { enabled: false, host: "127.0.0.1", port: 4632 },
   stt: { baseUrl: "", model: "" },
+  sessionTimeoutMs: 300000,
 };
 
 export interface HeartbeatExcludeWindow {
@@ -80,6 +81,8 @@ export interface Settings {
   security: SecurityConfig;
   web: WebConfig;
   stt: SttConfig;
+  /** Timeout in ms for each Claude Code invocation. Default: 300000 (5 min). */
+  sessionTimeoutMs: number;
 }
 
 export interface ModelConfig {
