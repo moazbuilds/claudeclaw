@@ -8,6 +8,7 @@ export interface GlobalSession {
   sessionId: string;
   createdAt: string;
   lastUsedAt: string;
+  messageCount: number;
 }
 
 let current: GlobalSession | null = null;
@@ -32,6 +33,7 @@ export async function getSession(): Promise<{ sessionId: string } | null> {
   const existing = await loadSession();
   if (existing) {
     existing.lastUsedAt = new Date().toISOString();
+    existing.messageCount = (existing.messageCount || 0) + 1;
     await saveSession(existing);
     return { sessionId: existing.sessionId };
   }
@@ -44,6 +46,7 @@ export async function createSession(sessionId: string): Promise<void> {
     sessionId,
     createdAt: new Date().toISOString(),
     lastUsedAt: new Date().toISOString(),
+    messageCount: 0,
   });
 }
 

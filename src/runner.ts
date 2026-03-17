@@ -2,7 +2,9 @@ import { mkdir, readFile, writeFile } from "fs/promises";
 import { join } from "path";
 import { existsSync } from "fs";
 import { getSession, createSession } from "./sessions";
+import { peekSession } from "./sessions";
 import { getSettings, type ModelConfig, type SecurityConfig } from "./config";
+import { needsRotation, rotateSession, loadLatestSummary } from "./rotation";
 import { buildClockPromptPrefix } from "./timezone";
 
 const LOGS_DIR = join(process.cwd(), ".claude/claudeclaw/logs");
@@ -226,6 +228,13 @@ export async function loadHeartbeatPromptTemplate(): Promise<string> {
 async function execClaude(name: string, prompt: string): Promise<RunResult> {
   await mkdir(LOGS_DIR, { recursive: true });
 
+  // Check if session needs rotation before proceeding
+  const { session: sessionConfig } = getSettings();
+  const peeked = await peekSession();
+  if (peeked && needsRotation(peeked, sessionConfig)) {
+    await rotateSession(sessionConfig);
+  }
+
   const existing = await getSession();
   const isNew = !existing;
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -370,6 +379,13 @@ export async function bootstrap(): Promise<void> {
   if (existing) return;
 
   console.log(`[${new Date().toLocaleTimeString()}] Bootstrapping new session...`);
-  await execClaude("bootstrap", "Wakeup, my friend!");
+
+  const { session: sessionConfig } = getSettings();
+  const summary = loadLatestSummary(sessionConfig.summaryPath);
+  const wakeupPrompt = summary
+    ? `Wakeup, my friend!\n\nКонтекст предыдущей сессии:\n\n${await summary}`
+    : "Wakeup, my friend!";
+
+  await execClaude("bootstrap", wakeupPrompt);
   console.log(`[${new Date().toLocaleTimeString()}] Bootstrap complete — session is live.`);
 }
