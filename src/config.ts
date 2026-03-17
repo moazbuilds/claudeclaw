@@ -29,6 +29,7 @@ const DEFAULT_SETTINGS: Settings = {
   security: { level: "moderate", allowedTools: [], disallowedTools: [] },
   web: { enabled: false, host: "127.0.0.1", port: 4632 },
   stt: { baseUrl: "", model: "" },
+  session: { autoRotate: true, maxMessages: 50, maxAgeHours: 24, summaryPath: "" },
 };
 
 export interface HeartbeatExcludeWindow {
@@ -80,6 +81,7 @@ export interface Settings {
   security: SecurityConfig;
   web: WebConfig;
   stt: SttConfig;
+  session: SessionConfig;
 }
 
 export interface ModelConfig {
@@ -100,6 +102,13 @@ export interface SttConfig {
   baseUrl: string;
   /** Model name passed to the API (default: "Systran/faster-whisper-large-v3") */
   model: string;
+}
+
+export interface SessionConfig {
+  autoRotate: boolean;
+  maxMessages: number;
+  maxAgeHours: number;
+  summaryPath: string;
 }
 
 let cached: Settings | null = null;
@@ -178,6 +187,12 @@ function parseSettings(raw: Record<string, any>, discordUserIds?: string[]): Set
     stt: {
       baseUrl: typeof raw.stt?.baseUrl === "string" ? raw.stt.baseUrl.trim() : "",
       model: typeof raw.stt?.model === "string" ? raw.stt.model.trim() : "",
+    },
+    session: {
+      autoRotate: raw.session?.autoRotate ?? true,
+      maxMessages: Number.isFinite(raw.session?.maxMessages) ? Number(raw.session.maxMessages) : 50,
+      maxAgeHours: Number.isFinite(raw.session?.maxAgeHours) ? Number(raw.session.maxAgeHours) : 24,
+      summaryPath: typeof raw.session?.summaryPath === "string" ? raw.session.summaryPath.trim() : "",
     },
   };
 }
