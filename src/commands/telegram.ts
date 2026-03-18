@@ -2,6 +2,7 @@ import { ensureProjectClaudeMd, run, runUserMessage } from "../runner";
 import { getSettings, loadSettings } from "../config";
 import { resetSession } from "../sessions";
 import { transcribeAudioToText } from "../whisper";
+import { resolveSkillPrompt, listSkills } from "../skills";
 import { mkdir } from "node:fs/promises";
 import { extname, join } from "node:path";
 
@@ -80,6 +81,7 @@ interface TelegramMessage {
   from?: TelegramUser;
   reply_to_message?: { message_id?: number; from?: TelegramUser };
   chat: { id: number; type: string };
+  message_thread_id?: number;
   text?: string;
   caption?: string;
   photo?: TelegramPhotoSize[];
@@ -268,7 +270,7 @@ async function callApi<T>(token: string, method: string, body?: Record<string, u
   return (await res.json()) as T;
 }
 
-async function sendMessage(token: string, chatId: number, text: string): Promise<void> {
+async function sendMessage(token: string, chatId: number, text: string, threadId?: number): Promise<void> {
   const normalized = normalizeTelegramText(text).replace(/\[react:[^\]\r\n]+\]/gi, "");
   const html = markdownToTelegramHtml(normalized);
   const MAX_LEN = 4096;
@@ -278,19 +280,25 @@ async function sendMessage(token: string, chatId: number, text: string): Promise
         chat_id: chatId,
         text: html.slice(i, i + MAX_LEN),
         parse_mode: "HTML",
+        ...(threadId ? { message_thread_id: threadId } : {}),
       });
     } catch {
       // Fallback to plain text if HTML parsing fails
       await callApi(token, "sendMessage", {
         chat_id: chatId,
         text: normalized.slice(i, i + MAX_LEN),
+        ...(threadId ? { message_thread_id: threadId } : {}),
       });
     }
   }
 }
 
-async function sendTyping(token: string, chatId: number): Promise<void> {
-  await callApi(token, "sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {});
+async function sendTyping(token: string, chatId: number, threadId?: number): Promise<void> {
+  await callApi(token, "sendChatAction", {
+    chat_id: chatId,
+    action: "typing",
+    ...(threadId ? { message_thread_id: threadId } : {}),
+  }).catch(() => {});
 }
 
 function extractReactionDirective(text: string): { cleanedText: string; reactionEmoji: string | null } {
@@ -456,6 +464,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
   const config = getSettings().telegram;
   const userId = message.from?.id;
   const chatId = message.chat.id;
+  const threadId = message.message_thread_id;
   const { text } = getMessageTextAndEntities(message);
   const chatType = message.chat.type;
   const isPrivate = chatType === "private";
@@ -496,14 +505,15 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     await sendMessage(
       config.token,
       chatId,
-      "Hello! Send me a message and I'll respond using Claude.\nUse /reset to start a fresh session."
+      "Hello! Send me a message and I'll respond using Claude.\nUse /reset to start a fresh session.",
+      threadId
     );
     return;
   }
 
   if (command === "/reset") {
     await resetSession();
-    await sendMessage(config.token, chatId, "Global session reset. Next message starts fresh.");
+    await sendMessage(config.token, chatId, "Global session reset. Next message starts fresh.", threadId);
     return;
   }
 
@@ -520,7 +530,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ text }),
           });
-          await sendMessage(config.token, chatId, `✅ Sent custom reply + pattern learned.`);
+          await sendMessage(config.token, chatId, `✅ Sent custom reply + pattern learned.`, threadId);
           return;
         }
       }
@@ -537,10 +547,10 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
   );
 
   // Keep typing indicator alive while queued/running
-  const typingInterval = setInterval(() => sendTyping(config.token, chatId), 4000);
+  const typingInterval = setInterval(() => sendTyping(config.token, chatId, threadId), 4000);
 
   try {
-    await sendTyping(config.token, chatId);
+    await sendTyping(config.token, chatId, threadId);
     let imagePath: string | null = null;
     let voicePath: string | null = null;
     let voiceTranscript: string | null = null;
@@ -571,8 +581,30 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
       }
     }
 
+    // Skill routing: resolve slash commands to SKILL.md prompts
+    let skillContext: string | null = null;
+    if (command && command !== "/start" && command !== "/reset") {
+      try {
+        skillContext = await resolveSkillPrompt(command);
+        if (skillContext) {
+          debugLog(`Skill resolved for ${command}: ${skillContext.length} chars`);
+        }
+      } catch (err) {
+        debugLog(`Skill resolution failed for ${command}: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+
     const promptParts = [`[Telegram from ${label}]`];
-    if (text.trim()) promptParts.push(`Message: ${text}`);
+    if (threadId) promptParts.push(`[thread:${threadId}]`);
+    if (skillContext) {
+      // Strip the slash command from the message text and pass remaining args
+      const args = text.trim().slice(command!.length).trim();
+      promptParts.push(`<command-name>${command}</command-name>`);
+      promptParts.push(skillContext);
+      if (args) promptParts.push(`User arguments: ${args}`);
+    } else if (text.trim()) {
+      promptParts.push(`Message: ${text}`);
+    }
     if (imagePath) {
       promptParts.push(`Image path: ${imagePath}`);
       promptParts.push("The user attached an image. Inspect this image file directly before answering.");
@@ -591,7 +623,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     const result = await runUserMessage("telegram", prefixedPrompt);
 
     if (result.exitCode !== 0) {
-      await sendMessage(config.token, chatId, `Error (exit ${result.exitCode}): ${result.stderr || "Unknown error"}`);
+      await sendMessage(config.token, chatId, `Error (exit ${result.exitCode}): ${result.stderr || "Unknown error"}`, threadId);
     } else {
       const { cleanedText, reactionEmoji } = extractReactionDirective(result.stdout || "");
       if (reactionEmoji) {
@@ -599,12 +631,12 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
           console.error(`[Telegram] Failed to send reaction for ${label}: ${err instanceof Error ? err.message : err}`);
         });
       }
-      await sendMessage(config.token, chatId, cleanedText || "(empty response)");
+      await sendMessage(config.token, chatId, cleanedText || "(empty response)", threadId);
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     console.error(`[Telegram] Error for ${label}: ${errMsg}`);
-    await sendMessage(config.token, chatId, `Error: ${errMsg}`);
+    await sendMessage(config.token, chatId, `Error: ${errMsg}`, threadId);
   } finally {
     clearInterval(typingInterval);
   }
@@ -649,6 +681,37 @@ async function handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> 
   await callApi(config.token, "answerCallbackQuery", { callback_query_id: query.id }).catch(() => {});
 }
 
+// --- Bot command menu registration ---
+
+async function registerBotCommands(token: string): Promise<void> {
+  try {
+    const skills = await listSkills();
+    const commands = [
+      { command: "start", description: "Show welcome message" },
+      { command: "reset", description: "Reset session and start fresh" },
+    ];
+    for (const skill of skills) {
+      // Telegram commands: 1-32 chars, lowercase a-z, 0-9, underscores only
+      const cmd = skill.name
+        .toLowerCase()
+        .replace(/[-.:]/g, "_")
+        .replace(/[^a-z0-9_]/g, "")
+        .slice(0, 32);
+      if (!cmd || cmd === "start" || cmd === "reset") continue;
+      if (cmd.length > 30) continue;
+      const desc = skill.description.length >= 3
+        ? skill.description.slice(0, 256)
+        : `Run ${skill.name} skill`;
+      commands.push({ command: cmd, description: desc });
+    }
+    if (commands.length > 100) commands.length = 100;
+    await callApi(token, "setMyCommands", { commands });
+    console.log(`  Commands registered: ${commands.length} (${commands.map((c) => "/" + c.command).join(", ")})`);
+  } catch (err) {
+    console.error(`[Telegram] Failed to register commands: ${err instanceof Error ? err.message : err}`);
+  }
+}
+
 // --- Polling loop ---
 
 let running = true;
@@ -671,6 +734,9 @@ async function poll(): Promise<void> {
   console.log("Telegram bot started (long polling)");
   console.log(`  Allowed users: ${config.allowedUserIds.length === 0 ? "all" : config.allowedUserIds.join(", ")}`);
   if (telegramDebug) console.log("  Debug: enabled");
+
+  // Register available skills as bot command menu (non-blocking)
+  registerBotCommands(config.token).catch(() => {});
 
   while (running) {
     try {

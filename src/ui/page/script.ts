@@ -205,6 +205,15 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
           : "Not configured",
       });
 
+      pills.push({
+        cls: state.discord && state.discord.configured ? "ok" : "warn",
+        icon: "🎮",
+        label: "Discord",
+        value: state.discord && state.discord.configured
+          ? (state.discord.allowedUserCount + " user" + (state.discord.allowedUserCount !== 1 ? "s" : ""))
+          : "Not configured",
+      });
+
       return pills;
     }
 

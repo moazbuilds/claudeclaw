@@ -25,6 +25,7 @@ Parse `$ARGUMENTS` to identify what the user wants. If no arguments are given, s
    - Interval: Xm
    - Prompt: (show full prompt or "not set")
    - Exclude windows: (list each window's days + start-end, or "none")
+   - Forward to Telegram: yes/no (`HEARTBEAT_OK` is forwarded only when enabled)
 
    **Telegram**
    - Token: (first 5 chars + "..." or "not configured")
@@ -70,6 +71,18 @@ Change the heartbeat prompt.
 3. Set `heartbeat.prompt` to the new value.
 4. Write the updated settings back.
 5. Confirm the change.
+
+### `heartbeat telegram on` / `heartbeat telegram off` / `heartbeat forward telegram on` / `heartbeat forward telegram off`
+
+Toggle whether heartbeat outputs are forwarded to Telegram.
+
+1. Read `.claude/claudeclaw/settings.json`.
+2. Set `heartbeat.forwardToTelegram` to `true` for `on` and `false` for `off`.
+3. Write the updated settings back.
+4. Confirm the change.
+5. Clarify behavior:
+   - `true` = forward all heartbeat replies (including `HEARTBEAT_OK`)
+   - `false` = suppress `HEARTBEAT_OK` and forward only actionable heartbeat outputs
 
 ### `telegram token <token>` / `telegram token`
 
@@ -207,7 +220,8 @@ Reset all settings to defaults.
        "enabled": false,
        "interval": 15,
        "prompt": "",
-       "excludeWindows": []
+       "excludeWindows": [],
+       "forwardToTelegram": true
      },
      "telegram": {
        "token": "",
@@ -249,7 +263,8 @@ Location: `.claude/claudeclaw/settings.json`
     "prompt": "Remind me to drink water and stretch.",
     "excludeWindows": [
       { "days": [0, 6], "start": "23:00", "end": "07:00" }
-    ]
+    ],
+    "forwardToTelegram": true
   },
   "telegram": {
     "token": "123456:ABC-DEF...",
@@ -283,6 +298,7 @@ Location: `.claude/claudeclaw/settings.json`
 | `heartbeat.excludeWindows[].days` | number[] | Days of week (0=Sun..6=Sat); omit for all days |
 | `heartbeat.excludeWindows[].start` | string | Window start time in `HH:MM` 24h format       |
 | `heartbeat.excludeWindows[].end`   | string | Window end time in `HH:MM` 24h format         |
+| `heartbeat.forwardToTelegram`      | boolean | Forward heartbeat output to Telegram (`false` suppresses `HEARTBEAT_OK`) |
 | `telegram.token`           | string     | Bot token from @BotFather                      |
 | `telegram.allowedUserIds`  | number[]   | Telegram user IDs allowed to interact          |
 | `security.level`           | string     | `locked` \| `strict` \| `moderate` \| `unrestricted` |

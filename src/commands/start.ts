@@ -85,6 +85,10 @@ try {
     info.push(GREEN + "\\ud83d\\udce1" + R);
   }
 
+  if (state.discord) {
+    info.push(GREEN + "\\ud83c\\udfae" + R);
+  }
+
   var mid = " " + info.join(" " + B + " ") + " ";
 
   process.stdout.write(HEADER + "\\n" + B + mid + B + "\\n" + FOOTER);
@@ -195,6 +199,7 @@ export async function start(args: string[] = []) {
   let hasPromptFlag = false;
   let hasTriggerFlag = false;
   let telegramFlag = false;
+  let discordFlag = false;
   let debugFlag = false;
   let webFlag = false;
   let replaceExistingFlag = false;
@@ -209,6 +214,8 @@ export async function start(args: string[] = []) {
       hasTriggerFlag = true;
     } else if (arg === "--telegram") {
       telegramFlag = true;
+    } else if (arg === "--discord") {
+      discordFlag = true;
     } else if (arg === "--debug") {
       debugFlag = true;
     } else if (arg === "--web") {
@@ -234,7 +241,7 @@ export async function start(args: string[] = []) {
   }
   const payload = payloadParts.join(" ").trim();
   if (hasPromptFlag && !payload) {
-    console.error("Usage: claudeclaw start --prompt <prompt> [--trigger] [--telegram] [--debug] [--web] [--web-port <port>] [--replace-existing]");
+    console.error("Usage: claudeclaw start --prompt <prompt> [--trigger] [--telegram] [--discord] [--debug] [--web] [--web-port <port>] [--replace-existing]");
     process.exit(1);
   }
   if (!hasPromptFlag && payload) {
@@ -243,6 +250,10 @@ export async function start(args: string[] = []) {
   }
   if (telegramFlag && !hasTriggerFlag) {
     console.error("`--telegram` with `start` requires `--trigger`.");
+    process.exit(1);
+  }
+  if (discordFlag && !hasTriggerFlag) {
+    console.error("`--discord` with `start` requires `--trigger`.");
     process.exit(1);
   }
   if (hasPromptFlag && !hasTriggerFlag && (webFlag || webPortFlag !== null)) {
@@ -255,7 +266,7 @@ export async function start(args: string[] = []) {
     const existingPid = await checkExistingDaemon();
     if (existingPid) {
       console.error(`\x1b[31mAborted: daemon already running in this directory (PID ${existingPid})\x1b[0m`);
-      console.error("Use `claudeclaw send <message> [--telegram]` while daemon is running.");
+      console.error("Use `claudeclaw send <message> [--telegram] [--discord]` while daemon is running.");
       process.exit(1);
     }
 
@@ -306,8 +317,10 @@ export async function start(args: string[] = []) {
   await setupStatusline();
   await writePidFile();
   let web: WebServerHandle | null = null;
+  let discordStopGateway: (() => void) | null = null;
 
   async function shutdown() {
+    if (discordStopGateway) discordStopGateway();
     if (web) web.stop();
     await teardownStatusline();
     await cleanupPidFile();
@@ -356,6 +369,31 @@ export async function start(args: string[] = []) {
 
   await initTelegram(currentSettings.telegram.token);
   if (!telegramToken) console.log("  Telegram: not configured");
+
+  // --- Discord ---
+  let discordSendToUser: ((userId: string, text: string) => Promise<void>) | null = null;
+  let discordToken = "";
+
+  async function initDiscord(token: string) {
+    if (token && token !== discordToken) {
+      const { startGateway, sendMessageToUser, stopGateway } = await import("./discord");
+      if (discordToken) stopGateway();
+      startGateway(debugFlag);
+      discordStopGateway = stopGateway;
+      discordSendToUser = (userId, text) => sendMessageToUser(token, userId, text);
+      discordToken = token;
+      console.log(`[${ts()}] Discord: enabled`);
+    } else if (!token && discordToken) {
+      if (discordStopGateway) discordStopGateway();
+      discordStopGateway = null;
+      discordSendToUser = null;
+      discordToken = "";
+      console.log(`[${ts()}] Discord: disabled`);
+    }
+  }
+
+  await initDiscord(currentSettings.discord.token);
+  if (!discordToken) console.log("  Discord: not configured");
 
   function isAddrInUse(err: unknown): boolean {
     if (!err || typeof err !== "object") return false;
@@ -469,6 +507,18 @@ export async function start(args: string[] = []) {
     }
   }
 
+  function forwardToDiscord(label: string, result: { exitCode: number; stdout: string; stderr: string }) {
+    if (!discordSendToUser || currentSettings.discord.allowedUserIds.length === 0) return;
+    const text = result.exitCode === 0
+      ? `${label ? `[${label}]\n` : ""}${result.stdout || "(empty)"}`
+      : `${label ? `[${label}] ` : ""}error (exit ${result.exitCode}): ${result.stderr || "Unknown"}`;
+    for (const userId of currentSettings.discord.allowedUserIds) {
+      discordSendToUser(userId, text).catch((err) =>
+        console.error(`[Discord] Failed to forward to ${userId}: ${err}`)
+      );
+    }
+  }
+
   // --- Heartbeat scheduling ---
   function scheduleHeartbeat() {
     if (heartbeatTimer) clearTimeout(heartbeatTimer);
@@ -513,7 +563,12 @@ export async function start(args: string[] = []) {
           return run("heartbeat", mergedPrompt);
         })
         .then((r) => {
-          if (r) forwardToTelegram("", r);
+          if (!r) return;
+          const shouldForward = currentSettings.heartbeat.forwardToTelegram || !r.stdout.trim().startsWith("HEARTBEAT_OK");
+          if (shouldForward) {
+            forwardToTelegram("", r);
+            forwardToDiscord("", r);
+          }
         });
       nextHeartbeatAt = nextAllowedHeartbeatAt(
         currentSettings.heartbeat,
@@ -537,6 +592,7 @@ export async function start(args: string[] = []) {
     const triggerResult = await run("trigger", triggerPrompt);
     console.log(triggerResult.stdout);
     if (telegramFlag) forwardToTelegram("", triggerResult);
+    if (discordFlag) forwardToDiscord("", triggerResult);
     if (triggerResult.exitCode !== 0) {
       console.error(`[${ts()}] Startup trigger failed (exit ${triggerResult.exitCode}). Daemon will continue running.`);
     }
@@ -599,6 +655,9 @@ export async function start(args: string[] = []) {
 
       // Telegram changes
       await initTelegram(newSettings.telegram.token);
+
+      // Discord changes
+      await initDiscord(newSettings.discord.token);
     } catch (err) {
       console.error(`[${ts()}] Hot-reload error:`, err);
     }
@@ -617,6 +676,7 @@ export async function start(args: string[] = []) {
       })),
       security: currentSettings.security.level,
       telegram: !!currentSettings.telegram.token,
+      discord: !!currentSettings.discord.token,
       startedAt: daemonStartedAt,
       web: {
         enabled: !!web,
@@ -639,6 +699,7 @@ export async function start(args: string[] = []) {
             if (job.notify === false) return;
             if (job.notify === "error" && r.exitCode === 0) return;
             forwardToTelegram(job.name, r);
+            forwardToDiscord(job.name, r);
           })
           .finally(async () => {
             if (job.recurring) return;

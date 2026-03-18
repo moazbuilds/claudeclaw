@@ -54,8 +54,10 @@ const DEFAULT_SETTINGS: Settings = {
     interval: 15,
     prompt: "",
     excludeWindows: [],
+    forwardToTelegram: true,
   },
   telegram: { token: "", allowedUserIds: [] },
+  discord: { token: "", allowedUserIds: [], listenChannels: [] },
   security: { level: "moderate", allowedTools: [], disallowedTools: [] },
   web: { enabled: false, host: "127.0.0.1", port: 4632 },
   stt: { baseUrl: "", model: "" },
@@ -72,11 +74,18 @@ export interface HeartbeatConfig {
   interval: number;
   prompt: string;
   excludeWindows: HeartbeatExcludeWindow[];
+  forwardToTelegram: boolean;
 }
 
 export interface TelegramConfig {
   token: string;
   allowedUserIds: number[];
+}
+
+export interface DiscordConfig {
+  token: string;
+  allowedUserIds: string[]; // Discord snowflake IDs exceed Number.MAX_SAFE_INTEGER
+  listenChannels: string[]; // Channel IDs where bot responds to all messages (no mention needed)
 }
 
 export type SecurityLevel =
@@ -100,6 +109,7 @@ export interface Settings {
   timezoneOffsetMinutes: number;
   heartbeat: HeartbeatConfig;
   telegram: TelegramConfig;
+  discord: DiscordConfig;
   security: SecurityConfig;
   web: WebConfig;
   stt: SttConfig;
@@ -231,10 +241,22 @@ function parseSettings(raw: Record<string, any>): Settings {
       interval: raw.heartbeat?.interval ?? 15,
       prompt: raw.heartbeat?.prompt ?? "",
       excludeWindows: parseExcludeWindows(raw.heartbeat?.excludeWindows),
+      forwardToTelegram: raw.heartbeat?.forwardToTelegram ?? false,
     },
     telegram: {
       token: raw.telegram?.token ?? "",
       allowedUserIds: raw.telegram?.allowedUserIds ?? [],
+    },
+    discord: {
+      token: typeof raw.discord?.token === "string" ? raw.discord.token.trim() : "",
+      allowedUserIds: discordUserIds && discordUserIds.length > 0
+        ? discordUserIds
+        : Array.isArray(raw.discord?.allowedUserIds)
+          ? raw.discord.allowedUserIds.map(String)
+          : [],
+      listenChannels: Array.isArray(raw.discord?.listenChannels)
+        ? raw.discord.listenChannels.map(String)
+        : [],
     },
     security: {
       level,
@@ -292,17 +314,38 @@ function parseTimezoneOffsetMinutes(value: unknown, timezoneFallback?: string): 
   return resolveTimezoneOffsetMinutes(value, timezoneFallback);
 }
 
+/**
+ * Extract discord.allowedUserIds as raw strings from the JSON text.
+ * JSON.parse destroys precision on large numeric snowflakes (>2^53),
+ * so we regex them out of the raw text first.
+ */
+function extractDiscordUserIds(rawText: string): string[] {
+  // Match the "discord" object's "allowedUserIds" array values
+  const discordBlock = rawText.match(/"discord"\s*:\s*\{[\s\S]*?\}/);
+  if (!discordBlock) return [];
+  const arrayMatch = discordBlock[0].match(/"allowedUserIds"\s*:\s*\[([\s\S]*?)\]/);
+  if (!arrayMatch) return [];
+  const items: string[] = [];
+  // Match both quoted strings and bare numbers
+  for (const m of arrayMatch[1].matchAll(/("(\d+)"|(\d+))/g)) {
+    items.push(m[2] ?? m[3]);
+  }
+  return items;
+}
+
 export async function loadSettings(): Promise<Settings> {
   if (cached) return cached;
-  const raw = await Bun.file(SETTINGS_FILE).json();
-  cached = parseSettings(raw);
+  const rawText = await Bun.file(SETTINGS_FILE).text();
+  const raw = JSON.parse(rawText);
+  cached = parseSettings(raw, extractDiscordUserIds(rawText));
   return cached;
 }
 
 /** Re-read settings from disk, bypassing cache. */
 export async function reloadSettings(): Promise<Settings> {
-  const raw = await Bun.file(SETTINGS_FILE).json();
-  cached = parseSettings(raw);
+  const rawText = await Bun.file(SETTINGS_FILE).text();
+  const raw = JSON.parse(rawText);
+  cached = parseSettings(raw, extractDiscordUserIds(rawText));
   return cached;
 }
 

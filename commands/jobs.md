@@ -4,6 +4,8 @@ description: "Create, list, edit, or delete cron jobs. Triggers: create a job, a
 
 Manage cron jobs for the heartbeat daemon. Use `$ARGUMENTS` to determine the action.
 
+**CRITICAL: Job files MUST be created in the project-relative path `.claude/claudeclaw/jobs/`, NOT in `~/.claude/claudeclaw/jobs/`.** The daemon only watches the project directory. Using the home directory path will silently fail — the job will never fire.
+
 Parse `$ARGUMENTS` to identify the sub-command. If no arguments are given, list all jobs.
 
 ## Sub-commands
