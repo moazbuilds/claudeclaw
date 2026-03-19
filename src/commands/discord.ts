@@ -2,7 +2,7 @@ import { ensureProjectClaudeMd, run, runUserMessage } from "../runner";
 import { getSettings, loadSettings } from "../config";
 import { resetSession } from "../sessions";
 import { transcribeAudioToText } from "../whisper";
-import { resolveSkillPrompt } from "../skills";
+import { resolveSkillPrompt, listSkills } from "../skills";
 import { mkdir } from "node:fs/promises";
 import { extname, join } from "node:path";
 
@@ -284,26 +284,41 @@ async function downloadDiscordAttachment(
 async function registerSlashCommands(token: string): Promise<void> {
   if (!applicationId) return;
 
-  const commands = [
-    {
-      name: "start",
-      description: "Show welcome message and usage instructions",
-      type: 1,
-    },
-    {
-      name: "reset",
-      description: "Reset the global session for a fresh start",
-      type: 1,
-    },
-  ];
+  try {
+    const skills = await listSkills();
+    const commands = [
+      { name: "start", description: "Show welcome message and usage instructions", type: 1 },
+      { name: "reset", description: "Reset the global session for a fresh start", type: 1 },
+    ];
+    for (const skill of skills) {
+      // Discord slash commands: 1-32 chars, lowercase, a-z, 0-9, hyphens, underscores
+      const cmd = skill.name
+        .toLowerCase()
+        .replace(/[.:]/g, "-")
+        .replace(/[^a-z0-9\-_]/g, "")
+        .slice(0, 32);
+      if (!cmd || cmd === "start" || cmd === "reset") continue;
+      if (cmd.length > 30) continue;
+      const desc =
+        skill.description.length >= 3
+          ? skill.description.slice(0, 100)
+          : `Run ${skill.name} skill`;
+      commands.push({ name: cmd, description: desc, type: 1 });
+    }
+    if (commands.length > 100) commands.length = 100;
 
-  await discordApi(
-    token,
-    "PUT",
-    `/applications/${applicationId}/commands`,
-    commands,
-  );
-  debugLog("Slash commands registered");
+    await discordApi(
+      token,
+      "PUT",
+      `/applications/${applicationId}/commands`,
+      commands,
+    );
+    debugLog(`Slash commands registered: ${commands.length}`);
+  } catch (err) {
+    console.error(
+      `[Discord] Failed to register slash commands: ${err instanceof Error ? err.message : err}`,
+    );
+  }
 }
 
 // --- Interaction response helper ---
