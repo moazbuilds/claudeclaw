@@ -208,6 +208,25 @@ function isAudioDocument(document?: TelegramDocument): boolean {
   return Boolean(document?.mime_type?.startsWith("audio/"));
 }
 
+const DOCUMENT_MIME_TYPES = new Set([
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/msword",
+  "application/vnd.ms-excel",
+  "application/vnd.ms-powerpoint",
+  "text/plain",
+  "text/csv",
+  "text/markdown",
+]);
+
+function isDocumentAttachment(document?: TelegramDocument): boolean {
+  if (!document?.mime_type) return false;
+  if (isImageDocument(document) || isAudioDocument(document)) return false;
+  return DOCUMENT_MIME_TYPES.has(document.mime_type);
+}
+
 function pickLargestPhoto(photo: TelegramPhotoSize[]): TelegramPhotoSize {
   return [...photo].sort((a, b) => {
     const sizeA = a.file_size ?? a.width * a.height;
@@ -301,6 +320,34 @@ async function sendTyping(token: string, chatId: number, threadId?: number): Pro
   }).catch(() => {});
 }
 
+async function sendDocumentToChat(
+  token: string,
+  chatId: number,
+  filePath: string,
+  threadId?: number
+): Promise<void> {
+  const file = Bun.file(filePath);
+  if (!(await file.exists())) {
+    console.error(`[Telegram] sendDocument: file not found: ${filePath}`);
+    return;
+  }
+
+  const fileName = filePath.split("/").pop() ?? "document";
+  const formData = new FormData();
+  formData.append("chat_id", String(chatId));
+  formData.append("document", file, fileName);
+  if (threadId) formData.append("message_thread_id", String(threadId));
+
+  const res = await fetch(`${API_BASE}${token}/sendDocument`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Telegram sendDocument failed: ${res.status} ${body}`);
+  }
+}
+
 function extractReactionDirective(text: string): { cleanedText: string; reactionEmoji: string | null } {
   let reactionEmoji: string | null = null;
   const cleanedText = text
@@ -313,6 +360,23 @@ function extractReactionDirective(text: string): { cleanedText: string; reaction
     .replace(/\n{3,}/g, "\n\n")
     .trim();
   return { cleanedText, reactionEmoji };
+}
+
+function extractSendFileDirectives(text: string): {
+  cleanedText: string;
+  filePaths: string[];
+} {
+  const filePaths: string[] = [];
+  const cleanedText = text
+    .replace(/\[send-file:([^\]\r\n]+)\]/gi, (_match, raw) => {
+      const candidate = String(raw).trim();
+      if (candidate) filePaths.push(candidate);
+      return "";
+    })
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return { cleanedText, filePaths };
 }
 
 async function sendReaction(token: string, chatId: number, messageId: number, emoji: string): Promise<void> {
@@ -421,6 +485,39 @@ async function downloadVoiceFromMessage(token: string, message: TelegramMessage)
   return localPath;
 }
 
+async function downloadDocumentFromMessage(
+  token: string,
+  message: TelegramMessage
+): Promise<{ localPath: string; originalName: string } | null> {
+  const doc = message.document;
+  if (!doc || !isDocumentAttachment(doc)) return null;
+
+  const fileMeta = await callApi<{ ok: boolean; result: TelegramFile }>(
+    token,
+    "getFile",
+    { file_id: doc.file_id }
+  );
+  if (!fileMeta.ok || !fileMeta.result.file_path) return null;
+
+  const remotePath = fileMeta.result.file_path;
+  const downloadUrl = `${FILE_API_BASE}${token}/${remotePath}`;
+  const response = await fetch(downloadUrl);
+  if (!response.ok) {
+    throw new Error(`Telegram file download failed: ${response.status} ${response.statusText}`);
+  }
+
+  const dir = join(process.cwd(), ".claude", "claudeclaw", "inbox", "telegram");
+  await mkdir(dir, { recursive: true });
+
+  const originalName = doc.file_name ?? `document${extname(remotePath) || ""}`;
+  const ext = extname(originalName) || extname(remotePath) || "";
+  const filename = `${message.chat.id}-${message.message_id}-${Date.now()}${ext}`;
+  const localPath = join(dir, filename);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  await Bun.write(localPath, bytes);
+  return { localPath, originalName };
+}
+
 async function handleMyChatMember(update: TelegramMyChatMemberUpdate): Promise<void> {
   const config = getSettings().telegram;
   const chat = update.chat;
@@ -471,6 +568,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
   const isGroup = chatType === "group" || chatType === "supergroup";
   const hasImage = Boolean((message.photo && message.photo.length > 0) || isImageDocument(message.document));
   const hasVoice = Boolean(message.voice || message.audio || isAudioDocument(message.document));
+  const hasDocument = Boolean(message.document && isDocumentAttachment(message.document));
 
   if (!isPrivate && !isGroup) return;
 
@@ -495,7 +593,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     return;
   }
 
-  if (!text.trim() && !hasImage && !hasVoice) {
+  if (!text.trim() && !hasImage && !hasVoice && !hasDocument) {
     debugLog(`Skip message chat=${chatId} from=${userId ?? "unknown"} reason=empty_text`);
     return;
   }
@@ -540,7 +638,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
   }
 
   const label = message.from?.username ?? String(userId ?? "unknown");
-  const mediaParts = [hasImage ? "image" : "", hasVoice ? "voice" : ""].filter(Boolean);
+  const mediaParts = [hasImage ? "image" : "", hasVoice ? "voice" : "", hasDocument ? "doc" : ""].filter(Boolean);
   const mediaSuffix = mediaParts.length > 0 ? ` [${mediaParts.join("+")}]` : "";
   console.log(
     `[${new Date().toLocaleTimeString()}] Telegram ${label}${mediaSuffix}: "${text.slice(0, 60)}${text.length > 60 ? "..." : ""}"`
@@ -594,6 +692,17 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
       }
     }
 
+    let documentInfo: { localPath: string; originalName: string } | null = null;
+    if (hasDocument) {
+      try {
+        documentInfo = await downloadDocumentFromMessage(config.token, message);
+      } catch (err) {
+        console.error(
+          `[Telegram] Failed to download document for ${label}: ${err instanceof Error ? err.message : err}`
+        );
+      }
+    }
+
     const promptParts = [`[Telegram from ${label}]`];
     if (threadId) promptParts.push(`[thread:${threadId}]`);
     if (skillContext) {
@@ -619,19 +728,44 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
         "The user attached voice audio, but it could not be transcribed. Respond and ask them to resend a clearer clip."
       );
     }
+    if (documentInfo) {
+      promptParts.push(`Document path: ${documentInfo.localPath}`);
+      promptParts.push(`Original filename: ${documentInfo.originalName}`);
+      promptParts.push(
+        "The user attached a document. Read and process this file directly."
+      );
+    } else if (hasDocument) {
+      promptParts.push(
+        "The user attached a document, but downloading it failed. Respond and ask them to resend."
+      );
+    }
     const prefixedPrompt = promptParts.join("\n");
     const result = await runUserMessage("telegram", prefixedPrompt);
 
     if (result.exitCode !== 0) {
       await sendMessage(config.token, chatId, `Error (exit ${result.exitCode}): ${result.stderr || "Unknown error"}`, threadId);
     } else {
-      const { cleanedText, reactionEmoji } = extractReactionDirective(result.stdout || "");
+      const { cleanedText: afterReact, reactionEmoji } = extractReactionDirective(result.stdout || "");
+      const { cleanedText, filePaths } = extractSendFileDirectives(afterReact);
       if (reactionEmoji) {
         await sendReaction(config.token, chatId, message.message_id, reactionEmoji).catch((err) => {
           console.error(`[Telegram] Failed to send reaction for ${label}: ${err instanceof Error ? err.message : err}`);
         });
       }
-      await sendMessage(config.token, chatId, cleanedText || "(empty response)", threadId);
+      if (cleanedText) {
+        await sendMessage(config.token, chatId, cleanedText, threadId);
+      }
+      for (const fp of filePaths) {
+        try {
+          await sendDocumentToChat(config.token, chatId, fp, threadId);
+        } catch (err) {
+          console.error(`[Telegram] Failed to send document for ${label}: ${err instanceof Error ? err.message : err}`);
+          await sendMessage(config.token, chatId, `Failed to send file: ${fp.split("/").pop()}`, threadId);
+        }
+      }
+      if (!cleanedText && filePaths.length === 0) {
+        await sendMessage(config.token, chatId, "(empty response)", threadId);
+      }
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
