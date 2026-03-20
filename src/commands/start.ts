@@ -564,7 +564,7 @@ export async function start(args: string[] = []) {
         })
         .then((r) => {
           if (!r) return;
-          const shouldForward = currentSettings.heartbeat.forwardToTelegram || !r.stdout.trim().startsWith("HEARTBEAT_OK");
+          const shouldForward = currentSettings.heartbeat.forwardToTelegram || !r.stdout.includes("HEARTBEAT_OK");
           if (shouldForward) {
             forwardToTelegram("", r);
             forwardToDiscord("", r);
