@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { join } from "path";
 import { existsSync } from "fs";
-import { getSession, createSession } from "./sessions";
+import { getSession, createSession, incrementTurn, markCompactWarned } from "./sessions";
 import { getSettings, type ModelConfig, type SecurityConfig } from "./config";
 import { buildClockPromptPrefix } from "./timezone";
 
@@ -15,6 +15,34 @@ const PROJECT_CLAUDE_MD = join(process.cwd(), "CLAUDE.md");
 const LEGACY_PROJECT_CLAUDE_MD = join(process.cwd(), ".claude", "CLAUDE.md");
 const CLAUDECLAW_BLOCK_START = "<!-- claudeclaw:managed:start -->";
 const CLAUDECLAW_BLOCK_END = "<!-- claudeclaw:managed:end -->";
+
+/**
+ * Compact configuration.
+ * COMPACT_WARN_THRESHOLD: notify user that context is getting large.
+ * COMPACT_TIMEOUT_ENABLED: whether to auto-compact on timeout (exit 124).
+ */
+const COMPACT_WARN_THRESHOLD = 25;
+const COMPACT_TIMEOUT_ENABLED = true;
+
+export type CompactEvent =
+  | { type: "warn"; turnCount: number }
+  | { type: "auto-compact-start" }
+  | { type: "auto-compact-done"; success: boolean }
+  | { type: "auto-compact-retry"; success: boolean; stdout: string; stderr: string; exitCode: number };
+
+type CompactEventListener = (event: CompactEvent) => void;
+const compactListeners: CompactEventListener[] = [];
+
+/** Register a listener for compact-related events (warnings, auto-compact notifications). */
+export function onCompactEvent(listener: CompactEventListener): void {
+  compactListeners.push(listener);
+}
+
+function emitCompactEvent(event: CompactEvent): void {
+  for (const listener of compactListeners) {
+    try { listener(event); } catch {}
+  }
+}
 
 export interface RunResult {
   stdout: string;
@@ -250,6 +278,28 @@ export async function loadHeartbeatPromptTemplate(): Promise<string> {
   return "";
 }
 
+/** Run /compact on the current session to reduce context size. */
+async function runCompact(
+  sessionId: string,
+  model: string,
+  api: string,
+  baseEnv: Record<string, string>,
+  securityArgs: string[],
+  timeoutMs: number
+): Promise<boolean> {
+  const compactArgs = [
+    "claude", "-p", "/compact",
+    "--output-format", "text",
+    "--resume", sessionId,
+    ...securityArgs,
+  ];
+  console.log(`[${new Date().toLocaleTimeString()}] Running /compact on session ${sessionId.slice(0, 8)}...`);
+  const result = await runClaudeOnce(compactArgs, model, api, baseEnv, timeoutMs);
+  const success = result.exitCode === 0;
+  console.log(`[${new Date().toLocaleTimeString()}] Compact ${success ? "succeeded" : `failed (exit ${result.exitCode})`}`);
+  return success;
+}
+
 async function execClaude(name: string, prompt: string): Promise<RunResult> {
   await mkdir(LOGS_DIR, { recursive: true });
 
@@ -367,6 +417,70 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
 
   await Bun.write(logFile, output);
   console.log(`[${new Date().toLocaleTimeString()}] Done: ${name} → ${logFile}`);
+
+  // --- Auto-compact on timeout (exit 124) ---
+  if (COMPACT_TIMEOUT_ENABLED && exitCode === 124 && !isNew && existing) {
+    emitCompactEvent({ type: "auto-compact-start" });
+    const compactOk = await runCompact(
+      existing.sessionId,
+      primaryConfig.model,
+      primaryConfig.api,
+      baseEnv,
+      securityArgs,
+      timeoutMs
+    );
+    emitCompactEvent({ type: "auto-compact-done", success: compactOk });
+
+    // Retry the original prompt after successful compact
+    if (compactOk) {
+      console.log(`[${new Date().toLocaleTimeString()}] Retrying ${name} after compact...`);
+      const retryExec = await runClaudeOnce(args, primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs);
+      const retryResult: RunResult = {
+        stdout: retryExec.rawStdout,
+        stderr: retryExec.stderr,
+        exitCode: retryExec.exitCode,
+      };
+      emitCompactEvent({
+        type: "auto-compact-retry",
+        success: retryExec.exitCode === 0,
+        stdout: retryResult.stdout,
+        stderr: retryResult.stderr,
+        exitCode: retryResult.exitCode,
+      });
+
+      // Write retry log
+      const retryTimestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const retryLogFile = join(LOGS_DIR, `${name}-retry-${retryTimestamp}.log`);
+      await Bun.write(retryLogFile, [
+        `# ${name} (retry after compact)`,
+        `Date: ${new Date().toISOString()}`,
+        `Exit code: ${retryResult.exitCode}`,
+        "",
+        "## Output",
+        retryResult.stdout,
+        ...(retryResult.stderr ? ["## Stderr", retryResult.stderr] : []),
+      ].join("\n"));
+
+      // Increment turn for the retry
+      if (retryExec.exitCode === 0) {
+        const count = await incrementTurn();
+        console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${count} (after compact + retry)`);
+      }
+
+      return retryResult;
+    }
+  }
+
+  // --- Turn tracking & compact warning ---
+  if (exitCode === 0 && !isNew) {
+    const turnCount = await incrementTurn();
+    console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${turnCount}`);
+
+    if (turnCount >= COMPACT_WARN_THRESHOLD && existing && !existing.compactWarned) {
+      await markCompactWarned();
+      emitCompactEvent({ type: "warn", turnCount });
+    }
+  }
 
   return result;
 }

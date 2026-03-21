@@ -182,6 +182,7 @@ function parseSettings(raw: Record<string, any>, discordUserIds?: string[]): Set
       baseUrl: typeof raw.stt?.baseUrl === "string" ? raw.stt.baseUrl.trim() : "",
       model: typeof raw.stt?.model === "string" ? raw.stt.model.trim() : "",
     },
+    sessionTimeoutMs: Number.isFinite(raw.sessionTimeoutMs) ? Number(raw.sessionTimeoutMs) : 300000,
   };
 }
 
