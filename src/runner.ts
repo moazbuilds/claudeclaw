@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { join } from "path";
 import { existsSync } from "fs";
-import { getSession, createSession } from "./sessions";
+import { getSession, createSession, incrementTurn, markCompactWarned } from "./sessions";
 import { getSettings, type ModelConfig, type SecurityConfig } from "./config";
 import { buildClockPromptPrefix } from "./timezone";
 
@@ -15,6 +15,34 @@ const PROJECT_CLAUDE_MD = join(process.cwd(), "CLAUDE.md");
 const LEGACY_PROJECT_CLAUDE_MD = join(process.cwd(), ".claude", "CLAUDE.md");
 const CLAUDECLAW_BLOCK_START = "<!-- claudeclaw:managed:start -->";
 const CLAUDECLAW_BLOCK_END = "<!-- claudeclaw:managed:end -->";
+
+/**
+ * Compact configuration.
+ * COMPACT_WARN_THRESHOLD: notify user that context is getting large.
+ * COMPACT_TIMEOUT_ENABLED: whether to auto-compact on timeout (exit 124).
+ */
+const COMPACT_WARN_THRESHOLD = 25;
+const COMPACT_TIMEOUT_ENABLED = true;
+
+export type CompactEvent =
+  | { type: "warn"; turnCount: number }
+  | { type: "auto-compact-start" }
+  | { type: "auto-compact-done"; success: boolean }
+  | { type: "auto-compact-retry"; success: boolean; stdout: string; stderr: string; exitCode: number };
+
+type CompactEventListener = (event: CompactEvent) => void;
+const compactListeners: CompactEventListener[] = [];
+
+/** Register a listener for compact-related events (warnings, auto-compact notifications). */
+export function onCompactEvent(listener: CompactEventListener): void {
+  compactListeners.push(listener);
+}
+
+function emitCompactEvent(event: CompactEvent): void {
+  for (const listener of compactListeners) {
+    try { listener(event); } catch {}
+  }
+}
 
 export interface RunResult {
   stdout: string;
@@ -72,11 +100,15 @@ function buildChildEnv(baseEnv: Record<string, string>, model: string, api: stri
   return childEnv;
 }
 
+/** Default timeout for a single Claude Code invocation (5 minutes). */
+const CLAUDE_TIMEOUT_MS = 5 * 60 * 1000;
+
 async function runClaudeOnce(
   baseArgs: string[],
   model: string,
   api: string,
-  baseEnv: Record<string, string>
+  baseEnv: Record<string, string>,
+  timeoutMs: number = CLAUDE_TIMEOUT_MS
 ): Promise<{ rawStdout: string; stderr: string; exitCode: number }> {
   const args = [...baseArgs];
   const normalizedModel = model.trim().toLowerCase();
@@ -88,17 +120,40 @@ async function runClaudeOnce(
     env: buildChildEnv(baseEnv, model, api),
   });
 
-  const [rawStdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
-  await proc.exited;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error(`Claude session timed out after ${timeoutMs / 1000}s`)), timeoutMs);
+  });
 
-  return {
-    rawStdout,
-    stderr,
-    exitCode: proc.exitCode ?? 1,
-  };
+  try {
+    const [rawStdout, stderr] = await Promise.race([
+      Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ]),
+      timeoutPromise,
+    ]) as [string, string];
+    await proc.exited;
+
+    return {
+      rawStdout,
+      stderr,
+      exitCode: proc.exitCode ?? 1,
+    };
+  } catch (err) {
+    // Kill the hung process
+    try { proc.kill("SIGTERM"); } catch {}
+    // Give it a moment to exit gracefully, then force kill
+    setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 5000);
+
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[${new Date().toLocaleTimeString()}] ${message}`);
+
+    return {
+      rawStdout: "",
+      stderr: message,
+      exitCode: 124, // same as `timeout` command convention
+    };
+  }
 }
 
 const PROJECT_DIR = process.cwd();
@@ -223,6 +278,28 @@ export async function loadHeartbeatPromptTemplate(): Promise<string> {
   return "";
 }
 
+/** Run /compact on the current session to reduce context size. */
+async function runCompact(
+  sessionId: string,
+  model: string,
+  api: string,
+  baseEnv: Record<string, string>,
+  securityArgs: string[],
+  timeoutMs: number
+): Promise<boolean> {
+  const compactArgs = [
+    "claude", "-p", "/compact",
+    "--output-format", "text",
+    "--resume", sessionId,
+    ...securityArgs,
+  ];
+  console.log(`[${new Date().toLocaleTimeString()}] Running /compact on session ${sessionId.slice(0, 8)}...`);
+  const result = await runClaudeOnce(compactArgs, model, api, baseEnv, timeoutMs);
+  const success = result.exitCode === 0;
+  console.log(`[${new Date().toLocaleTimeString()}] Compact ${success ? "succeeded" : `failed (exit ${result.exitCode})`}`);
+  return success;
+}
+
 async function execClaude(name: string, prompt: string): Promise<RunResult> {
   await mkdir(LOGS_DIR, { recursive: true });
 
@@ -231,7 +308,8 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const logFile = join(LOGS_DIR, `${name}-${timestamp}.log`);
 
-  const { security, model, api, fallback } = getSettings();
+  const settings = getSettings();
+  const { security, model, api, fallback } = settings;
   const primaryConfig: ModelConfig = { model, api };
   const fallbackConfig: ModelConfig = {
     model: fallback?.model ?? "",
@@ -280,7 +358,8 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
   const { CLAUDECODE: _, ...cleanEnv } = process.env;
   const baseEnv = { ...cleanEnv } as Record<string, string>;
 
-  let exec = await runClaudeOnce(args, primaryConfig.model, primaryConfig.api, baseEnv);
+  const timeoutMs = settings.sessionTimeoutMs || CLAUDE_TIMEOUT_MS;
+  let exec = await runClaudeOnce(args, primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs);
   const primaryRateLimit = extractRateLimitMessage(exec.rawStdout, exec.stderr);
   let usedFallback = false;
 
@@ -288,7 +367,7 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
     console.warn(
       `[${new Date().toLocaleTimeString()}] Claude limit reached; retrying with fallback${fallbackConfig.model ? ` (${fallbackConfig.model})` : ""}...`
     );
-    exec = await runClaudeOnce(args, fallbackConfig.model, fallbackConfig.api, baseEnv);
+    exec = await runClaudeOnce(args, fallbackConfig.model, fallbackConfig.api, baseEnv, timeoutMs);
     usedFallback = true;
   }
 
@@ -338,6 +417,70 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
 
   await Bun.write(logFile, output);
   console.log(`[${new Date().toLocaleTimeString()}] Done: ${name} → ${logFile}`);
+
+  // --- Auto-compact on timeout (exit 124) ---
+  if (COMPACT_TIMEOUT_ENABLED && exitCode === 124 && !isNew && existing) {
+    emitCompactEvent({ type: "auto-compact-start" });
+    const compactOk = await runCompact(
+      existing.sessionId,
+      primaryConfig.model,
+      primaryConfig.api,
+      baseEnv,
+      securityArgs,
+      timeoutMs
+    );
+    emitCompactEvent({ type: "auto-compact-done", success: compactOk });
+
+    // Retry the original prompt after successful compact
+    if (compactOk) {
+      console.log(`[${new Date().toLocaleTimeString()}] Retrying ${name} after compact...`);
+      const retryExec = await runClaudeOnce(args, primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs);
+      const retryResult: RunResult = {
+        stdout: retryExec.rawStdout,
+        stderr: retryExec.stderr,
+        exitCode: retryExec.exitCode,
+      };
+      emitCompactEvent({
+        type: "auto-compact-retry",
+        success: retryExec.exitCode === 0,
+        stdout: retryResult.stdout,
+        stderr: retryResult.stderr,
+        exitCode: retryResult.exitCode,
+      });
+
+      // Write retry log
+      const retryTimestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const retryLogFile = join(LOGS_DIR, `${name}-retry-${retryTimestamp}.log`);
+      await Bun.write(retryLogFile, [
+        `# ${name} (retry after compact)`,
+        `Date: ${new Date().toISOString()}`,
+        `Exit code: ${retryResult.exitCode}`,
+        "",
+        "## Output",
+        retryResult.stdout,
+        ...(retryResult.stderr ? ["## Stderr", retryResult.stderr] : []),
+      ].join("\n"));
+
+      // Increment turn for the retry
+      if (retryExec.exitCode === 0) {
+        const count = await incrementTurn();
+        console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${count} (after compact + retry)`);
+      }
+
+      return retryResult;
+    }
+  }
+
+  // --- Turn tracking & compact warning ---
+  if (exitCode === 0 && !isNew) {
+    const turnCount = await incrementTurn();
+    console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${turnCount}`);
+
+    if (turnCount >= COMPACT_WARN_THRESHOLD && existing && !existing.compactWarned) {
+      await markCompactWarned();
+      emitCompactEvent({ type: "warn", turnCount });
+    }
+  }
 
   return result;
 }

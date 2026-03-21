@@ -1,7 +1,7 @@
 import { writeFile, unlink, mkdir } from "fs/promises";
 import { join } from "path";
 import { fileURLToPath } from "url";
-import { run, runUserMessage, bootstrap, ensureProjectClaudeMd, loadHeartbeatPromptTemplate } from "../runner";
+import { run, runUserMessage, bootstrap, ensureProjectClaudeMd, loadHeartbeatPromptTemplate, onCompactEvent } from "../runner";
 import { writeState, type StateData } from "../statusline";
 import { cronMatches, nextCronMatch } from "../cron";
 import { clearJobSchedule, loadJobs } from "../jobs";
@@ -604,6 +604,42 @@ export async function start(args: string[] = []) {
 
   // Install plugins without blocking daemon startup.
   startPreflightInBackground(process.cwd());
+
+  // --- Compact event notifications ---
+  onCompactEvent((event) => {
+    switch (event.type) {
+      case "warn": {
+        const msg = `⚠️ Session context is getting large (${event.turnCount} turns). Consider running /compact when convenient.`;
+        forwardToTelegram("compact", { exitCode: 0, stdout: msg, stderr: "" });
+        forwardToDiscord("compact", { exitCode: 0, stdout: msg, stderr: "" });
+        break;
+      }
+      case "auto-compact-start": {
+        console.log(`[${ts()}] Auto-compact triggered after timeout`);
+        break;
+      }
+      case "auto-compact-done": {
+        const msg = event.success
+          ? "🔧 Session timed out — auto-compact succeeded, retrying original request..."
+          : "🔧 Session timed out — auto-compact failed. Consider restarting the daemon.";
+        forwardToTelegram("compact", { exitCode: 0, stdout: msg, stderr: "" });
+        forwardToDiscord("compact", { exitCode: 0, stdout: msg, stderr: "" });
+        break;
+      }
+      case "auto-compact-retry": {
+        if (event.success) {
+          // Forward the retry result as normal output
+          forwardToTelegram("", { exitCode: 0, stdout: event.stdout, stderr: "" });
+          forwardToDiscord("", { exitCode: 0, stdout: event.stdout, stderr: "" });
+        } else {
+          const msg = `⚠️ Retry after compact also failed (exit ${event.exitCode}). The session may need a restart.`;
+          forwardToTelegram("compact", { exitCode: 0, stdout: msg, stderr: "" });
+          forwardToDiscord("compact", { exitCode: 0, stdout: msg, stderr: "" });
+        }
+        break;
+      }
+    }
+  });
 
   if (currentSettings.heartbeat.enabled) scheduleHeartbeat();
 
