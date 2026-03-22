@@ -8,16 +8,16 @@
 <p align="center">
   <img src="https://awesome.re/badge.svg" alt="Awesome" />
   <a href="https://github.com/moazbuilds/ClaudeClaw/stargazers">
-    <img src="https://img.shields.io/github/stars/moazbuilds/ClaudeClaw?style=flat-square&color=f59e0b&labelColor=f59e0b" alt="GitHub Stars" />
+    <img src="https://img.shields.io/github/stars/moazbuilds/ClaudeClaw?style=flat-square&color=f59e0b" alt="GitHub Stars" />
   </a>
   <a href="https://github.com/moazbuilds/ClaudeClaw">
-    <img src="https://img.shields.io/badge/downloads-~10k-2da44e?style=flat-square&labelColor=2da44e" alt="Downloads ~10k" />
+    <img src="https://img.shields.io/badge/downloads-~10k-2da44e?style=flat-square" alt="Downloads ~10k" />
   </a>
   <a href="https://github.com/moazbuilds/ClaudeClaw/commits/master">
-    <img src="https://img.shields.io/github/last-commit/moazbuilds/ClaudeClaw?style=flat-square&color=0ea5e9&labelColor=0ea5e9" alt="Last Commit" />
+    <img src="https://img.shields.io/github/last-commit/moazbuilds/ClaudeClaw?style=flat-square&color=0ea5e9" alt="Last Commit" />
   </a>
   <a href="https://github.com/moazbuilds/ClaudeClaw/graphs/contributors">
-    <img src="https://img.shields.io/github/contributors/moazbuilds/ClaudeClaw?style=flat-square&color=a855f7&labelColor=a855f7" alt="Contributors" />
+    <img src="https://img.shields.io/github/contributors/moazbuilds/ClaudeClaw?style=flat-square&color=a855f7" alt="Contributors" />
   </a>
   <a href="https://x.com/moazbuilds">
     <img src="https://img.shields.io/badge/X-%40moazbuilds-000000?style=flat-square&logo=x" alt="X @moazbuilds" />
