@@ -1,6 +1,9 @@
-import { ensureProjectClaudeMd, run, runUserMessage } from "../runner";
+import { ensureProjectClaudeMd, run, runUserMessage, compactCurrentSession } from "../runner";
 import { getSettings, loadSettings } from "../config";
-import { resetSession } from "../sessions";
+import { resetSession, peekSession } from "../sessions";
+import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { transcribeAudioToText } from "../whisper";
 import { resolveSkillPrompt } from "../skills";
 import { mkdir } from "node:fs/promises";
@@ -295,6 +298,21 @@ async function registerSlashCommands(token: string): Promise<void> {
       description: "Reset the global session for a fresh start",
       type: 1,
     },
+    {
+      name: "compact",
+      description: "Compact session to reduce context size",
+      type: 1,
+    },
+    {
+      name: "status",
+      description: "Show current session status",
+      type: 1,
+    },
+    {
+      name: "context",
+      description: "Show context window usage",
+      type: 1,
+    },
   ];
 
   await discordApi(
@@ -505,6 +523,99 @@ async function handleInteractionCreate(token: string, interaction: DiscordIntera
       await respondToInteraction(interaction, {
         content: "Global session reset. Next message starts fresh.",
       });
+      return;
+    }
+
+    if (interaction.data.name === "compact") {
+      await respondToInteraction(interaction, { content: "⏳ Compacting session..." });
+      const result = await compactCurrentSession();
+      await fetch(
+        `${DISCORD_API}/webhooks/${applicationId}/${interaction.token}/messages/@original`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: result.message }),
+        },
+      );
+      return;
+    }
+
+    if (interaction.data.name === "status") {
+      const session = await peekSession();
+      const settings = getSettings();
+      if (!session) {
+        await respondToInteraction(interaction, { content: "📊 No active session." });
+        return;
+      }
+      const lines = [
+        "📊 **Session Status**",
+        `Session: \`${session.sessionId.slice(0, 8)}\``,
+        `Turns: ${(session as any).turnCount ?? 0}`,
+        `Model: ${settings.model || "default"}`,
+        `Security: ${settings.security.level}`,
+        `Created: ${session.createdAt}`,
+        `Last used: ${session.lastUsedAt}`,
+        `Compact warned: ${(session as any).compactWarned ? "yes" : "no"}`,
+      ];
+      await respondToInteraction(interaction, { content: lines.join("\n") });
+      return;
+    }
+
+    if (interaction.data.name === "context") {
+      const session = await peekSession();
+      if (!session) {
+        await respondToInteraction(interaction, { content: "No active session." });
+        return;
+      }
+      const home = homedir();
+      const projectSlug = process.cwd().replace(/\//g, "-");
+      const jsonlPath = `${home}/.claude/projects/${projectSlug}/${session.sessionId}.jsonl`;
+      if (!existsSync(jsonlPath)) {
+        await respondToInteraction(interaction, { content: "Conversation file not found." });
+        return;
+      }
+      try {
+        const raw = await readFile(jsonlPath, "utf8");
+        const fileLines = raw.trim().split("\n");
+        let lastUsage: any = null;
+        let totalOutput = 0;
+        for (const line of fileLines) {
+          try {
+            const obj = JSON.parse(line);
+            if (obj.message?.usage) lastUsage = obj.message.usage;
+            if (obj.message?.usage?.output_tokens) totalOutput += obj.message.usage.output_tokens;
+          } catch {}
+        }
+        if (!lastUsage) {
+          await respondToInteraction(interaction, { content: "No usage data found." });
+          return;
+        }
+        const input = lastUsage.input_tokens ?? 0;
+        const cacheCreation = lastUsage.cache_creation_input_tokens ?? 0;
+        const cacheRead = lastUsage.cache_read_input_tokens ?? 0;
+        const totalContext = input + cacheCreation + cacheRead;
+        const maxContext = 200000;
+        const pct = ((totalContext / maxContext) * 100).toFixed(1);
+        const filled = Math.round((Math.min(totalContext / maxContext, 1)) * 20);
+        const bar = "█".repeat(filled) + "░".repeat(20 - filled);
+        const msg = [
+          `📐 **Context Window**`,
+          `${bar} ${pct}%`,
+          ``,
+          `Total: \`${totalContext.toLocaleString()}\` / \`${maxContext.toLocaleString()}\` tokens`,
+          `├ Input: \`${input.toLocaleString()}\``,
+          `├ Cache creation: \`${cacheCreation.toLocaleString()}\``,
+          `├ Cache read: \`${cacheRead.toLocaleString()}\``,
+          `└ Output (cumulative): \`${totalOutput.toLocaleString()}\``,
+          ``,
+          `Turns: ${(session as any).turnCount ?? 0}`,
+        ];
+        await respondToInteraction(interaction, { content: msg.join("\n") });
+      } catch (err) {
+        await respondToInteraction(interaction, {
+          content: `Failed to read context: ${err instanceof Error ? err.message : err}`,
+        });
+      }
       return;
     }
 
