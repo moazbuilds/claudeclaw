@@ -215,6 +215,12 @@ async function sendReaction(
   ).catch(() => {});
 }
 
+async function joinThread(token: string, threadId: string): Promise<void> {
+  await discordApi(token, "PUT", `/channels/${threadId}/thread-members/@me`).catch((err) =>
+    debugLog(`Failed to join thread ${threadId}: ${err}`),
+  );
+}
+
 // --- Reaction directive extraction (same as telegram.ts) ---
 
 function extractReactionDirective(text: string): { cleanedText: string; reactionEmoji: string | null } {
@@ -246,6 +252,10 @@ function guildTriggerReason(message: DiscordMessage): string | null {
   // Listen channel (respond to all messages, no mention needed)
   const config = getSettings().discord;
   if (config.listenChannels.includes(message.channel_id)) return "listen_channel";
+
+  // Thread whose parent is a listen channel
+  const parentId = threadParentMap.get(message.channel_id);
+  if (parentId && config.listenChannels.includes(parentId)) return "listen_channel_thread";
 
   return null;
 }
@@ -732,6 +742,9 @@ function stopHeartbeat(): void {
   heartbeatJitterTimer = null;
 }
 
+// Thread -> parent channel mapping for trigger resolution
+const threadParentMap = new Map<string, string>();
+
 function resetGatewayState(): void {
   heartbeatIntervalMs = 0;
   heartbeatAcked = true;
@@ -742,6 +755,7 @@ function resetGatewayState(): void {
   botUserId = null;
   botUsername = null;
   applicationId = null;
+  threadParentMap.clear();
 }
 
 function sendIdentify(token: string): void {
@@ -812,6 +826,38 @@ function handleDispatch(token: string, eventName: string, data: any): void {
         console.error(`[Discord] GUILD_CREATE unhandled: ${err}`),
       );
       break;
+
+    case "THREAD_CREATE": {
+      const threadId = data.id as string;
+      const parentId = data.parent_id as string;
+      if (parentId) threadParentMap.set(threadId, parentId);
+      const cfg = getSettings().discord;
+      if (parentId && cfg.listenChannels.includes(parentId)) {
+        joinThread(token, threadId).catch((err) =>
+          debugLog(`THREAD_CREATE join failed: ${err}`),
+        );
+      }
+      break;
+    }
+
+    case "THREAD_LIST_SYNC": {
+      const threads = (data.threads ?? []) as Array<{ id: string; parent_id?: string }>;
+      const cfg = getSettings().discord;
+      for (const t of threads) {
+        if (t.parent_id) threadParentMap.set(t.id, t.parent_id);
+        if (t.parent_id && cfg.listenChannels.includes(t.parent_id)) {
+          joinThread(token, t.id).catch((err) =>
+            debugLog(`THREAD_LIST_SYNC join failed: ${err}`),
+          );
+        }
+      }
+      break;
+    }
+
+    case "THREAD_DELETE": {
+      threadParentMap.delete(data.id as string);
+      break;
+    }
   }
 }
 
