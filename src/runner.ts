@@ -2,6 +2,12 @@ import { mkdir, readFile, writeFile } from "fs/promises";
 import { join } from "path";
 import { existsSync } from "fs";
 import { getSession, createSession, incrementTurn, markCompactWarned } from "./sessions";
+import {
+  getThreadSession,
+  createThreadSession,
+  incrementThreadTurn,
+  markThreadCompactWarned,
+} from "./sessionManager";
 import { getSettings, type ModelConfig, type SecurityConfig } from "./config";
 import { buildClockPromptPrefix } from "./timezone";
 import { selectModel } from "./model-router";
@@ -54,11 +60,20 @@ export interface RunResult {
 const RATE_LIMIT_PATTERN = /you.ve hit your limit|out of extra usage/i;
 
 // Serial queue — prevents concurrent --resume on the same session
-let queue: Promise<unknown> = Promise.resolve();
+// Global queue for non-thread messages (backward compatible)
+let globalQueue: Promise<unknown> = Promise.resolve();
+// Per-thread queues — each thread runs independently in parallel
+const threadQueues = new Map<string, Promise<unknown>>();
 
-function enqueue<T>(fn: () => Promise<T>): Promise<T> {
-  const task = queue.then(fn, fn);
-  queue = task.catch(() => {});
+function enqueue<T>(fn: () => Promise<T>, threadId?: string): Promise<T> {
+  if (threadId) {
+    const current = threadQueues.get(threadId) ?? Promise.resolve();
+    const task = current.then(fn, fn);
+    threadQueues.set(threadId, task.catch(() => {}));
+    return task;
+  }
+  const task = globalQueue.then(fn, fn);
+  globalQueue = task.catch(() => {});
   return task;
 }
 
@@ -328,10 +343,12 @@ export async function compactCurrentSession(): Promise<{ success: boolean; messa
     : { success: false, message: `❌ Compact failed (${existing.sessionId.slice(0, 8)})` };
 }
 
-async function execClaude(name: string, prompt: string): Promise<RunResult> {
+async function execClaude(name: string, prompt: string, threadId?: string): Promise<RunResult> {
   await mkdir(LOGS_DIR, { recursive: true });
 
-  const existing = await getSession();
+  const existing = threadId
+    ? await getThreadSession(threadId)
+    : await getSession();
   const isNew = !existing;
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const logFile = join(LOGS_DIR, `${name}-${timestamp}.log`);
@@ -434,8 +451,13 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
       sessionId = json.session_id;
       stdout = json.result ?? "";
       // Save the real session ID from Claude Code
-      await createSession(sessionId);
-      console.log(`[${new Date().toLocaleTimeString()}] Session created: ${sessionId}`);
+      if (threadId) {
+        await createThreadSession(threadId, sessionId);
+        console.log(`[${new Date().toLocaleTimeString()}] Thread session created: ${sessionId} (thread ${threadId.slice(0, 8)})`);
+      } else {
+        await createSession(sessionId);
+        console.log(`[${new Date().toLocaleTimeString()}] Session created: ${sessionId}`);
+      }
     } catch (e) {
       console.error(`[${new Date().toLocaleTimeString()}] Failed to parse session from Claude output:`, e);
     }
@@ -494,7 +516,7 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
       });
 
       if (retryExec.exitCode === 0) {
-        const count = await incrementTurn();
+        const count = threadId ? await incrementThreadTurn(threadId) : await incrementTurn();
         console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${count} (after compact + retry)`);
       }
       return retryResult;
@@ -503,11 +525,15 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
 
   // --- Turn tracking & compact warning ---
   if (exitCode === 0 && !isNew) {
-    const turnCount = await incrementTurn();
-    console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${turnCount}`);
+    const turnCount = threadId ? await incrementThreadTurn(threadId) : await incrementTurn();
+    console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${turnCount}${threadId ? ` (thread ${threadId.slice(0, 8)})` : ""}`);
 
     if (turnCount >= COMPACT_WARN_THRESHOLD && existing && !existing.compactWarned) {
-      await markCompactWarned();
+      if (threadId) {
+        await markThreadCompactWarned(threadId);
+      } else {
+        await markCompactWarned();
+      }
       emitCompactEvent({ type: "warn", turnCount });
     }
   }
@@ -515,8 +541,8 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
   return result;
 }
 
-export async function run(name: string, prompt: string): Promise<RunResult> {
-  return enqueue(() => execClaude(name, prompt));
+export async function run(name: string, prompt: string, threadId?: string): Promise<RunResult> {
+  return enqueue(() => execClaude(name, prompt, threadId), threadId);
 }
 
 function prefixUserMessageWithClock(prompt: string): string {
@@ -530,8 +556,8 @@ function prefixUserMessageWithClock(prompt: string): string {
   }
 }
 
-export async function runUserMessage(name: string, prompt: string): Promise<RunResult> {
-  return run(name, prefixUserMessageWithClock(prompt));
+export async function runUserMessage(name: string, prompt: string, threadId?: string): Promise<RunResult> {
+  return run(name, prefixUserMessageWithClock(prompt), threadId);
 }
 
 /**
