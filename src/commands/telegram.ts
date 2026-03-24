@@ -1,5 +1,6 @@
 import { ensureProjectClaudeMd, run, runUserMessage, compactCurrentSession } from "../runner";
 import { getSettings, loadSettings } from "../config";
+import { extractErrorDetail } from "../messaging";
 import { resetSession, peekSession } from "../sessions";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -715,7 +716,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     const result = await runUserMessage("telegram", prefixedPrompt);
 
     if (result.exitCode !== 0) {
-      await sendMessage(config.token, chatId, `Error (exit ${result.exitCode}): ${result.stderr || "Unknown error"}`, threadId);
+      await sendMessage(config.token, chatId, `Error (exit ${result.exitCode}): ${extractErrorDetail(result) || "Unknown error"}`, threadId);
     } else {
       const { cleanedText, reactionEmoji } = extractReactionDirective(result.stdout || "");
       if (reactionEmoji) {

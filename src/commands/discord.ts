@@ -1,5 +1,6 @@
 import { ensureProjectClaudeMd, run, runUserMessage, compactCurrentSession } from "../runner";
 import { getSettings, loadSettings } from "../config";
+import { extractErrorDetail } from "../messaging";
 import { resetSession, peekSession } from "../sessions";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -479,7 +480,7 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
     const result = await runUserMessage("discord", prefixedPrompt);
 
     if (result.exitCode !== 0) {
-      await sendMessage(config.token, channelId, `Error (exit ${result.exitCode}): ${result.stderr || "Unknown error"}`);
+      await sendMessage(config.token, channelId, `Error (exit ${result.exitCode}): ${extractErrorDetail(result) || "Unknown error"}`);
     } else {
       const { cleanedText, reactionEmoji } = extractReactionDirective(result.stdout || "");
       if (reactionEmoji) {
