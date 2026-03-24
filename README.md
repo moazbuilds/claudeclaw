@@ -79,6 +79,15 @@ The setup wizard walks you through model, heartbeat, Telegram, Discord, and secu
 - **Discord:** DMs, server mentions/replies, slash commands, voice messages, and image attachments.
 - **Time Awareness:** Message time prefixes help the agent understand delays and daily patterns.
 
+### Multi-Session Threads (Discord)
+- **Independent Thread Sessions:** Each Discord thread gets its own Claude CLI session, fully isolated from the main channel.
+- **Parallel Processing:** Thread conversations run concurrently — messages in different threads don't block each other.
+- **Auto-Create:** First message in a new thread automatically bootstraps a fresh session. No setup needed.
+- **Session Cleanup:** Thread sessions are automatically cleaned up when threads are deleted or archived.
+- **Backward Compatible:** DMs and main channel messages continue using the global session.
+
+See [docs/MULTI_SESSION.md](docs/MULTI_SESSION.md) for technical details.
+
 ### Reliability and Control
 - **GLM Fallback:** Automatically continue with GLM models if your primary limit is reached.
 - **Web Dashboard:** Manage jobs, monitor runs, and inspect logs in real time.
