@@ -4,6 +4,7 @@ import { existsSync } from "fs";
 import { getSession, createSession, incrementTurn, markCompactWarned } from "./sessions";
 import { getSettings, type ModelConfig, type SecurityConfig } from "./config";
 import { buildClockPromptPrefix } from "./timezone";
+import { selectModel } from "./model-router";
 
 const LOGS_DIR = join(process.cwd(), ".claude/claudeclaw/logs");
 // Resolve prompts relative to the claudeclaw installation, not the project dir
@@ -142,7 +143,7 @@ async function runClaudeOnce(
   } catch (err) {
     // Kill the hung process
     try { proc.kill("SIGTERM"); } catch {}
-    // Give it a moment to exit gracefully, then force kill
+// Give it a moment to exit gracefully, then force kill
     setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 5000);
 
     const message = err instanceof Error ? err.message : String(err);
@@ -151,7 +152,7 @@ async function runClaudeOnce(
     return {
       rawStdout: "",
       stderr: message,
-      exitCode: 124, // same as `timeout` command convention
+exitCode: 124, // same as `timeout` command convention
     };
   }
 }
@@ -279,7 +280,7 @@ export async function loadHeartbeatPromptTemplate(): Promise<string> {
 }
 
 /** Run /compact on the current session to reduce context size. */
-async function runCompact(
+export async function runCompact(
   sessionId: string,
   model: string,
   api: string,
@@ -300,6 +301,34 @@ async function runCompact(
   return success;
 }
 
+/**
+ * High-level compact: resolves session + settings internally.
+ * Returns { success, message }.
+ */
+export async function compactCurrentSession(): Promise<{ success: boolean; message: string }> {
+  const existing = await getSession();
+  if (!existing) return { success: false, message: "No active session to compact." };
+
+  const settings = getSettings();
+  const securityArgs = buildSecurityArgs(settings.security);
+  const { CLAUDECODE: _, ...cleanEnv } = process.env;
+  const baseEnv = { ...cleanEnv } as Record<string, string>;
+  const timeoutMs = (settings as any).sessionTimeoutMs || CLAUDE_TIMEOUT_MS;
+
+  const ok = await runCompact(
+    existing.sessionId,
+    settings.model,
+    settings.api,
+    baseEnv,
+    securityArgs,
+    timeoutMs
+  );
+
+  return ok
+    ? { success: true, message: `✅ Session compact complete (${existing.sessionId.slice(0, 8)})` }
+    : { success: false, message: `❌ Compact failed (${existing.sessionId.slice(0, 8)})` };
+}
+
 async function execClaude(name: string, prompt: string): Promise<RunResult> {
   await mkdir(LOGS_DIR, { recursive: true });
 
@@ -309,13 +338,31 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
   const logFile = join(LOGS_DIR, `${name}-${timestamp}.log`);
 
   const settings = getSettings();
-  const { security, model, api, fallback } = settings;
-  const primaryConfig: ModelConfig = { model, api };
+  const { security, model, api, fallback, agentic } = settings;
+
+  // Determine which model to use based on agentic routing
+  let primaryConfig: ModelConfig;
+  let taskType = "unknown";
+  let routingReasoning = "";
+
+  if (agentic.enabled) {
+    const routing = selectModel(prompt, agentic.modes, agentic.defaultMode);
+    primaryConfig = { model: routing.model, api };
+    taskType = routing.taskType;
+    routingReasoning = routing.reasoning;
+    console.log(
+      `[${new Date().toLocaleTimeString()}] Agentic routing: ${routing.taskType} → ${routing.model} (${routing.reasoning})`
+    );
+  } else {
+    primaryConfig = { model, api };
+  }
+
   const fallbackConfig: ModelConfig = {
     model: fallback?.model ?? "",
     api: fallback?.api ?? "",
   };
   const securityArgs = buildSecurityArgs(security);
+  const timeoutMs = (settings as any).sessionTimeoutMs || CLAUDE_TIMEOUT_MS;
 
   console.log(
     `[${new Date().toLocaleTimeString()}] Running: ${name} (${isNew ? "new session" : `resume ${existing.sessionId.slice(0, 8)}`}, security: ${security.level})`
@@ -358,7 +405,7 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
   const { CLAUDECODE: _, ...cleanEnv } = process.env;
   const baseEnv = { ...cleanEnv } as Record<string, string>;
 
-  const timeoutMs = settings.sessionTimeoutMs || CLAUDE_TIMEOUT_MS;
+
   let exec = await runClaudeOnce(args, primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs);
   const primaryRateLimit = extractRateLimitMessage(exec.rawStdout, exec.stderr);
   let usedFallback = false;
@@ -407,6 +454,7 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
     `Date: ${new Date().toISOString()}`,
     `Session: ${sessionId} (${isNew ? "new" : "resumed"})`,
     `Model config: ${usedFallback ? "fallback" : "primary"}`,
+    ...(agentic.enabled ? [`Task type: ${taskType}`, `Routing: ${routingReasoning}`] : []),
     `Prompt: ${prompt}`,
     `Exit code: ${result.exitCode}`,
     "",
@@ -431,7 +479,7 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
     );
     emitCompactEvent({ type: "auto-compact-done", success: compactOk });
 
-    // Retry the original prompt after successful compact
+// Retry the original prompt after successful compact
     if (compactOk) {
       console.log(`[${new Date().toLocaleTimeString()}] Retrying ${name} after compact...`);
       const retryExec = await runClaudeOnce(args, primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs);
