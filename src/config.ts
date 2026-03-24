@@ -249,9 +249,7 @@ function parseSettings(raw: Record<string, any>): Settings {
     },
     discord: {
       token: typeof raw.discord?.token === "string" ? raw.discord.token.trim() : "",
-      allowedUserIds: discordUserIds && discordUserIds.length > 0
-        ? discordUserIds
-        : Array.isArray(raw.discord?.allowedUserIds)
+      allowedUserIds: Array.isArray(raw.discord?.allowedUserIds)
           ? raw.discord.allowedUserIds.map(String)
           : [],
       listenChannels: Array.isArray(raw.discord?.listenChannels)
