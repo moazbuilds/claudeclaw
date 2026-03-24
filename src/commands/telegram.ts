@@ -1,6 +1,9 @@
-import { ensureProjectClaudeMd, run, runUserMessage } from "../runner";
+import { ensureProjectClaudeMd, run, runUserMessage, compactCurrentSession } from "../runner";
 import { getSettings, loadSettings } from "../config";
-import { resetSession } from "../sessions";
+import { resetSession, peekSession } from "../sessions";
+import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { transcribeAudioToText } from "../whisper";
 import { resolveSkillPrompt, listSkills } from "../skills";
 import { mkdir } from "node:fs/promises";
@@ -250,6 +253,12 @@ function extensionFromAudioMimeType(mimeType?: string): string {
     default:
       return "";
   }
+}
+
+function buildProgressBar(current: number, max: number, width: number = 20): string {
+  const ratio = Math.min(current / max, 1);
+  const filled = Math.round(ratio * width);
+  return "█".repeat(filled) + "░".repeat(width - filled);
 }
 
 function extractTelegramCommand(text: string): string | null {
@@ -517,6 +526,89 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     return;
   }
 
+  if (command === "/compact") {
+    await sendMessage(config.token, chatId, "⏳ Compacting session...", threadId);
+    const result = await compactCurrentSession();
+    await sendMessage(config.token, chatId, result.message, threadId);
+    return;
+  }
+
+  if (command === "/status") {
+    const session = await peekSession();
+    const settings = getSettings();
+    if (!session) {
+      await sendMessage(config.token, chatId, "📊 No active session.", threadId);
+      return;
+    }
+    const lines = [
+      "📊 **Session Status**",
+      `Session: \`${session.sessionId.slice(0, 8)}\``,
+      `Turns: ${session.turnCount ?? 0}`,
+      `Model: ${settings.model || "default"}`,
+      `Security: ${settings.security.level}`,
+      `Created: ${session.createdAt}`,
+      `Last used: ${session.lastUsedAt}`,
+      `Compact warned: ${(session as any).compactWarned ? "yes" : "no"}`,
+    ];
+    await sendMessage(config.token, chatId, lines.join("\n"), threadId);
+    return;
+  }
+
+  if (command === "/context") {
+    const session = await peekSession();
+    if (!session) {
+      await sendMessage(config.token, chatId, "No active session.", threadId);
+      return;
+    }
+    const home = homedir();
+    const projectSlug = process.cwd().replace(/\//g, "-");
+    const jsonlPath = `${home}/.claude/projects/${projectSlug}/${session.sessionId}.jsonl`;
+    if (!existsSync(jsonlPath)) {
+      await sendMessage(config.token, chatId, "Conversation file not found.", threadId);
+      return;
+    }
+    try {
+      const raw = await readFile(jsonlPath, "utf8");
+      const fileLines = raw.trim().split("\n");
+      let lastUsage: any = null;
+      let totalOutput = 0;
+      for (const line of fileLines) {
+        try {
+          const obj = JSON.parse(line);
+          if (obj.message?.usage) lastUsage = obj.message.usage;
+          if (obj.message?.usage?.output_tokens) totalOutput += obj.message.usage.output_tokens;
+        } catch {}
+      }
+      if (!lastUsage) {
+        await sendMessage(config.token, chatId, "No usage data found.", threadId);
+        return;
+      }
+      const input = lastUsage.input_tokens ?? 0;
+      const cacheCreation = lastUsage.cache_creation_input_tokens ?? 0;
+      const cacheRead = lastUsage.cache_read_input_tokens ?? 0;
+      const totalContext = input + cacheCreation + cacheRead;
+      const maxContext = 200000;
+      const pct = ((totalContext / maxContext) * 100).toFixed(1);
+      const bar = buildProgressBar(totalContext, maxContext);
+      const msg = [
+        `📐 **Context Window**`,
+        `${bar} ${pct}%`,
+        ``,
+        `Total: \`${totalContext.toLocaleString()}\` / \`${maxContext.toLocaleString()}\` tokens`,
+        `├ Input: \`${input.toLocaleString()}\``,
+        `├ Cache creation: \`${cacheCreation.toLocaleString()}\``,
+        `├ Cache read: \`${cacheRead.toLocaleString()}\``,
+        `└ Output (cumulative): \`${totalOutput.toLocaleString()}\``,
+        ``,
+        `Turns: ${session.turnCount ?? 0}`,
+      ];
+      await sendMessage(config.token, chatId, msg.join("\n"), threadId);
+    } catch (err) {
+      await sendMessage(config.token, chatId, `Failed to read context: ${err instanceof Error ? err.message : err}`, threadId);
+    }
+    return;
+  }
+
   // Secretary: detect reply to a bot alert message → treat as custom reply
   const replyToMsgId = message.reply_to_message?.message_id;
   if (replyToMsgId && text && botId && message.reply_to_message?.from?.id === botId) {
@@ -583,7 +675,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
 
     // Skill routing: resolve slash commands to SKILL.md prompts
     let skillContext: string | null = null;
-    if (command && command !== "/start" && command !== "/reset") {
+    if (command && command !== "/start" && command !== "/reset" && command !== "/compact" && command !== "/status" && command !== "/context") {
       try {
         skillContext = await resolveSkillPrompt(command);
         if (skillContext) {
@@ -689,6 +781,9 @@ async function registerBotCommands(token: string): Promise<void> {
     const commands = [
       { command: "start", description: "Show welcome message" },
       { command: "reset", description: "Reset session and start fresh" },
+      { command: "compact", description: "Compact session to reduce context size" },
+      { command: "status", description: "Show current session status" },
+      { command: "context", description: "Show context window usage" },
     ];
     for (const skill of skills) {
       // Telegram commands: 1-32 chars, lowercase a-z, 0-9, underscores only
@@ -705,8 +800,16 @@ async function registerBotCommands(token: string): Promise<void> {
       commands.push({ command: cmd, description: desc });
     }
     if (commands.length > 100) commands.length = 100;
-    await callApi(token, "setMyCommands", { commands });
-    console.log(`  Commands registered: ${commands.length} (${commands.map((c) => "/" + c.command).join(", ")})`);
+    try {
+      await callApi(token, "setMyCommands", { commands });
+      console.log(`  Commands registered: ${commands.length} (${commands.map((c) => "/" + c.command).join(", ")})`);
+    } catch (regErr) {
+      // Skill-generated commands may violate Telegram constraints; retry with built-in commands only
+      console.warn(`[Telegram] Full command registration failed, retrying with built-in commands only: ${regErr instanceof Error ? regErr.message : regErr}`);
+      const builtinOnly = commands.filter((c) => ["start", "reset", "compact", "status", "context"].includes(c.command));
+      await callApi(token, "setMyCommands", { commands: builtinOnly });
+      console.log(`  Commands registered (built-in only): ${builtinOnly.length}`);
+    }
   } catch (err) {
     console.error(`[Telegram] Failed to register commands: ${err instanceof Error ? err.message : err}`);
   }
