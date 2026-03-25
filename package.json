@@ -13,6 +13,7 @@
     "@types/bun": "^1.3.9"
   },
   "dependencies": {
+    "discord.js": "^14.25.1",
     "ogg-opus-decoder": "^1.7.3"
   }
 }
