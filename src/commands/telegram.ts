@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { transcribeAudioToText } from "../whisper";
 import { resolveSkillPrompt, listSkills } from "../skills";
 import { mkdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { extname, join } from "node:path";
 
 // --- Markdown → Telegram HTML conversion (ported from nanobot) ---
@@ -322,6 +323,40 @@ function extractReactionDirective(text: string): { cleanedText: string; reaction
     .replace(/\n{3,}/g, "\n\n")
     .trim();
   return { cleanedText, reactionEmoji };
+}
+
+const VOICE_DIRECTIVE_RE = /\[voice:(\/[^\]\r\n]+)\]/gi;
+
+function extractVoiceDirectives(text: string): { cleanedText: string; voicePaths: string[] } {
+  const voicePaths: string[] = [];
+  const cleanedText = text
+    .replace(VOICE_DIRECTIVE_RE, (_match, path) => {
+      const p = String(path).trim();
+      if (p && existsSync(p)) voicePaths.push(p);
+      return "";
+    })
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return { cleanedText, voicePaths };
+}
+
+async function sendVoiceMessage(token: string, chatId: number, voicePath: string, threadId?: number): Promise<void> {
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  if (threadId) form.append("message_thread_id", String(threadId));
+
+  const file = Bun.file(voicePath);
+  form.append("voice", file, voicePath.split("/").pop() ?? "voice.ogg");
+
+  const res = await fetch(`${API_BASE}${token}/sendVoice`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Telegram sendVoice: ${res.status} ${res.statusText} — ${body}`);
+  }
 }
 
 async function sendReaction(token: string, chatId: number, messageId: number, emoji: string): Promise<void> {
@@ -717,13 +752,26 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     if (result.exitCode !== 0) {
       await sendMessage(config.token, chatId, `Error (exit ${result.exitCode}): ${result.stderr || "Unknown error"}`, threadId);
     } else {
-      const { cleanedText, reactionEmoji } = extractReactionDirective(result.stdout || "");
+      const { cleanedText: textAfterReact, reactionEmoji } = extractReactionDirective(result.stdout || "");
+      const { cleanedText, voicePaths } = extractVoiceDirectives(textAfterReact);
       if (reactionEmoji) {
         await sendReaction(config.token, chatId, message.message_id, reactionEmoji).catch((err) => {
           console.error(`[Telegram] Failed to send reaction for ${label}: ${err instanceof Error ? err.message : err}`);
         });
       }
-      await sendMessage(config.token, chatId, cleanedText || "(empty response)", threadId);
+      for (const vp of voicePaths) {
+        try {
+          await sendVoiceMessage(config.token, chatId, vp, threadId);
+          debugLog(`Voice sent: ${vp}`);
+        } catch (err) {
+          console.error(`[Telegram] Failed to send voice ${vp} for ${label}: ${err instanceof Error ? err.message : err}`);
+        }
+      }
+      if (cleanedText) {
+        await sendMessage(config.token, chatId, cleanedText, threadId);
+      } else if (voicePaths.length === 0) {
+        await sendMessage(config.token, chatId, "(empty response)", threadId);
+      }
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
