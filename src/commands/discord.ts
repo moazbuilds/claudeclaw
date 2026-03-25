@@ -106,7 +106,7 @@ let gatewaySessionId: string | null = null;
 let resumeGatewayUrl: string | null = null;
 let heartbeatAcked = true;
 let running = true;
-let discordDebug = false;
+let discordDebug = true;
 
 // Bot identity (populated from READY)
 let botUserId: string | null = null;
@@ -965,6 +965,32 @@ function handleDispatch(token: string, eventName: string, data: any): void {
           knownThreads.set(thread.id, { parentId: thread.parent_id });
         }
       }
+      // Rejoin all known threads from sessions.json so gateway sends MESSAGE_CREATE
+      (async () => {
+        try {
+          const threadSessions = await listThreadSessions();
+          for (const ts of threadSessions) {
+            try {
+              await discordApi(token, "PUT", `/channels/${ts.threadId}/thread-members/@me`);
+              // Also recover knownThreads if missing
+              if (!knownThreads.has(ts.threadId)) {
+                const ch = await discordApi<{ parent_id?: string }>(token, "GET", `/channels/${ts.threadId}`);
+                if (ch.parent_id) {
+                  knownThreads.set(ts.threadId, { parentId: ch.parent_id });
+                }
+              }
+              debugLog(`Rejoined thread: ${ts.threadId}`);
+            } catch (err) {
+              debugLog(`Failed to rejoin thread ${ts.threadId}: ${err}`);
+            }
+          }
+          if (threadSessions.length > 0) {
+            console.log(`[Discord] Rejoined ${threadSessions.length} thread(s) from sessions.json`);
+          }
+        } catch (err) {
+          console.error(`[Discord] Failed to rejoin threads: ${err}`);
+        }
+      })();
       handleGuildCreate(token, data).catch((err) =>
         console.error(`[Discord] GUILD_CREATE unhandled: ${err}`),
       );
