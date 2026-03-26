@@ -217,7 +217,7 @@ function parseAgenticConfig(raw: any): AgenticConfig {
   };
 }
 
-function parseSettings(raw: Record<string, any>): Settings {
+function parseSettings(raw: Record<string, any>, discordUserIds?: string[]): Settings {
   const rawLevel = raw.security?.level;
   const level: SecurityLevel =
     typeof rawLevel === "string" && VALID_LEVELS.has(rawLevel as SecurityLevel)
