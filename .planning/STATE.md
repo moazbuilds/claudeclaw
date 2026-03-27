@@ -2,7 +2,7 @@
 
 ## Current Position
 **Phase:** 2 — Session Gateway
-**Current Plan:** 2-02 Complete | Ready for 2-03
+**Current Plan:** 2-03 Complete | Ready for 2-04
 **Status:** ✅ Phase 1 Complete | 🔄 Phase 2 In Progress
 
 ## Phase Overview
@@ -11,7 +11,7 @@
 |-------|------|--------|-------|
 | 0 | Project Initialization | ✅ Complete | 0 |
 | 1 | Event Bus | ✅ Complete | 5 |
-| 2 | Session Gateway | 🔄 In Progress | 2/4 |
+| 2 | Session Gateway | 🔄 In Progress | 3/4 |
 | 3 | Policy Engine | ⏳ Planned | 5 |
 | 4 | Cost Governance | ⏳ Planned | 4 |
 | 5 | Orchestration | ⏳ Planned | 3 |
@@ -58,7 +58,15 @@ None
 - Sensitive webhook headers (authorization, cookie, x-api-key, x-auth) stripped from metadata
 - 44 tests covering all normalizers and edge cases
 
+### 2026-03-27 — Phase 2 Plan 3 (2-03) Completion
+- Resume logic module created at src/gateway/resume.ts
+- getResumeArgs returns --resume only when real Claude session ID exists
+- Post-processing updates lastSeq, turnCount, lastActiveAt, updatedAt
+- Lifecycle helpers: resetSession, isSessionStale, shouldWarnCompact
+- 34 comprehensive unit tests passing
+- Test isolation ensured via file cleanup between tests
+
 ## Next Actions
 1. Execute Phase 2: Session Gateway
-2. Next plan: 2-03 — Resume Logic
-3. Future: 2-04 — Gateway Orchestrator
+2. Next plan: 2-04 — Gateway Orchestrator
+3. Future: Phase 3 — Policy Engine
