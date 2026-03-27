@@ -1,7 +1,10 @@
 import { join, isAbsolute } from "path";
 import { mkdir } from "fs/promises";
 import { existsSync } from "fs";
-import { normalizeTimezoneName, resolveTimezoneOffsetMinutes } from "./timezone";
+import {
+  normalizeTimezoneName,
+  resolveTimezoneOffsetMinutes,
+} from "./timezone";
 
 const HEARTBEAT_DIR = join(process.cwd(), ".claude", "claudeclaw");
 const SETTINGS_FILE = join(HEARTBEAT_DIR, "settings.json");
@@ -23,26 +26,71 @@ const DEFAULT_SETTINGS: Settings = {
         name: "planning",
         model: "opus",
         keywords: [
-          "plan", "design", "architect", "strategy", "approach",
-          "research", "investigate", "analyze", "explore", "understand",
-          "think", "consider", "evaluate", "assess", "review",
-          "system design", "trade-off", "decision", "choose", "compare",
-          "brainstorm", "ideate", "concept", "proposal",
+          "plan",
+          "design",
+          "architect",
+          "strategy",
+          "approach",
+          "research",
+          "investigate",
+          "analyze",
+          "explore",
+          "understand",
+          "think",
+          "consider",
+          "evaluate",
+          "assess",
+          "review",
+          "system design",
+          "trade-off",
+          "decision",
+          "choose",
+          "compare",
+          "brainstorm",
+          "ideate",
+          "concept",
+          "proposal",
         ],
         phrases: [
-          "how to implement", "how should i", "what's the best way to",
-          "should i", "which approach", "help me decide", "help me understand",
+          "how to implement",
+          "how should i",
+          "what's the best way to",
+          "should i",
+          "which approach",
+          "help me decide",
+          "help me understand",
         ],
       },
       {
         name: "implementation",
         model: "sonnet",
         keywords: [
-          "implement", "code", "write", "create", "build", "add",
-          "fix", "debug", "refactor", "update", "modify", "change",
-          "deploy", "run", "execute", "install", "configure",
-          "test", "commit", "push", "merge", "release",
-          "generate", "scaffold", "setup", "initialize",
+          "implement",
+          "code",
+          "write",
+          "create",
+          "build",
+          "add",
+          "fix",
+          "debug",
+          "refactor",
+          "update",
+          "modify",
+          "change",
+          "deploy",
+          "run",
+          "execute",
+          "install",
+          "configure",
+          "test",
+          "commit",
+          "push",
+          "merge",
+          "release",
+          "generate",
+          "scaffold",
+          "setup",
+          "initialize",
         ],
       },
     ],
@@ -88,11 +136,7 @@ export interface DiscordConfig {
   listenChannels: string[]; // Channel IDs where bot responds to all messages (no mention needed)
 }
 
-export type SecurityLevel =
-  | "locked"
-  | "strict"
-  | "moderate"
-  | "unrestricted";
+export type SecurityLevel = "locked" | "strict" | "moderate" | "unrestricted";
 
 export interface SecurityConfig {
   level: SecurityLevel;
@@ -156,7 +200,10 @@ export async function initConfig(): Promise<void> {
   await mkdir(LOGS_DIR, { recursive: true });
 
   if (!existsSync(SETTINGS_FILE)) {
-    await Bun.write(SETTINGS_FILE, JSON.stringify(DEFAULT_SETTINGS, null, 2) + "\n");
+    await Bun.write(
+      SETTINGS_FILE,
+      JSON.stringify(DEFAULT_SETTINGS, null, 2) + "\n",
+    );
   }
 }
 
@@ -173,12 +220,21 @@ function parseAgenticMode(raw: any): AgenticMode | null {
   const model = typeof raw.model === "string" ? raw.model.trim() : "";
   if (!name || !model) return null;
   const keywords = Array.isArray(raw.keywords)
-    ? raw.keywords.filter((k: unknown) => typeof k === "string").map((k: string) => k.toLowerCase().trim())
+    ? raw.keywords
+        .filter((k: unknown) => typeof k === "string")
+        .map((k: string) => k.toLowerCase().trim())
     : [];
   const phrases = Array.isArray(raw.phrases)
-    ? raw.phrases.filter((p: unknown) => typeof p === "string").map((p: string) => p.toLowerCase().trim())
+    ? raw.phrases
+        .filter((p: unknown) => typeof p === "string")
+        .map((p: string) => p.toLowerCase().trim())
     : undefined;
-  return { name, model, keywords, ...(phrases && phrases.length > 0 ? { phrases } : {}) };
+  return {
+    name,
+    model,
+    keywords,
+    ...(phrases && phrases.length > 0 ? { phrases } : {}),
+  };
 }
 
 function parseAgenticConfig(raw: any): AgenticConfig {
@@ -188,9 +244,16 @@ function parseAgenticConfig(raw: any): AgenticConfig {
   const enabled = raw.enabled ?? false;
 
   // Backward compat: old planningModel/implementationModel format
-  if (!Array.isArray(raw.modes) && ("planningModel" in raw || "implementationModel" in raw)) {
-    const planningModel = typeof raw.planningModel === "string" ? raw.planningModel.trim() : "opus";
-    const implModel = typeof raw.implementationModel === "string" ? raw.implementationModel.trim() : "sonnet";
+  if (
+    !Array.isArray(raw.modes) &&
+    ("planningModel" in raw || "implementationModel" in raw)
+  ) {
+    const planningModel =
+      typeof raw.planningModel === "string" ? raw.planningModel.trim() : "opus";
+    const implModel =
+      typeof raw.implementationModel === "string"
+        ? raw.implementationModel.trim()
+        : "sonnet";
     return {
       enabled,
       defaultMode: "implementation",
@@ -212,12 +275,18 @@ function parseAgenticConfig(raw: any): AgenticConfig {
 
   return {
     enabled,
-    defaultMode: typeof raw.defaultMode === "string" ? raw.defaultMode.trim() : "implementation",
+    defaultMode:
+      typeof raw.defaultMode === "string"
+        ? raw.defaultMode.trim()
+        : "implementation",
     modes: modes.length > 0 ? modes : defaults.modes,
   };
 }
 
-function parseSettings(raw: Record<string, any>): Settings {
+function parseSettings(
+  raw: Record<string, any>,
+  discordUserIds?: string[],
+): Settings {
   const rawLevel = raw.security?.level;
   const level: SecurityLevel =
     typeof rawLevel === "string" && VALID_LEVELS.has(rawLevel as SecurityLevel)
@@ -230,12 +299,18 @@ function parseSettings(raw: Record<string, any>): Settings {
     model: typeof raw.model === "string" ? raw.model.trim() : "",
     api: typeof raw.api === "string" ? raw.api.trim() : "",
     fallback: {
-      model: typeof raw.fallback?.model === "string" ? raw.fallback.model.trim() : "",
+      model:
+        typeof raw.fallback?.model === "string"
+          ? raw.fallback.model.trim()
+          : "",
       api: typeof raw.fallback?.api === "string" ? raw.fallback.api.trim() : "",
     },
     agentic: parseAgenticConfig(raw.agentic),
     timezone: parsedTimezone,
-    timezoneOffsetMinutes: parseTimezoneOffsetMinutes(raw.timezoneOffsetMinutes, parsedTimezone),
+    timezoneOffsetMinutes: parseTimezoneOffsetMinutes(
+      raw.timezoneOffsetMinutes,
+      parsedTimezone,
+    ),
     heartbeat: {
       enabled: raw.heartbeat?.enabled ?? false,
       interval: raw.heartbeat?.interval ?? 15,
@@ -248,12 +323,14 @@ function parseSettings(raw: Record<string, any>): Settings {
       allowedUserIds: raw.telegram?.allowedUserIds ?? [],
     },
     discord: {
-      token: typeof raw.discord?.token === "string" ? raw.discord.token.trim() : "",
-      allowedUserIds: discordUserIds && discordUserIds.length > 0
-        ? discordUserIds
-        : Array.isArray(raw.discord?.allowedUserIds)
-          ? raw.discord.allowedUserIds.map(String)
-          : [],
+      token:
+        typeof raw.discord?.token === "string" ? raw.discord.token.trim() : "",
+      allowedUserIds:
+        discordUserIds && discordUserIds.length > 0
+          ? discordUserIds
+          : Array.isArray(raw.discord?.allowedUserIds)
+            ? raw.discord.allowedUserIds.map(String)
+            : [],
       listenChannels: Array.isArray(raw.discord?.listenChannels)
         ? raw.discord.listenChannels.map(String)
         : [],
@@ -273,7 +350,8 @@ function parseSettings(raw: Record<string, any>): Settings {
       port: Number.isFinite(raw.web?.port) ? Number(raw.web.port) : 4632,
     },
     stt: {
-      baseUrl: typeof raw.stt?.baseUrl === "string" ? raw.stt.baseUrl.trim() : "",
+      baseUrl:
+        typeof raw.stt?.baseUrl === "string" ? raw.stt.baseUrl.trim() : "",
       model: typeof raw.stt?.model === "string" ? raw.stt.model.trim() : "",
     },
   };
@@ -291,15 +369,23 @@ function parseExcludeWindows(value: unknown): HeartbeatExcludeWindow[] {
   const out: HeartbeatExcludeWindow[] = [];
   for (const entry of value) {
     if (!entry || typeof entry !== "object") continue;
-    const start = typeof (entry as any).start === "string" ? (entry as any).start.trim() : "";
-    const end = typeof (entry as any).end === "string" ? (entry as any).end.trim() : "";
+    const start =
+      typeof (entry as any).start === "string"
+        ? (entry as any).start.trim()
+        : "";
+    const end =
+      typeof (entry as any).end === "string" ? (entry as any).end.trim() : "";
     if (!TIME_RE.test(start) || !TIME_RE.test(end)) continue;
 
-    const rawDays = Array.isArray((entry as any).days) ? (entry as any).days : [];
+    const rawDays = Array.isArray((entry as any).days)
+      ? (entry as any).days
+      : [];
     const parsedDays = rawDays
       .map((d: unknown) => Number(d))
       .filter((d: number) => Number.isInteger(d) && d >= 0 && d <= 6);
-    const uniqueDays = Array.from(new Set<number>(parsedDays)).sort((a: number, b: number) => a - b);
+    const uniqueDays = Array.from(new Set<number>(parsedDays)).sort(
+      (a: number, b: number) => a - b,
+    );
 
     out.push({
       start,
@@ -310,7 +396,10 @@ function parseExcludeWindows(value: unknown): HeartbeatExcludeWindow[] {
   return out;
 }
 
-function parseTimezoneOffsetMinutes(value: unknown, timezoneFallback?: string): number {
+function parseTimezoneOffsetMinutes(
+  value: unknown,
+  timezoneFallback?: string,
+): number {
   return resolveTimezoneOffsetMinutes(value, timezoneFallback);
 }
 
@@ -323,7 +412,9 @@ function extractDiscordUserIds(rawText: string): string[] {
   // Match the "discord" object's "allowedUserIds" array values
   const discordBlock = rawText.match(/"discord"\s*:\s*\{[\s\S]*?\}/);
   if (!discordBlock) return [];
-  const arrayMatch = discordBlock[0].match(/"allowedUserIds"\s*:\s*\[([\s\S]*?)\]/);
+  const arrayMatch = discordBlock[0].match(
+    /"allowedUserIds"\s*:\s*\[([\s\S]*?)\]/,
+  );
   if (!arrayMatch) return [];
   const items: string[] = [];
   // Match both quoted strings and bare numbers
@@ -350,7 +441,8 @@ export async function reloadSettings(): Promise<Settings> {
 }
 
 export function getSettings(): Settings {
-  if (!cached) throw new Error("Settings not loaded. Call loadSettings() first.");
+  if (!cached)
+    throw new Error("Settings not loaded. Call loadSettings() first.");
   return cached;
 }
 
@@ -373,7 +465,9 @@ export async function resolvePrompt(prompt: string): Promise<string> {
     const content = await Bun.file(resolved).text();
     return content.trim();
   } catch {
-    console.warn(`[config] Prompt path "${trimmed}" not found, using as literal string`);
+    console.warn(
+      `[config] Prompt path "${trimmed}" not found, using as literal string`,
+    );
     return trimmed;
   }
 }
