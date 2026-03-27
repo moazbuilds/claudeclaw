@@ -9,7 +9,7 @@ Transform ClaudeClaw from a fire-and-forget daemon into a robust, production-rea
 |-------|------|-------|--------|------------|
 | 0 | Project Initialization | 1 | ✅ Complete | 2026-03-26 |
 | 1 | Persistent Event Bus | 5 | ✅ Complete | 2026-03-26 |
-| 2 | Session Gateway | 4 | ✅ Complete | 2026-03-27 |
+| 2 | Session Gateway | Complete    | 2026-03-27 | 2026-03-27 |
 
 ## Phase 2: Session Gateway
 
@@ -22,7 +22,7 @@ Transform ClaudeClaw from a fire-and-forget daemon into a robust, production-rea
 - adapter-decoupling: gateway pattern for adapter independence
 
 **Plans:**
-| Plan | File | Objective | Wave | Depends On | Status |
+4/5 plans complete
 |------|------|-----------|------|------------|--------|
 | 2-01 | [2-01-PLAN.md](phases/2-session-gateway/2-01-PLAN.md) | Session Map Store | 1 | — | ✅ Complete |
 | 2-02 | [2-02-PLAN.md](phases/2-session-gateway/2-02-PLAN.md) | Normalized Event Schema | 1 | — | ✅ Complete |
