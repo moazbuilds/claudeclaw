@@ -37,6 +37,7 @@ export async function getSession(): Promise<{ sessionId: string; turnCount: numb
     if (typeof existing.turnCount !== "number") existing.turnCount = 0;
     if (typeof existing.compactWarned !== "boolean") existing.compactWarned = false;
     existing.lastUsedAt = new Date().toISOString();
+    existing.messageCount = (existing.messageCount || 0) + 1;
     await saveSession(existing);
     return { sessionId: existing.sessionId, turnCount: existing.turnCount, compactWarned: existing.compactWarned };
   }
