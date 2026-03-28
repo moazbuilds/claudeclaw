@@ -8,6 +8,7 @@
 import { WorkflowDefinition, WorkflowState, TaskDefinition, ExecutionContext } from "./types.ts";
 import { getReadyTasks, advanceWorkflow, getParallelizableTasks } from "./task-graph.ts";
 import { saveState, loadState, loadDefinition, rebuildExecutionView } from "./workflow-state.ts";
+import { shouldBlockScheduling } from "../escalation";
 
 /**
  * Action handler registry - maps actionRef to handler functions
@@ -178,6 +179,11 @@ export async function executeReadyTasks(workflowId: string): Promise<WorkflowSta
   // Rebuild execution view in case we restarted mid-workflow
   const rebuiltState = rebuildExecutionView(state, definition);
   
+  // Check if scheduling is paused - skip task execution when paused
+  if (await shouldBlockScheduling()) {
+    return rebuiltState;
+  }
+  
   // Get tasks ready for execution
   const readyTasks = getReadyTasks(rebuiltState, definition);
   
@@ -254,6 +260,16 @@ export async function executeReadyTasks(workflowId: string): Promise<WorkflowSta
     // Advance workflow based on result
     currentState = advanceWorkflow(currentState, definition, task.id, result);
     
+    // Handle orchestration failure escalation
+    if (result.error && currentState.status === "failed") {
+      try {
+        const { handleOrchestrationFailure } = await import("../escalation");
+        await handleOrchestrationFailure(currentState.workflowId, result.error.message);
+      } catch (escalationError) {
+        console.error("[escalation] Failed to send orchestration failure notification:", escalationError);
+      }
+    }
+    
     // Persist updated state
     await saveState(currentState);
     
@@ -273,6 +289,11 @@ export async function executeWorkflow(workflowId: string): Promise<WorkflowState
   let state = await loadState(workflowId);
   if (!state) {
     return null;
+  }
+  
+  // Check if scheduling is paused - skip workflow execution when paused
+  if (await shouldBlockScheduling()) {
+    return state;
   }
   
   // Mark as running if pending

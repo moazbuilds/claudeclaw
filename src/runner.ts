@@ -510,6 +510,13 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
   if (watchdogDecision.state === "suspend" || watchdogDecision.state === "kill") {
     console.warn(`[${new Date().toLocaleTimeString()}] Watchdog ${watchdogDecision.state}: ${watchdogDecision.reason}`);
     await watchdogHandleTrigger({ invocationId, sessionId: invocationSessionId }, watchdogDecision);
+    // Send escalation notification for watchdog triggers
+    try {
+      const { handleWatchdogTrigger } = await import("./escalation");
+      await handleWatchdogTrigger(watchdogDecision, { invocationId, sessionId: invocationSessionId });
+    } catch (escalationError) {
+      console.error("[escalation] Failed to send watchdog notification:", escalationError);
+    }
   }
 
   const output = [

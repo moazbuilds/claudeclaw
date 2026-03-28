@@ -25,6 +25,7 @@ import {
   recordClaudeSessionId,
   type ResumeArgs,
 } from "./resume";
+import { shouldBlockAdmission } from "../escalation";
 
 // --- Gateway Configuration ---
 
@@ -143,6 +144,11 @@ export class Gateway {
     // Step 1: Validate the normalized event
     if (!this.validateEvent(event)) {
       return { success: false, error: "Invalid normalized event" };
+    }
+
+    // Step 1b: Check if system is paused - reject new events when paused
+    if (await shouldBlockAdmission()) {
+      return { success: false, error: "System is paused - new events are not being admitted" };
     }
 
     try {
@@ -268,6 +274,11 @@ export async function processInboundEvent(event: NormalizedEvent): Promise<{
   resumeArgs?: ResumeArgs;
   error?: string;
 }> {
+  // Check if system is paused before creating gateway
+  if (await shouldBlockAdmission()) {
+    return { success: false, error: "System is paused - new events are not being admitted" };
+  }
+
   // Get or create gateway
   let gateway = getGateway();
   if (!gateway) {
@@ -370,6 +381,15 @@ export async function processEventWithFallback(
   error?: string;
   legacyResult?: LegacyResult;
 }> {
+  // Check if system is paused before routing
+  if (await shouldBlockAdmission()) {
+    return {
+      success: false,
+      source: "gateway",
+      error: "System is paused - new events are not being admitted",
+    };
+  }
+
   // Check if gateway is enabled
   const gatewayEnabled = isGatewayEnabled();
 
