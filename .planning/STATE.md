@@ -34,7 +34,7 @@ progress:
 | 8 | Policy Integration | ✅ Complete | 1/1 |
 | 9 | Gateway Integration | ✅ Complete | 1/1 |
 | 10 | Orchestrator Governance Bridge | ✅ Complete | 1/1 |
-| 11 | Policy Engine Verification | ✅ Complete | 1/1 |
+| 11 | Policy Engine Verification | ✅ Complete | 2/2 |
 
 ## Decisions Log
 
@@ -190,6 +190,13 @@ progress:
 - All 8 truths confirmed ACHIEVED
 - Stale 03-VERIFICATION.md (claimed 0/10 artifacts) corrected
 - 94/95 tests pass; 1 failure is pre-existing test isolation issue in audit-log.test.ts
+
+### 2026-03-30 — Phase 11 Plan 2 (11-02) Gap Closure: Audit Logging
+- Added audit logging to GovernanceClient.evaluateToolRequest()
+- Every policy decision now logged via logPolicyDecision() after evaluate() returns
+- Fire-and-forget logging with .catch() - audit failures do NOT block policy decisions
+- Both gateway and runner paths automatically log because they both call gc.evaluateToolRequest()
+- Truth restored: "Every decision is written to an audit log" - ACHIEVED
 
 ## Blockers
 None

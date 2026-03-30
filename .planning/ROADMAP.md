@@ -184,10 +184,12 @@ Phase 2 (Gateway) ────────────────────�
 
 **Gap Closure:** Closes tech debt from v1.0 audit:
 - 03-VERIFICATION.md is stale (claims 0/10 artifacts but implementation exists)
+- Truth failed: "Every decision is written to an audit log"
 
 **Plans:**
-1/1 plans complete
-| 11-01 | [11-01-PLAN.md](phases/11-verify-policy-engine/11-01-PLAN.md) | Re-verify Policy Engine | 1 | — | Pending |
+2/2 plans complete
+| 11-01 | [11-01-PLAN.md](phases/11-verify-policy-engine/11-01-PLAN.md) | Re-verify Policy Engine | 1 | — | ✅ Complete |
+| 11-02 | [11-02-PLAN.md](phases/11-verify-policy-engine/11-02-PLAN.md) | Audit Logging Gap Closure | 1 | 11-01 | ✅ Complete |
 
 ## Phase 12: Verify Phase 7 Additional Adapters
 
