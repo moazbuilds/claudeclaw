@@ -174,6 +174,46 @@ interface TelegramFile {
 
 let telegramDebug = false;
 
+// --- Security: Rate Limiting ---
+interface RateLimitEntry {
+  count: number;
+  resetAt: number;
+}
+
+const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
+const RATE_LIMIT_MAX = 30; // 30 messages per user per minute
+const rateLimitMap = new Map<number, RateLimitEntry>();
+
+function checkRateLimit(userId: number): boolean {
+  const now = Date.now();
+  const entry = rateLimitMap.get(userId);
+
+  if (!entry || now > entry.resetAt) {
+    rateLimitMap.set(userId, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    return true;
+  }
+
+  if (entry.count >= RATE_LIMIT_MAX) {
+    return false;
+  }
+
+  entry.count++;
+  return true;
+}
+
+// --- Security: File size limit ---
+const MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024; // 25MB
+
+// --- Security: Filename sanitization ---
+function sanitizeFilename(name: string): string {
+  // Remove path traversal attempts and null bytes
+  const sanitized = name.replace(/\x00/g, "").replace(/\.\./g, "_");
+  // Keep only safe characters
+  const safe = sanitized.replace(/[^a-zA-Z0-9._-]/g, "_");
+  // Limit length to 255 chars
+  return safe.slice(0, 255);
+}
+
 function debugLog(message: string): void {
   if (!telegramDebug) return;
   console.log(`[Telegram][debug] ${message}`);
@@ -443,10 +483,13 @@ async function downloadImageFromMessage(token: string, message: TelegramMessage)
   const remoteExt = extname(remotePath);
   const docExt = extname(imageDocument?.file_name ?? "");
   const mimeExt = extensionFromMimeType(imageDocument?.mime_type);
-  const ext = remoteExt || docExt || mimeExt || ".jpg";
+  const ext = sanitizeFilename(remoteExt || docExt || mimeExt || ".jpg");
   const filename = `${message.chat.id}-${message.message_id}-${Date.now()}${ext}`;
   const localPath = join(dir, filename);
   const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.length > MAX_FILE_SIZE_BYTES) {
+    throw new Error(`File too large: ${bytes.length} bytes (max: ${MAX_FILE_SIZE_BYTES})`);
+  }
   await Bun.write(localPath, bytes);
   return localPath;
 }
@@ -475,10 +518,13 @@ async function downloadVoiceFromMessage(token: string, message: TelegramMessage)
   const docExt = extname(message.document?.file_name ?? "");
   const audioExt = extname(message.audio?.file_name ?? "");
   const mimeExt = extensionFromAudioMimeType(audioLike.mime_type);
-  const ext = remoteExt || docExt || audioExt || mimeExt || ".ogg";
+  const ext = sanitizeFilename(remoteExt || docExt || audioExt || mimeExt || ".ogg");
   const filename = `${message.chat.id}-${message.message_id}-${Date.now()}${ext}`;
   const localPath = join(dir, filename);
   const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.length > MAX_FILE_SIZE_BYTES) {
+    throw new Error(`File too large: ${bytes.length} bytes (max: ${MAX_FILE_SIZE_BYTES})`);
+  }
   await Bun.write(localPath, bytes);
   const header = Array.from(bytes.slice(0, 8))
     .map((b) => b.toString(16).padStart(2, "0"))
@@ -519,11 +565,14 @@ async function downloadDocumentFromMessage(
   const dir = join(process.cwd(), ".claude", "claudeclaw", "inbox", "telegram");
   await mkdir(dir, { recursive: true });
 
-  const originalName = doc.file_name ?? `document${extname(remotePath) || ""}`;
-  const ext = extname(originalName) || extname(remotePath) || "";
+  const originalName = sanitizeFilename(doc.file_name ?? `document${extname(remotePath) || ""}`);
+  const ext = sanitizeFilename(extname(originalName)) || sanitizeFilename(extname(remotePath)) || "";
   const filename = `${message.chat.id}-${message.message_id}-${Date.now()}${ext}`;
   const localPath = join(dir, filename);
   const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.length > MAX_FILE_SIZE_BYTES) {
+    throw new Error(`File too large: ${bytes.length} bytes (max: ${MAX_FILE_SIZE_BYTES})`);
+  }
   await Bun.write(localPath, bytes);
   return { localPath, originalName };
 }
@@ -592,6 +641,12 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
   debugLog(
     `Handle message chat=${chatId} type=${chatType} from=${userId ?? "unknown"} reason=${triggerReason} text="${(text ?? "").slice(0, 80)}"`
   );
+
+  // Security: Rate limit check
+  if (userId && !checkRateLimit(userId)) {
+    debugLog(`Rate limited: userId=${userId}`);
+    return;
+  }
 
   if (userId && config.allowedUserIds.length > 0 && !config.allowedUserIds.includes(userId)) {
     if (isPrivate) {
