@@ -25,7 +25,7 @@ import {
   recordClaudeSessionId,
   type ResumeArgs,
 } from "./resume";
-import { shouldBlockAdmission } from "../escalation";
+import { shouldBlockAdmission, handlePolicyDenial } from "../escalation";
 import { evaluate, type ToolRequestContext, type PolicyDecision } from "../policy/engine";
 import { enqueue } from "../policy/approval-queue";
 import { getGovernanceClient } from "../governance/client";
@@ -228,6 +228,12 @@ export class Gateway {
 
       // If denied, reject the request
       if (policyDecision.action === "deny") {
+        // Trigger escalation for policy denial
+        await handlePolicyDenial(event.id, "InboundMessage", policyDecision.reason || "Policy denied request", {
+          severity: "warning",
+          channelId: event.channelId,
+          sessionId: sessionEntry.sessionId,
+        });
         return { 
           success: false, 
           error: `Request denied: ${policyDecision.reason}`,
