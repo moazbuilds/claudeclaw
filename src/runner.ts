@@ -61,6 +61,8 @@ const RATE_LIMIT_PATTERN = /you.ve hit your limit|out of extra usage/i;
 
 // Serial queue — prevents concurrent --resume on the same session
 // Global queue for non-thread messages (backward compatible)
+// Reset to a fresh resolved promise after each task to avoid holding
+// references to every previous result (memory leak).
 let globalQueue: Promise<unknown> = Promise.resolve();
 // Per-thread queues — each thread runs independently in parallel
 const threadQueues = new Map<string, Promise<unknown>>();
@@ -69,11 +71,11 @@ function enqueue<T>(fn: () => Promise<T>, threadId?: string): Promise<T> {
   if (threadId) {
     const current = threadQueues.get(threadId) ?? Promise.resolve();
     const task = current.then(fn, fn);
-    threadQueues.set(threadId, task.catch(() => {}));
+    threadQueues.set(threadId, task.then(() => {}, () => {}));
     return task;
   }
   const task = globalQueue.then(fn, fn);
-  globalQueue = task.catch(() => {});
+  globalQueue = task.then(() => {}, () => {});
   return task;
 }
 
@@ -119,6 +121,39 @@ function buildChildEnv(baseEnv: Record<string, string>, model: string, api: stri
 /** Default timeout for a single Claude Code invocation (5 minutes). */
 const CLAUDE_TIMEOUT_MS = 5 * 60 * 1000;
 
+// Cap stdout/stderr to prevent unbounded memory growth.
+// 10 MB is far beyond any real Claude response; protects against runaway streams only.
+const MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
+
+async function collectStream(stream: ReadableStream<Uint8Array>, maxBytes: number): Promise<string> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (totalBytes + value.byteLength > maxBytes) {
+        const remaining = maxBytes - totalBytes;
+        if (remaining > 0) chunks.push(value.subarray(0, remaining));
+        totalBytes = maxBytes;
+        break;
+      }
+      chunks.push(value);
+      totalBytes += value.byteLength;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const merged = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(merged);
+}
+
 async function runClaudeOnce(
   baseArgs: string[],
   model: string,
@@ -136,18 +171,21 @@ async function runClaudeOnce(
     env: buildChildEnv(baseEnv, model, api),
   });
 
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error(`Claude session timed out after ${timeoutMs / 1000}s`)), timeoutMs);
+    timeoutId = setTimeout(() => reject(new Error(`Claude session timed out after ${timeoutMs / 1000}s`)), timeoutMs);
   });
 
   try {
     const [rawStdout, stderr] = await Promise.race([
       Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
+        collectStream(proc.stdout as ReadableStream<Uint8Array>, MAX_OUTPUT_BYTES),
+        collectStream(proc.stderr as ReadableStream<Uint8Array>, MAX_OUTPUT_BYTES),
       ]),
       timeoutPromise,
     ]) as [string, string];
+
+    if (timeoutId) clearTimeout(timeoutId);
     await proc.exited;
 
     return {
@@ -156,6 +194,7 @@ async function runClaudeOnce(
       exitCode: proc.exitCode ?? 1,
     };
   } catch (err) {
+    if (timeoutId) clearTimeout(timeoutId);
     // Kill the hung process
     try { proc.kill("SIGTERM"); } catch {}
     setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 5000);
