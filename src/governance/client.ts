@@ -7,6 +7,7 @@
 
 import { evaluate, loadRules, type ToolRequestContext, type PolicyDecision } from "../policy/engine";
 import { enqueue, listPending, findByEventId, findById, loadState as loadApprovalState, type ApprovalEntry } from "../policy/approval-queue";
+import { logPolicyDecision } from "../policy/audit-log";
 import * as governance from "./index";
 
 export interface GovernanceClientConfig {
@@ -31,15 +32,37 @@ export class GovernanceClient {
    */
   evaluateToolRequest(request: ToolRequestContext): PolicyDecision {
     if (!this.config.policyEnabled) {
-      return {
+      const decision = {
         requestId: crypto.randomUUID(),
         action: "allow",
         reason: "Policy engine disabled",
         evaluatedAt: new Date().toISOString(),
         cacheable: false,
       };
+      return decision;
     }
-    return evaluate(request);
+    const decision = evaluate(request);
+
+    // Log every policy decision to audit trail (fire-and-forget)
+    logPolicyDecision(
+      request.eventId,
+      decision.requestId,
+      request.source,
+      request.toolName,
+      decision.action,
+      decision.reason,
+      {
+        channelId: request.channelId,
+        threadId: request.threadId,
+        userId: request.userId,
+        skillName: request.skillName,
+        matchedRuleId: decision.matchedRuleId,
+      }
+    ).catch(err => {
+      console.error("[governance] Failed to write audit log:", err);
+    });
+
+    return decision;
   }
 
   /**
