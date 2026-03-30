@@ -9,6 +9,7 @@ import { WorkflowDefinition, WorkflowState, TaskDefinition, ExecutionContext } f
 import { getReadyTasks, advanceWorkflow, getParallelizableTasks } from "./task-graph.ts";
 import { saveState, loadState, loadDefinition, rebuildExecutionView } from "./workflow-state.ts";
 import { shouldBlockScheduling } from "../escalation";
+import { OrchestratorGovernanceAdapter } from "./governance-adapter";
 
 /**
  * Action handler registry - maps actionRef to handler functions
