@@ -21,7 +21,7 @@ Transform ClaudeClaw from a fire-and-forget daemon into a robust, production-rea
 | 11 | Re-verify Phase 3 Policy Engine | Complete    | 2026-03-30 | 2026-03-30 |
 | 12 | 1/1 | Complete    | 2026-03-30 | 2026-03-30 |
 | 13 | Gap Closure | Complete    | 2026-03-30 |
-| 14 | Security Hardening | Complete | 2026-03-30 | 2026-03-30 |
+| 14 | Security Hardening | Complete    | 2026-03-30 | 2026-03-30 |
 
 ## Phase 2: Session Gateway
 
@@ -298,7 +298,7 @@ Phase 2 (Gateway) ────────────────────�
 - SEC-05: Log injection prevention
 
 **Plans:**
-- [x] 14-01-PLAN.md — Security Hardening (5 tasks) ✅ Complete
+1/1 plans complete
 
 ## Risk Areas
 
