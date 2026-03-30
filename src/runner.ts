@@ -98,6 +98,8 @@ const RATE_LIMIT_PATTERN = /you.ve hit your limit|out of extra usage/i;
 
 // Serial queue — prevents concurrent --resume on the same session
 // Global queue for non-thread messages (backward compatible)
+// Reset to a fresh resolved promise after each task to avoid holding
+// references to every previous result (memory leak).
 let globalQueue: Promise<unknown> = Promise.resolve();
 // Per-thread queues — each thread runs independently in parallel
 const threadQueues = new Map<string, Promise<unknown>>();
@@ -106,11 +108,11 @@ function enqueue<T>(fn: () => Promise<T>, threadId?: string): Promise<T> {
   if (threadId) {
     const current = threadQueues.get(threadId) ?? Promise.resolve();
     const task = current.then(fn, fn);
-    threadQueues.set(threadId, task.catch(() => {}));
+    threadQueues.set(threadId, task.then(() => {}, () => {}));
     return task;
   }
   const task = globalQueue.then(fn, fn);
-  globalQueue = task.catch(() => {});
+  globalQueue = task.then(() => {}, () => {});
   return task;
 }
 
@@ -153,6 +155,44 @@ function buildChildEnv(baseEnv: Record<string, string>, model: string, api: stri
   return childEnv;
 }
 
+// Cap stdout/stderr to prevent unbounded memory growth.
+// 10 MB is far beyond any real Claude response; protects against runaway streams only.
+const MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
+
+async function collectStream(stream: ReadableStream<Uint8Array>, maxBytes: number): Promise<string> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (totalBytes < maxBytes) {
+        const space = maxBytes - totalBytes;
+        if (value.byteLength <= space) {
+          chunks.push(value);
+          totalBytes += value.byteLength;
+        } else {
+          chunks.push(value.subarray(0, space));
+          totalBytes = maxBytes;
+          // cap reached — keep draining without storing so the child process isn't blocked
+        }
+      }
+      // beyond cap: read and discard to keep the pipe flowing
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const merged = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(merged);
+}
+
+
 async function runClaudeOnce(
   baseArgs: string[],
   model: string,
@@ -172,18 +212,21 @@ async function runClaudeOnce(
     ...(cwd ? { cwd } : {}),
   });
 
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error(`Claude session timed out after ${timeoutMs / 1000}s`)), timeoutMs);
+    timeoutId = setTimeout(() => reject(new Error(`Claude session timed out after ${timeoutMs / 1000}s`)), timeoutMs);
   });
 
   try {
     const [rawStdout, stderr] = await Promise.race([
       Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
+        collectStream(proc.stdout as ReadableStream<Uint8Array>, MAX_OUTPUT_BYTES),
+        collectStream(proc.stderr as ReadableStream<Uint8Array>, MAX_OUTPUT_BYTES),
       ]),
       timeoutPromise,
     ]) as [string, string];
+
+    if (timeoutId) clearTimeout(timeoutId);
     await proc.exited;
 
     return {
@@ -192,6 +235,7 @@ async function runClaudeOnce(
       exitCode: proc.exitCode ?? 1,
     };
   } catch (err) {
+    if (timeoutId) clearTimeout(timeoutId);
     // Kill the hung process
     try { proc.kill("SIGTERM"); } catch {}
     setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 5000);
@@ -263,11 +307,12 @@ async function runClaudeStream(
   };
 
   const readStderr = async () => {
-    stderr = await new Response(proc.stderr).text();
+    stderr = await collectStream(proc.stderr as ReadableStream<Uint8Array>, MAX_OUTPUT_BYTES);
   };
 
+  let streamJsonTimeoutId: ReturnType<typeof setTimeout> | null = null;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error(`Claude session timed out after ${timeoutMs / 1000}s`)), timeoutMs);
+    streamJsonTimeoutId = setTimeout(() => reject(new Error(`Claude session timed out after ${timeoutMs / 1000}s`)), timeoutMs);
   });
 
   try {
@@ -275,9 +320,11 @@ async function runClaudeStream(
       Promise.all([readStdout(), readStderr()]),
       timeoutPromise,
     ]);
+    if (streamJsonTimeoutId) clearTimeout(streamJsonTimeoutId);
     await proc.exited;
     return { rawStdout: resultText, stderr: stderr.trim(), exitCode: proc.exitCode ?? 1, sessionId };
   } catch (err) {
+    if (streamJsonTimeoutId) clearTimeout(streamJsonTimeoutId);
     try { proc.kill("SIGTERM"); } catch {}
     setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 5000);
     const message = err instanceof Error ? err.message : String(err);
