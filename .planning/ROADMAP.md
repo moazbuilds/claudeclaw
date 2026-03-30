@@ -277,7 +277,27 @@ Phase 2 (Gateway) ────────────────────�
 | 11 | 2 | 2 |
 | 12 | 1 | 1 |
 | 13 | 3 | 3 |
-| **Total** | **53** | **53** |
+| 14 | 5 | 0 |
+| **Total** | **58** | **53** |
+
+## Phase 14: Security Hardening
+
+**Goal:** Address security vulnerabilities identified in security audit:
+1. Rate limiting on Telegram/Discord message handlers (30 msg/min per user)
+2. File upload size limits (25MB max)
+3. Filename sanitization to prevent path traversal
+4. CSRF protection on web UI state-changing endpoints
+5. Log injection prevention for user-controlled fields
+
+**Requirements:**
+- SEC-01: Rate limiting on message handlers
+- SEC-02: File upload size limits
+- SEC-03: Filename sanitization
+- SEC-04: CSRF protection on web UI
+- SEC-05: Log injection prevention
+
+**Plans:**
+- [ ] 14-01-PLAN.md — Security Hardening (5 tasks)
 
 ## Risk Areas
 
@@ -288,3 +308,8 @@ Phase 2 (Gateway) ────────────────────�
 5. **Policy is config-level only** → Fixed in Phase 3
 6. **Model router is naive** → Fixed in Phase 4
 7. **No test harness** → Fixed in U.1 (Phase 1)
+8. **No rate limiting** → Fixed in Phase 14
+9. **File upload without size limits** → Fixed in Phase 14
+10. **Path traversal in filenames** → Fixed in Phase 14
+11. **No CSRF on web UI** → Fixed in Phase 14
+12. **Log injection vulnerability** → Fixed in Phase 14
