@@ -202,6 +202,22 @@ Phase 2 (Gateway) ────────────────────�
 1/1 plans complete
 | 12-01 | [12-01-PLAN.md](phases/12-verify-adapter-docs/12-01-PLAN.md) | Verify Adapter Documentation | 1 | — | ✅ Complete |
 
+## Phase 13: Gap Closure
+
+**Goal:** Wire 3 remaining integration gaps from v1.0 milestone audit:
+1. OrchestratorGovernanceAdapter → setGovernanceClient() at startup
+2. Policy denial → handlePolicyDenial() in gateway
+3. DLQ overflow → handleDlqOverflow() when threshold exceeded
+
+**Gap Closure:** Closes gaps from v1.0 audit:
+- orchestrator-governance not wired
+- handlePolicyDenial not wired
+- handleDlqOverflow not wired
+
+**Plans:**
+1/1 plans pending
+| 13-01 | [13-01-PLAN.md](phases/13-gap-closure/13-01-PLAN.md) | Wire Remaining Integration Gaps | 3 | — | Pending |
+
 ## Milestones
 
 ### Milestone 1: Foundation (Phases 1-2)
