@@ -214,6 +214,17 @@ function sanitizeFilename(name: string): string {
   return safe.slice(0, 255);
 }
 
+// --- Security: Helper to fetch with size validation ---
+async function fetchWithSizeLimit(url: string): Promise<Uint8Array> {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Telegram file download failed: ${response.status} ${response.statusText}`);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.length > MAX_FILE_SIZE_BYTES) {
+    throw new Error(`File too large: ${bytes.length} bytes (max: ${MAX_FILE_SIZE_BYTES})`);
+  }
+  return bytes;
+}
+
 function debugLog(message: string): void {
   if (!telegramDebug) return;
   console.log(`[Telegram][debug] ${message}`);
@@ -474,8 +485,7 @@ async function downloadImageFromMessage(token: string, message: TelegramMessage)
 
   const remotePath = fileMeta.result.file_path;
   const downloadUrl = `${FILE_API_BASE}${token}/${remotePath}`;
-  const response = await fetch(downloadUrl);
-  if (!response.ok) throw new Error(`Telegram file download failed: ${response.status} ${response.statusText}`);
+  const bytes = await fetchWithSizeLimit(downloadUrl);
 
   const dir = join(process.cwd(), ".claude", "claudeclaw", "inbox", "telegram");
   await mkdir(dir, { recursive: true });
@@ -486,10 +496,6 @@ async function downloadImageFromMessage(token: string, message: TelegramMessage)
   const ext = sanitizeFilename(remoteExt || docExt || mimeExt || ".jpg");
   const filename = `${message.chat.id}-${message.message_id}-${Date.now()}${ext}`;
   const localPath = join(dir, filename);
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.length > MAX_FILE_SIZE_BYTES) {
-    throw new Error(`File too large: ${bytes.length} bytes (max: ${MAX_FILE_SIZE_BYTES})`);
-  }
   await Bun.write(localPath, bytes);
   return localPath;
 }
@@ -508,8 +514,7 @@ async function downloadVoiceFromMessage(token: string, message: TelegramMessage)
   debugLog(
     `Voice download: fileId=${fileId} remotePath=${remotePath} mime=${audioLike.mime_type ?? "unknown"} expectedSize=${audioLike.file_size ?? "unknown"}`
   );
-  const response = await fetch(downloadUrl);
-  if (!response.ok) throw new Error(`Telegram file download failed: ${response.status} ${response.statusText}`);
+  const bytes = await fetchWithSizeLimit(downloadUrl);
 
   const dir = join(process.cwd(), ".claude", "claudeclaw", "inbox", "telegram");
   await mkdir(dir, { recursive: true });
@@ -521,10 +526,6 @@ async function downloadVoiceFromMessage(token: string, message: TelegramMessage)
   const ext = sanitizeFilename(remoteExt || docExt || audioExt || mimeExt || ".ogg");
   const filename = `${message.chat.id}-${message.message_id}-${Date.now()}${ext}`;
   const localPath = join(dir, filename);
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.length > MAX_FILE_SIZE_BYTES) {
-    throw new Error(`File too large: ${bytes.length} bytes (max: ${MAX_FILE_SIZE_BYTES})`);
-  }
   await Bun.write(localPath, bytes);
   const header = Array.from(bytes.slice(0, 8))
     .map((b) => b.toString(16).padStart(2, "0"))
@@ -557,10 +558,7 @@ async function downloadDocumentFromMessage(
 
   const remotePath = fileMeta.result.file_path;
   const downloadUrl = `${FILE_API_BASE}${token}/${remotePath}`;
-  const response = await fetch(downloadUrl);
-  if (!response.ok) {
-    throw new Error(`Telegram file download failed: ${response.status} ${response.statusText}`);
-  }
+  const bytes = await fetchWithSizeLimit(downloadUrl);
 
   const dir = join(process.cwd(), ".claude", "claudeclaw", "inbox", "telegram");
   await mkdir(dir, { recursive: true });
@@ -569,10 +567,6 @@ async function downloadDocumentFromMessage(
   const ext = sanitizeFilename(extname(originalName)) || sanitizeFilename(extname(remotePath)) || "";
   const filename = `${message.chat.id}-${message.message_id}-${Date.now()}${ext}`;
   const localPath = join(dir, filename);
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.length > MAX_FILE_SIZE_BYTES) {
-    throw new Error(`File too large: ${bytes.length} bytes (max: ${MAX_FILE_SIZE_BYTES})`);
-  }
   await Bun.write(localPath, bytes);
   return { localPath, originalName };
 }

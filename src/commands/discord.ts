@@ -145,6 +145,17 @@ function sanitizeDiscordFilename(name: string): string {
   return safe.slice(0, 255);
 }
 
+// --- Security: Helper to fetch with size validation ---
+async function fetchDiscordWithSizeLimit(url: string): Promise<Uint8Array> {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Discord attachment download failed: ${response.status}`);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.length > MAX_DISCORD_FILE_SIZE_BYTES) {
+    throw new Error(`File too large: ${bytes.length} bytes (max: ${MAX_DISCORD_FILE_SIZE_BYTES})`);
+  }
+  return bytes;
+}
+
 // --- Debug ---
 
 function debugLog(message: string): void {
@@ -299,17 +310,11 @@ async function downloadDiscordAttachment(
   const dir = join(process.cwd(), ".claude", "claudeclaw", "inbox", "discord");
   await mkdir(dir, { recursive: true });
 
-  const response = await fetch(attachment.url);
-  if (!response.ok) throw new Error(`Discord attachment download failed: ${response.status}`);
+  const bytes = await fetchDiscordWithSizeLimit(attachment.url);
 
   const ext = sanitizeDiscordFilename(extname(attachment.filename)) || (type === "voice" ? ".ogg" : ".jpg");
   const filename = `${attachment.id}-${Date.now()}${ext}`;
   const localPath = join(dir, filename);
-
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.length > MAX_DISCORD_FILE_SIZE_BYTES) {
-    throw new Error(`File too large: ${bytes.length} bytes (max: ${MAX_DISCORD_FILE_SIZE_BYTES})`);
-  }
   await Bun.write(localPath, bytes);
   debugLog(`Attachment downloaded: ${localPath} (${bytes.length} bytes)`);
   return localPath;

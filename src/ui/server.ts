@@ -34,8 +34,7 @@ function validateCsrfToken(sessionId: string, token: string): boolean {
     csrfTokens.delete(sessionId);
     return false;
   }
-  if (entry.token !== token) return false;
-  return true;
+  return entry.token === token;
 }
 
 function sanitizeForLog(value: string): string {
