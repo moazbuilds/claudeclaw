@@ -27,12 +27,18 @@ const AUDIT_LOG_FILE = join(AUDIT_DIR, "audit-log.jsonl");
 
 describe("Audit Log - Basic Operations", () => {
   beforeEach(async () => {
+    // Clean audit log before test to ensure isolation
+    try {
+      await rm(AUDIT_LOG_FILE, { force: true });
+    } catch {
+      // File might not exist
+    }
     await mkdir(AUDIT_DIR, { recursive: true });
   });
 
   afterEach(async () => {
     try {
-      await rm(AUDIT_LOG_FILE, { recursive: true, force: true });
+      await rm(AUDIT_LOG_FILE, { force: true });
     } catch {
       // Ignore
     }

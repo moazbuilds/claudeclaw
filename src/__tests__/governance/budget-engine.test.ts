@@ -20,10 +20,32 @@ import {
   resetUsageTracker,
 } from "../../governance/usage-tracker";
 
-const TEST_BUDGET_DIR = join(process.cwd(), ".claude", "claudeclaw", "budget-test");
+const BUDGET_POLICIES_FILE = join(process.cwd(), ".claude", "claudeclaw", "budget-policies.json");
+const USAGE_DIR = join(process.cwd(), ".claude", "claudeclaw", "usage");
 
 describe("BudgetEngine", () => {
   beforeEach(async () => {
+    const { rm, readdir } = await import("fs/promises");
+    
+    // Clean budget policies file for test isolation
+    try {
+      await rm(BUDGET_POLICIES_FILE, { force: true });
+    } catch {
+      // File might not exist
+    }
+    
+    // Clean usage directory for test isolation
+    try {
+      const files = await readdir(USAGE_DIR);
+      await Promise.all(
+        files
+          .filter(f => f !== ".gitkeep")
+          .map(f => rm(join(USAGE_DIR, f), { force: true }))
+      );
+    } catch {
+      // Directory might not exist
+    }
+    
     resetBudgetEngine();
     resetUsageTracker();
     await initUsageTracker();

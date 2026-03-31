@@ -17,11 +17,23 @@ import {
   recordInvocationCompletion,
   resetUsageTracker,
 } from "../../governance/usage-tracker";
+import { join } from "path";
+
+const BUDGET_POLICIES_FILE = join(process.cwd(), ".claude", "claudeclaw", "budget-policies.json");
 
 describe("ModelRouter", () => {
   beforeEach(async () => {
     resetUsageTracker();
     resetBudgetEngine();
+    
+    // Clear budget policies file for test isolation
+    try {
+      const { rm } = await import("fs/promises");
+      await rm(BUDGET_POLICIES_FILE, { force: true });
+    } catch {
+      // File might not exist
+    }
+    
     await initUsageTracker();
     await initBudgetEngine();
     
@@ -108,7 +120,7 @@ describe("ModelRouter", () => {
 
     expect(decision.selectedProvider).toBe("openai");
     expect(decision.selectedModel).toBe("gpt-4o");
-    expect(decision.reason).toContain("Override");
+    expect(decision.reason).toContain("override");
   });
 
   test("should use capability mapping", async () => {

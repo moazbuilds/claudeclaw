@@ -285,6 +285,36 @@ export async function rebuildFromEventLog(): Promise<number> {
   const newEntries: RetryEntry[] = [];
 
   for await (const event of readFrom(1)) {
+    // Handle __status_update__ events which have status in payload.updates
+    if (event.type === "__status_update__") {
+      const payload = event.payload as {
+        originalEventId?: string;
+        originalSeq?: number;
+        updates?: {
+          status?: string;
+          retryCount?: number;
+          nextRetryAt?: string;
+        };
+      };
+      const updates = payload?.updates;
+      if (
+        updates?.status === "retry_scheduled" &&
+        updates?.nextRetryAt &&
+        updates?.retryCount !== undefined &&
+        updates.retryCount < retryState.config.maxRetries
+      ) {
+        newEntries.push({
+          eventId: payload.originalEventId || "",
+          eventSeq: payload.originalSeq || 0,
+          retryCount: updates.retryCount,
+          nextRetryAt: updates.nextRetryAt,
+          scheduledAt: event.updatedAt,
+        });
+      }
+      continue;
+    }
+
+    // Regular events with retry_scheduled status
     if (
       event.status === "retry_scheduled" &&
       event.nextRetryAt &&

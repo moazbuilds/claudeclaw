@@ -116,6 +116,73 @@ vi.mock("../gateway/session-map", () => {
   };
 });
 
+// Mock escalation module - must be before gateway import
+// Gateway imports from ../escalation which resolves to src/escalation from src/gateway/
+// Test file is at src/__tests__/gateway/index.test.ts, so ../../escalation resolves to src/escalation
+vi.mock("../../escalation", () => ({
+  shouldBlockAdmission: vi.fn().mockResolvedValue(false),
+  shouldBlockScheduling: vi.fn().mockResolvedValue(false),
+  handlePolicyDenial: vi.fn().mockResolvedValue({
+    actionId: "mock-action-id",
+    timestamp: new Date().toISOString(),
+    pause: false,
+    handoff: false,
+    notification: false,
+    reason: "Mocked for tests",
+  }),
+  handleEscalationTrigger: vi.fn().mockResolvedValue({
+    actionId: "mock-action-id",
+    timestamp: new Date().toISOString(),
+    pause: false,
+    handoff: false,
+    notification: false,
+    reason: "Mocked for tests",
+  }),
+  pause: vi.fn().mockResolvedValue({}),
+  resume: vi.fn().mockResolvedValue({}),
+  isPaused: vi.fn().mockResolvedValue(false),
+  getPauseState: vi.fn().mockResolvedValue({ paused: false, mode: "admission_only" }),
+  resetPauseController: vi.fn().mockResolvedValue(undefined),
+  clearPauseCache: vi.fn(),
+}));
+
+// Mock policy engine - must be before gateway import
+vi.mock("../../policy/engine", () => ({
+  evaluate: vi.fn().mockReturnValue({
+    requestId: "mock-request-id",
+    action: "allow",
+    reason: "Mocked policy - allowed",
+    evaluatedAt: new Date().toISOString(),
+    cacheable: false,
+  }),
+  loadPolicies: vi.fn().mockResolvedValue(undefined),
+  getPolicies: vi.fn().mockReturnValue([]),
+}));
+
+// Mock governance client
+vi.mock("../../governance/client", () => ({
+  getGovernanceClient: vi.fn().mockReturnValue({
+    evaluateToolRequest: vi.fn().mockResolvedValue({
+      action: "allow",
+      reason: "Mocked governance",
+    }),
+    isToolAllowed: vi.fn().mockReturnValue(true),
+    requiresApproval: vi.fn().mockReturnValue(false),
+    checkPolicy: vi.fn().mockResolvedValue({ allowed: true }),
+    checkBudget: vi.fn().mockResolvedValue({ allowed: true, reason: "Mocked budget check" }),
+    reloadPolicies: vi.fn().mockResolvedValue(undefined),
+    requestApproval: vi.fn().mockResolvedValue(null),
+    getPendingApprovals: vi.fn().mockReturnValue([]),
+    findApprovalByEvent: vi.fn().mockResolvedValue(null),
+    getApprovalById: vi.fn().mockReturnValue(null),
+    getTelemetry: vi.fn().mockResolvedValue({}),
+    getUsageStats: vi.fn().mockResolvedValue({}),
+    getBudgetState: vi.fn().mockResolvedValue([]),
+  }),
+  initGovernanceClient: vi.fn().mockResolvedValue(undefined),
+  resetGovernanceClient: vi.fn(),
+}));
+
 // Now import the gateway
 import {
   Gateway,

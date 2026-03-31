@@ -199,6 +199,9 @@ import {
   getFailureCounts,
 } from "../../escalation/triggers";
 
+// Import watchdog for reset
+import { resetWatchdog } from "../../governance/watchdog";
+
 // Import watchdog types
 import type { WatchdogDecision, WatchdogState } from "../../governance/watchdog";
 
@@ -229,6 +232,8 @@ async function fullCleanup() {
   clearGatewayEnabledCache();
   // Reset trigger integration
   resetTriggerIntegration();
+  // Reset watchdog state
+  resetWatchdog();
 }
 
 function createTestEvent(): NormalizedEvent {

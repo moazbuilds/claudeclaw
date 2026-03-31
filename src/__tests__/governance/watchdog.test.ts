@@ -14,10 +14,27 @@ import {
   getWatchdogConfig,
   resetWatchdog,
 } from "../../governance/watchdog";
+import { join } from "path";
+
+const WATCHDOG_DIR = join(process.cwd(), ".claude", "claudeclaw", "watchdog");
 
 describe("Watchdog", () => {
   beforeEach(async () => {
     resetWatchdog();
+    
+    // Clear watchdog directory for test isolation
+    try {
+      const { rm, readdir } = await import("fs/promises");
+      const files = await readdir(WATCHDOG_DIR);
+      for (const file of files) {
+        if (file !== ".gitkeep") {
+          await rm(join(WATCHDOG_DIR, file), { recursive: true, force: true });
+        }
+      }
+    } catch {
+      // Directory might not exist yet
+    }
+    
     await initWatchdog();
     
     // Configure with relaxed limits for testing
@@ -152,7 +169,7 @@ describe("Watchdog", () => {
     const decision = await checkLimits({ invocationId });
 
     expect(decision.state).toBe("suspend");
-    expect(decision.triggeredLimits.some(l => l.includes("repeated"))).toBe(true);
+    expect(decision.triggeredLimits.some(l => l.includes("Repeated"))).toBe(true);
   });
 
   test("should handle trigger for warn state", async () => {
@@ -240,6 +257,9 @@ describe("Watchdog", () => {
   test("should get watchdog stats", async () => {
     await recordExecutionMetric({ invocationId: "stats-inv-1" }, { toolCallCount: 5 });
     await recordExecutionMetric({ invocationId: "stats-inv-2" }, { toolCallCount: 3 });
+
+    // Trigger a watchdog decision to log an event
+    await checkLimits({ invocationId: "stats-inv-1" });
 
     const stats = await getWatchdogStats();
 

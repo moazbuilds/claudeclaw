@@ -22,6 +22,16 @@ const ESCALATION_DIR = join(process.cwd(), ".claude", "claudeclaw");
 
 describe("Escalation Status - Basic Operations", () => {
   beforeEach(async () => {
+    // Clean directories before test to ensure isolation
+    try {
+      await rm(join(ESCALATION_DIR, "handoffs"), { recursive: true, force: true });
+      await rm(join(ESCALATION_DIR, "notifications"), { recursive: true, force: true });
+      await rm(join(ESCALATION_DIR, "pause-actions.jsonl"), { force: true });
+      await rm(join(ESCALATION_DIR, "paused.json"), { force: true });
+    } catch {
+      // Ignore cleanup errors
+    }
+    
     await mkdir(ESCALATION_DIR, { recursive: true });
     await mkdir(join(ESCALATION_DIR, "handoffs"), { recursive: true });
     await mkdir(join(ESCALATION_DIR, "notifications"), { recursive: true });

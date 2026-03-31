@@ -14,28 +14,28 @@ import {
 } from "../../governance/usage-tracker";
 import { join } from "path";
 
-const TEST_DIR = join(process.cwd(), ".claude", "claudeclaw", "usage-test");
+// The usage tracker uses .claude/claudeclaw/usage/ - clean this for test isolation
+const USAGE_DIR = join(process.cwd(), ".claude", "claudeclaw", "usage");
 
 describe("UsageTracker", () => {
   beforeEach(async () => {
     resetUsageTracker();
-    // Clear test data
+    // Clear usage data directory for test isolation
     try {
-      const { rm } = await import("fs/promises");
-      await rm(TEST_DIR, { recursive: true, force: true });
+      const { rm, readdir } = await import("fs/promises");
+      const files = await readdir(USAGE_DIR);
+      for (const file of files) {
+        if (file !== ".gitkeep") {
+          await rm(join(USAGE_DIR, file), { recursive: true, force: true });
+        }
+      }
     } catch {
-      // Ignore
+      // Directory might not exist yet
     }
   });
 
   afterEach(async () => {
     resetUsageTracker();
-    try {
-      const { rm } = await import("fs/promises");
-      await rm(TEST_DIR, { recursive: true, force: true });
-    } catch {
-      // Ignore
-    }
   });
 
   test("should initialize without error", async () => {
