@@ -30,7 +30,7 @@ ClaudeClaw turns your Claude Code into a personal assistant that never sleeps. I
 
 > Note: Please don't use ClaudeClaw for hacking any bank system or doing any illegal activities. Thank you.
 
-## Why ClaudeClaw?
+## Why ClaudeClaw? trest
 
 | Category | ClaudeClaw | OpenClaw |
 | --- | --- | --- |
