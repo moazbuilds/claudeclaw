@@ -2,6 +2,7 @@ import { writeFile, unlink, mkdir } from "fs/promises";
 import { join } from "path";
 import { fileURLToPath } from "url";
 import { run, runUserMessage, streamUserMessage, bootstrap, ensureProjectClaudeMd, loadHeartbeatPromptTemplate } from "../runner";
+import { initGatewayProcessor } from "../event-processor";
 import { writeState, type StateData } from "../statusline";
 import { cronMatches, nextCronMatch } from "../cron";
 import { clearJobSchedule, loadJobs } from "../jobs";
@@ -9,6 +10,7 @@ import { writePidFile, cleanupPidFile, checkExistingDaemon } from "../pid";
 import { initConfig, loadSettings, reloadSettings, resolvePrompt, type HeartbeatConfig, type Settings } from "../config";
 import { getDayAndMinuteAtOffset } from "../timezone";
 import { startWebUi, type WebServerHandle } from "../web";
+import { initializeJobSystem } from "../orchestrator/resumable-jobs";
 import type { Job } from "../jobs";
 
 const CLAUDE_DIR = join(process.cwd(), ".claude");
@@ -311,6 +313,13 @@ export async function start(args: string[] = []) {
   const settings = await loadSettings();
   await ensureProjectClaudeMd();
   const jobs = await loadJobs();
+
+  // Initialize job system: wires governance adapter and resumes any pending workflows
+  const { pendingResumed, pendingFailed } = await initializeJobSystem();
+  if (pendingResumed > 0 || pendingFailed > 0) {
+    console.log(`[${new Date().toLocaleTimeString()}] Job system: ${pendingResumed} resumed, ${pendingFailed} failed`);
+  }
+
   const webEnabled = webFlag || webPortFlag !== null || settings.web.enabled;
   const webPort = webPortFlag ?? settings.web.port;
 
@@ -369,6 +378,10 @@ export async function start(args: string[] = []) {
 
   await initTelegram(currentSettings.telegram.token);
   if (!telegramToken) console.log("  Telegram: not configured");
+
+  // --- Gateway event processor ---
+  // Wire up the event processor for gateway v2 path (Discord/Telegram → event log → processor → runUserMessage)
+  await initGatewayProcessor(async (source, prompt) => runUserMessage(source, prompt));
 
   // --- Discord ---
   let discordSendToUser: ((userId: string, text: string) => Promise<void>) | null = null;
@@ -567,9 +580,11 @@ export async function start(args: string[] = []) {
         })
         .then((r) => {
           if (!r) return;
-          const shouldForward = currentSettings.heartbeat.forwardToTelegram || !r.stdout.trim().startsWith("HEARTBEAT_OK");
-          if (shouldForward) {
+          const isOk = r.stdout.trim().startsWith("HEARTBEAT_OK");
+          if (currentSettings.heartbeat.forwardToTelegram || !isOk) {
             forwardToTelegram("", r);
+          }
+          if (currentSettings.heartbeat.forwardToDiscord || !isOk) {
             forwardToDiscord("", r);
           }
         });
