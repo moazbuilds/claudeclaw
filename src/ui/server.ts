@@ -1,3 +1,4 @@
+import { timingSafeEqual, randomUUID } from "crypto";
 import { htmlPage } from "./page/html";
 import { clampInt, json } from "./http";
 import type { StartWebUiOptions, WebServerHandle } from "./types";
@@ -5,6 +6,105 @@ import { buildState, buildTechnicalInfo, sanitizeSettings } from "./services/sta
 import { readHeartbeatSettings, updateHeartbeatSettings } from "./services/settings";
 import { createQuickJob, deleteJob } from "./services/jobs";
 import { readLogs } from "./services/logs";
+
+// --- Security: CSRF Protection ---
+// NOTE: The Web UI has no built-in authentication. CSRF protection prevents
+// cross-origin browser attacks but does not prevent direct API access.
+// For production use, deploy behind a reverse proxy with authentication
+// (e.g. Cloudflare Access, nginx basic auth, or OAuth2 proxy).
+const CSRF_HEADER_NAME = "X-CSRF-Token";
+const MAX_CSRF_TOKENS = 10000;
+
+interface CsrfEntry {
+  tokens: Array<{ token: string; expiresAt: number }>;
+}
+
+const csrfTokens = new Map<string, CsrfEntry>();
+
+function generateCsrfToken(sessionId: string): string {
+  // Evict expired tokens and enforce max size
+  if (csrfTokens.size > MAX_CSRF_TOKENS) {
+    const now = Date.now();
+    for (const [key, entry] of csrfTokens) {
+      const valid = entry.tokens.filter((t) => now <= t.expiresAt);
+      if (valid.length === 0) {
+        csrfTokens.delete(key);
+      } else {
+        csrfTokens.set(key, { tokens: valid });
+      }
+    }
+    // If still over limit after cleanup, remove oldest entry
+    if (csrfTokens.size > MAX_CSRF_TOKENS) {
+      const firstKey = csrfTokens.keys().next().value;
+      if (firstKey) csrfTokens.delete(firstKey);
+    }
+  }
+
+  const token = randomUUID();
+  const newToken = { token, expiresAt: Date.now() + 3600000 }; // 1 hour
+  const existing = csrfTokens.get(sessionId);
+  const tokens = existing ? [...existing.tokens.slice(-4), newToken] : [newToken];
+  csrfTokens.set(sessionId, { tokens });
+  return token;
+}
+
+function validateCsrfToken(sessionId: string, token: string): boolean {
+  const entry = csrfTokens.get(sessionId);
+  if (!entry) return false;
+  const now = Date.now();
+  const validTokens = entry.tokens.filter((t) => now <= t.expiresAt);
+  if (validTokens.length === 0) {
+    csrfTokens.delete(sessionId);
+    return false;
+  }
+  const matchIndex = validTokens.findIndex((t) => {
+    const a = Buffer.from(t.token);
+    const b = Buffer.from(token);
+    if (a.length !== b.length) return false;
+    return timingSafeEqual(a, b);
+  });
+  if (matchIndex === -1) {
+    // Update entry to only keep valid (non-expired) tokens
+    csrfTokens.set(sessionId, { tokens: validTokens });
+    return false;
+  }
+  // Consume the token to prevent replay attacks
+  validTokens.splice(matchIndex, 1);
+  if (validTokens.length === 0) {
+    csrfTokens.delete(sessionId);
+  } else {
+    csrfTokens.set(sessionId, { tokens: validTokens });
+  }
+  return true;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function getOrCreateSessionId(req: Request): { sessionId: string; setCookie?: string } {
+  const existing = req.headers.get("Cookie")?.match(/session_id=([^;]+)/)?.[1];
+  if (existing && UUID_RE.test(existing)) return { sessionId: existing };
+  // Invalid format or missing — issue a new session
+  const isSecure = req.headers.get("x-forwarded-proto") === "https" || req.url.startsWith("https");
+  const securePart = isSecure ? "; Secure" : "";
+  const newId = randomUUID();
+  return {
+    sessionId: newId,
+    setCookie: `session_id=${newId}; Path=/; HttpOnly; SameSite=Strict${securePart}`,
+  };
+}
+
+/** Returns a 403 Response if the CSRF token is missing or invalid, otherwise null. */
+function requireCsrf(req: Request): Response | null {
+  const csrfToken = req.headers.get(CSRF_HEADER_NAME);
+  const { sessionId } = getOrCreateSessionId(req);
+  if (!csrfToken || !validateCsrfToken(sessionId, csrfToken)) {
+    return new Response(JSON.stringify({ ok: false, error: "Invalid CSRF token" }), {
+      status: 403,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  return null;
+}
 
 export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
   const server = Bun.serve({
@@ -24,6 +124,17 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
         return json({ ok: true, now: Date.now() });
       }
 
+      if (url.pathname === "/api/csrf-token") {
+        const { sessionId, setCookie } = getOrCreateSessionId(req);
+        const token = generateCsrfToken(sessionId);
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store",
+        };
+        if (setCookie) headers["Set-Cookie"] = setCookie;
+        return new Response(JSON.stringify({ token }), { headers });
+      }
+
       if (url.pathname === "/api/state") {
         return json(await buildState(opts.getSnapshot()));
       }
@@ -33,6 +144,8 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
       }
 
       if (url.pathname === "/api/settings/heartbeat" && req.method === "POST") {
+        const csrfError = requireCsrf(req);
+        if (csrfError) return csrfError;
         try {
           const body = await req.json();
           const payload = body as {
@@ -96,7 +209,8 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
           }
           return json({ ok: true, heartbeat: next });
         } catch (err) {
-          return json({ ok: false, error: String(err) });
+          console.error("Heartbeat settings update failed:", err);
+          return json({ ok: false, error: "Failed to update heartbeat settings" });
         }
       }
 
@@ -104,7 +218,8 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
         try {
           return json({ ok: true, heartbeat: await readHeartbeatSettings() });
         } catch (err) {
-          return json({ ok: false, error: String(err) });
+          console.error("Heartbeat settings read failed:", err);
+          return json({ ok: false, error: "Failed to read heartbeat settings" });
         }
       }
 
@@ -113,17 +228,22 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
       }
 
       if (url.pathname === "/api/jobs/quick" && req.method === "POST") {
+        const csrfError = requireCsrf(req);
+        if (csrfError) return csrfError;
         try {
           const body = await req.json();
           const result = await createQuickJob(body as { time?: unknown; prompt?: unknown });
           if (opts.onJobsChanged) await opts.onJobsChanged();
           return json({ ok: true, ...result });
         } catch (err) {
-          return json({ ok: false, error: String(err) });
+          console.error("Quick job creation failed:", err);
+          return json({ ok: false, error: "Failed to create job" });
         }
       }
 
       if (url.pathname.startsWith("/api/jobs/") && req.method === "DELETE") {
+        const csrfError = requireCsrf(req);
+        if (csrfError) return csrfError;
         try {
           const encodedName = url.pathname.slice("/api/jobs/".length);
           const name = decodeURIComponent(encodedName);
@@ -131,7 +251,8 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
           if (opts.onJobsChanged) await opts.onJobsChanged();
           return json({ ok: true });
         } catch (err) {
-          return json({ ok: false, error: String(err) });
+          console.error("Job deletion failed:", err);
+          return json({ ok: false, error: "Failed to delete job" });
         }
       }
 
@@ -151,6 +272,8 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
 
       if (url.pathname === "/api/chat" && req.method === "POST") {
         if (!opts.onChat) return json({ ok: false, error: "chat not configured" });
+        const csrfError = requireCsrf(req);
+        if (csrfError) return csrfError;
         try {
           const body = await req.json();
           const message = String(body?.message ?? "").trim();
@@ -171,7 +294,8 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
                 );
                 send({ type: "done" });
               } catch (err) {
-                send({ type: "error", message: String(err) });
+                console.error("Chat stream error:", err);
+                send({ type: "error", message: "An internal error occurred" });
               } finally {
                 controller.close();
               }
@@ -187,7 +311,8 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
             },
           });
         } catch (err) {
-          return json({ ok: false, error: String(err) });
+          console.error("Chat request failed:", err);
+          return json({ ok: false, error: "Chat request failed" });
         }
       }
 
