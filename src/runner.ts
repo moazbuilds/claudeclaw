@@ -10,6 +10,8 @@ import {
   createFallbackSession,
   incrementFallbackTurn,
   markFallbackCompactWarned,
+  peekFallbackSession,
+  resetFallbackSession,
 } from "./sessions";
 import {
   getThreadSession,
@@ -392,6 +394,20 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
   console.log(
     `[${new Date().toLocaleTimeString()}] Running: ${name} (${isNew ? "new session" : `resume ${existing.sessionId.slice(0, 8)}`}, security: ${security.level})`
   );
+
+  // Reverse handoff: if returning to primary after fallback was active,
+  // tell the primary session to catch up on what happened during the fallback window.
+  const fallbackState = await peekFallbackSession();
+  if (!isNew && fallbackState && fallbackState.turnCount > 0) {
+    prompt = [
+      "[PROVIDER HANDOFF — RETURNING] You were rate-limited and a fallback provider handled requests while you were unavailable.",
+      `The fallback session ran for ${fallbackState.turnCount} turn(s).`,
+      `Read the 3-5 most recent log files in ${LOGS_DIR} to catch up on what happened, then continue with the following request:\n`,
+      prompt,
+    ].join(" ");
+    await resetFallbackSession();
+    console.log(`[${new Date().toLocaleTimeString()}] Reverse handoff: primary resuming after ${fallbackState.turnCount} fallback turn(s)`);
+  }
 
   // New session: use json output to capture Claude's session_id
   // Resumed session: use text output with --resume
