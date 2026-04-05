@@ -3,6 +3,7 @@ import { unlink, readdir, rename } from "fs/promises";
 
 const HEARTBEAT_DIR = join(process.cwd(), ".claude", "claudeclaw");
 const SESSION_FILE = join(HEARTBEAT_DIR, "session.json");
+const FALLBACK_SESSION_FILE = join(HEARTBEAT_DIR, "session-fallback.json");
 
 export interface GlobalSession {
   sessionId: string;
@@ -108,4 +109,79 @@ export async function backupSession(): Promise<string | null> {
   current = null;
 
   return backupName;
+}
+
+// --- Fallback session (separate provider, separate session) ---
+
+let fallbackCurrent: GlobalSession | null = null;
+
+async function loadFallbackSession(): Promise<GlobalSession | null> {
+  if (fallbackCurrent) return fallbackCurrent;
+  try {
+    fallbackCurrent = await Bun.file(FALLBACK_SESSION_FILE).json();
+    return fallbackCurrent;
+  } catch {
+    return null;
+  }
+}
+
+async function saveFallbackSession(session: GlobalSession): Promise<void> {
+  fallbackCurrent = session;
+  await Bun.write(FALLBACK_SESSION_FILE, JSON.stringify(session, null, 2) + "\n");
+}
+
+/** Returns the existing fallback session or null. */
+export async function getFallbackSession(): Promise<{ sessionId: string; turnCount: number; compactWarned: boolean } | null> {
+  const existing = await loadFallbackSession();
+  if (existing) {
+    if (typeof existing.turnCount !== "number") existing.turnCount = 0;
+    if (typeof existing.compactWarned !== "boolean") existing.compactWarned = false;
+    existing.lastUsedAt = new Date().toISOString();
+    await saveFallbackSession(existing);
+    return { sessionId: existing.sessionId, turnCount: existing.turnCount, compactWarned: existing.compactWarned };
+  }
+  return null;
+}
+
+/** Save a fallback session ID obtained from Claude Code's output. */
+export async function createFallbackSession(sessionId: string): Promise<void> {
+  await saveFallbackSession({
+    sessionId,
+    createdAt: new Date().toISOString(),
+    lastUsedAt: new Date().toISOString(),
+    turnCount: 0,
+    compactWarned: false,
+  });
+}
+
+/** Increment the turn counter for the fallback session. */
+export async function incrementFallbackTurn(): Promise<number> {
+  const existing = await loadFallbackSession();
+  if (!existing) return 0;
+  if (typeof existing.turnCount !== "number") existing.turnCount = 0;
+  existing.turnCount += 1;
+  await saveFallbackSession(existing);
+  return existing.turnCount;
+}
+
+/** Mark that the compact warning has been sent for the fallback session. */
+export async function markFallbackCompactWarned(): Promise<void> {
+  const existing = await loadFallbackSession();
+  if (!existing) return;
+  existing.compactWarned = true;
+  await saveFallbackSession(existing);
+}
+
+export async function resetFallbackSession(): Promise<void> {
+  fallbackCurrent = null;
+  try {
+    await unlink(FALLBACK_SESSION_FILE);
+  } catch {
+    // already gone
+  }
+}
+
+/** Returns fallback session metadata without mutating lastUsedAt. */
+export async function peekFallbackSession(): Promise<GlobalSession | null> {
+  return await loadFallbackSession();
 }

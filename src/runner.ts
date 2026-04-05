@@ -1,7 +1,18 @@
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { join } from "path";
 import { existsSync } from "fs";
-import { getSession, createSession, incrementTurn, markCompactWarned } from "./sessions";
+import {
+  getSession,
+  createSession,
+  incrementTurn,
+  markCompactWarned,
+  getFallbackSession,
+  createFallbackSession,
+  incrementFallbackTurn,
+  markFallbackCompactWarned,
+  peekFallbackSession,
+  resetFallbackSession,
+} from "./sessions";
 import {
   getThreadSession,
   createThreadSession,
@@ -384,6 +395,20 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
     `[${new Date().toLocaleTimeString()}] Running: ${name} (${isNew ? "new session" : `resume ${existing.sessionId.slice(0, 8)}`}, security: ${security.level})`
   );
 
+  // Reverse handoff: if returning to primary after fallback was active,
+  // tell the primary session to catch up on what happened during the fallback window.
+  const fallbackState = await peekFallbackSession();
+  if (!isNew && fallbackState && fallbackState.turnCount > 0) {
+    prompt = [
+      "[PROVIDER HANDOFF — RETURNING] You were rate-limited and a fallback provider handled requests while you were unavailable.",
+      `The fallback session ran for ${fallbackState.turnCount} turn(s).`,
+      `Read the 3-5 most recent log files in ${LOGS_DIR} to catch up on what happened, then continue with the following request:\n`,
+      prompt,
+    ].join(" ");
+    await resetFallbackSession();
+    console.log(`[${new Date().toLocaleTimeString()}] Reverse handoff: primary resuming after ${fallbackState.turnCount} fallback turn(s)`);
+  }
+
   // New session: use json output to capture Claude's session_id
   // Resumed session: use text output with --resume
   const outputFormat = isNew ? "json" : "text";
@@ -424,13 +449,50 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
   let exec = await runClaudeOnce(args, primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs);
   const primaryRateLimit = extractRateLimitMessage(exec.rawStdout, exec.stderr);
   let usedFallback = false;
+  // Track whether we created a new session (primary or fallback) for JSON parsing
+  let createdNewSession = false;
+  // Track which session layer we're operating on for turn counting
+  let sessionLayer: "primary" | "fallback" = "primary";
 
   if (primaryRateLimit && hasModelConfig(fallbackConfig) && !sameModelConfig(primaryConfig, fallbackConfig)) {
     console.warn(
-      `[${new Date().toLocaleTimeString()}] Claude limit reached; retrying with fallback${fallbackConfig.model ? ` (${fallbackConfig.model})` : ""}...`
+      `[${new Date().toLocaleTimeString()}] Claude limit reached; switching to fallback session${fallbackConfig.model ? ` (${fallbackConfig.model})` : ""}...`
     );
-    exec = await runClaudeOnce(args, fallbackConfig.model, fallbackConfig.api, baseEnv, timeoutMs);
+
+    // Use a separate session for the fallback provider to avoid
+    // mixing thinking block signatures (see issue #18).
+    const fallbackSession = await getFallbackSession();
+    const isFallbackNew = !fallbackSession;
+
+    let fallbackPrompt = prompt;
+    if (isFallbackNew) {
+      // First time on fallback: tell the agent to read recent logs for context handoff
+      fallbackPrompt = [
+        "[PROVIDER HANDOFF] The primary API provider hit a rate limit.",
+        "You are now running on a fallback provider with a fresh session.",
+        "A previous session was active on the primary provider and may have ongoing conversations or tasks.",
+        `Before responding, read the 3-5 most recent log files in ${LOGS_DIR} to understand what was happening.`,
+        "Then continue naturally with the following request:\n",
+        prompt,
+      ].join(" ");
+    }
+
+    const fallbackFormat = isFallbackNew ? "json" : "text";
+    const fallbackArgs = ["claude", "-p", fallbackPrompt, "--output-format", fallbackFormat, ...securityArgs];
+
+    if (!isFallbackNew) {
+      fallbackArgs.push("--resume", fallbackSession.sessionId);
+    }
+
+    // Attach the same system prompt to fallback calls
+    if (appendParts.length > 0) {
+      fallbackArgs.push("--append-system-prompt", appendParts.join("\n\n"));
+    }
+
+    exec = await runClaudeOnce(fallbackArgs, fallbackConfig.model, fallbackConfig.api, baseEnv, timeoutMs);
     usedFallback = true;
+    createdNewSession = isFallbackNew;
+    sessionLayer = "fallback";
   }
 
   const rawStdout = exec.rawStdout;
@@ -444,14 +506,19 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
     stdout = rateLimitMessage;
   }
 
-  // For new sessions, parse the JSON to extract session_id and result text
-  if (!rateLimitMessage && isNew && exitCode === 0) {
+  // For new sessions (primary or fallback), parse JSON to extract session_id
+  const isNewSession = (isNew && !usedFallback) || createdNewSession;
+  if (!rateLimitMessage && isNewSession && exitCode === 0) {
     try {
       const json = JSON.parse(rawStdout);
       sessionId = json.session_id;
       stdout = json.result ?? "";
-      // Save the real session ID from Claude Code
-      if (threadId) {
+
+      if (usedFallback) {
+        // Save as fallback session — separate from primary
+        await createFallbackSession(sessionId);
+        console.log(`[${new Date().toLocaleTimeString()}] Fallback session created: ${sessionId}`);
+      } else if (threadId) {
         await createThreadSession(threadId, sessionId);
         console.log(`[${new Date().toLocaleTimeString()}] Thread session created: ${sessionId} (thread ${threadId.slice(0, 8)})`);
       } else {
@@ -472,7 +539,7 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
   const output = [
     `# ${name}`,
     `Date: ${new Date().toISOString()}`,
-    `Session: ${sessionId} (${isNew ? "new" : "resumed"})`,
+    `Session: ${sessionId} (${isNewSession ? "new" : "resumed"}${sessionLayer === "fallback" ? ", fallback" : ""})`,
     `Model config: ${usedFallback ? "fallback" : "primary"}`,
     ...(agentic.enabled ? [`Task type: ${taskType}`, `Routing: ${routingReasoning}`] : []),
     `Prompt: ${prompt}`,
@@ -487,7 +554,8 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
   console.log(`[${new Date().toLocaleTimeString()}] Done: ${name} → ${logFile}`);
 
   // --- Auto-compact on timeout (exit 124) ---
-  if (COMPACT_TIMEOUT_ENABLED && exitCode === 124 && !isNew && existing) {
+  // Only auto-compact the primary session (fallback timeouts don't compact the primary)
+  if (COMPACT_TIMEOUT_ENABLED && exitCode === 124 && !isNew && existing && sessionLayer === "primary") {
     emitCompactEvent({ type: "auto-compact-start" });
     const compactOk = await runCompact(
       existing.sessionId,
@@ -524,17 +592,35 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
   }
 
   // --- Turn tracking & compact warning ---
-  if (exitCode === 0 && !isNew) {
-    const turnCount = threadId ? await incrementThreadTurn(threadId) : await incrementTurn();
-    console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${turnCount}${threadId ? ` (thread ${threadId.slice(0, 8)})` : ""}`);
+  if (exitCode === 0 && !isNewSession) {
+    let turnCount: number;
+    if (sessionLayer === "fallback") {
+      turnCount = await incrementFallbackTurn();
+      console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${turnCount} (fallback session)`);
+    } else if (threadId) {
+      turnCount = await incrementThreadTurn(threadId);
+      console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${turnCount} (thread ${threadId.slice(0, 8)})`);
+    } else {
+      turnCount = await incrementTurn();
+      console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${turnCount}`);
+    }
 
-    if (turnCount >= COMPACT_WARN_THRESHOLD && existing && !existing.compactWarned) {
-      if (threadId) {
-        await markThreadCompactWarned(threadId);
+    if (turnCount >= COMPACT_WARN_THRESHOLD) {
+      let alreadyWarned = false;
+      if (sessionLayer === "fallback") {
+        const fb = await getFallbackSession();
+        alreadyWarned = fb?.compactWarned ?? false;
+        if (!alreadyWarned) await markFallbackCompactWarned();
+      } else if (threadId) {
+        alreadyWarned = existing?.compactWarned ?? false;
+        if (!alreadyWarned) await markThreadCompactWarned(threadId);
       } else {
-        await markCompactWarned();
+        alreadyWarned = existing?.compactWarned ?? false;
+        if (!alreadyWarned) await markCompactWarned();
       }
-      emitCompactEvent({ type: "warn", turnCount });
+      if (!alreadyWarned) {
+        emitCompactEvent({ type: "warn", turnCount });
+      }
     }
   }
 
