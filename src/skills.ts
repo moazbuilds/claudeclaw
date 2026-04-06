@@ -13,12 +13,14 @@ export interface SkillInfo {
 export async function listSkills(): Promise<SkillInfo[]> {
   const home = homedir();
   const projectSkillsDir = join(process.cwd(), ".claude", "skills");
+  const projectRootSkillsDir = join(process.cwd(), "skills");
   const globalSkillsDir = join(home, ".claude", "skills");
   const pluginsDir = join(home, ".claude", "plugins");
   const seen = new Set<string>();
   const skills: SkillInfo[] = [];
 
   await collectSkillsFromDir(projectSkillsDir, null, seen, skills);
+  await collectSkillsFromDir(projectRootSkillsDir, null, seen, skills);
   await collectSkillsFromDir(globalSkillsDir, null, seen, skills);
 
   const cachePath = join(pluginsDir, "cache");
@@ -127,6 +129,13 @@ export async function resolveSkillPrompt(command: string): Promise<string | null
   if (!pluginHint) {
     const projectPath = join(projectSkillsDir, skillName, "SKILL.md");
     const content = await tryReadFile(projectPath);
+    if (content) return content;
+  }
+
+  // 1b. Project root skills/ directory
+  {
+    const projectRootPath = join(process.cwd(), "skills", skillName, "SKILL.md");
+    const content = await tryReadFile(projectRootPath);
     if (content) return content;
   }
 
