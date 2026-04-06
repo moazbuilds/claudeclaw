@@ -8,6 +8,7 @@ import { selectModel as governanceSelectModel, configureRouter as configureGover
 import { recordInvocationStart, recordInvocationCompletion, recordInvocationFailure } from "./governance/usage-tracker";
 import { recordExecutionMetric, checkLimits, handleTrigger as watchdogHandleTrigger } from "./governance/watchdog";
 import { getGovernanceClient, type GovernanceClient } from "./governance/client";
+import { loadMemory, loadMemoryInstructions, ensureMemoryFile, getMemoryPath } from "./memory";
 
 const LOGS_DIR = join(process.cwd(), ".claude/claudeclaw/logs");
 
@@ -226,7 +227,8 @@ function buildSecurityArgs(security: SecurityConfig): string[] {
 
   switch (security.level) {
     case "locked":
-      args.push("--tools", "Read,Grep,Glob");
+      // Include Write tool so memory persistence works even in locked mode
+      args.push("--tools", "Read,Grep,Glob,Write");
       break;
     case "strict":
       args.push("--disallowedTools", "Bash,WebSearch,WebFetch");
@@ -491,8 +493,9 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
   // This is passed on EVERY invocation (not just new sessions) because
   // --append-system-prompt does not persist across --resume.
   const promptContent = await loadPrompts();
+  const memPath = getMemoryPath();
   const appendParts: string[] = [
-    "You are running inside ClaudeClaw.",
+    `You are running inside ClaudeClaw. IMPORTANT: After completing any task, you MUST update your memory file at ${memPath} using the Write tool.`,
   ];
   if (promptContent) appendParts.push(promptContent);
 
@@ -505,6 +508,15 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
       console.error(`[${new Date().toLocaleTimeString()}] Failed to read project CLAUDE.md:`, e);
     }
   }
+
+  // Load memory (put after static files for optimal prompt caching)
+  if (isNew) await ensureMemoryFile();
+  const memoryContent = await loadMemory();
+  if (memoryContent) {
+    appendParts.push(`## Your Memory (from MEMORY.md)\n\n${memoryContent}`);
+  }
+  const memoryInstructions = await loadMemoryInstructions();
+  if (memoryInstructions) appendParts.push(memoryInstructions);
 
   if (security.level !== "unrestricted") appendParts.push(DIR_SCOPE_PROMPT);
   if (appendParts.length > 0) {
@@ -526,6 +538,16 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
     metadata: { taskType, routingReasoning },
   };
   await recordInvocationStart(invocationContext, invocationId);
+
+  // Capture memory file mtime before invocation (for fallback write detection)
+  let memMtimeBefore = 0;
+  try {
+    const memPath = getMemoryPath();
+    if (existsSync(memPath)) {
+      const { statSync } = await import("fs");
+      memMtimeBefore = statSync(memPath).mtimeMs;
+    }
+  } catch {}
 
   let exec: { rawStdout: string; stderr: string; exitCode: number };
   try {
@@ -616,8 +638,54 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
   await Bun.write(logFile, output);
   console.log(`[${new Date().toLocaleTimeString()}] Done: ${name} → ${logFile}`);
 
+  // Fallback: append session log to MEMORY.md only if Claude didn't write it
+  if (exitCode === 0 && stdout && name !== "bootstrap") {
+    try {
+      const memPath = getMemoryPath();
+      if (existsSync(memPath)) {
+        const { statSync } = await import("fs");
+        const afterMtime = statSync(memPath).mtimeMs;
+
+        // Claude wrote memory if the file was modified after we started this invocation
+        const claudeWroteMemory = afterMtime > memMtimeBefore;
+
+        if (!claudeWroteMemory) {
+          const memContent = await readFile(memPath, "utf8");
+          const ts = new Date().toISOString().slice(0, 16).replace("T", " ");
+          const summary = stdout.slice(0, 120).replace(/\n/g, " ").trim();
+          const logEntry = `- ${ts} [${name}] ${summary}`;
+
+          const logMarker = "## Session Log";
+          const logIdx = memContent.indexOf(logMarker);
+          if (logIdx !== -1) {
+            const afterMarker = logIdx + logMarker.length;
+            const updated = memContent.slice(0, afterMarker) + "\n" + logEntry + memContent.slice(afterMarker);
+            const lines = updated.split("\n");
+            const trimmed = lines.length > 200 ? lines.slice(0, 200).join("\n") + "\n" : updated;
+            await writeFile(memPath, trimmed, "utf8");
+          }
+        }
+      }
+    } catch (e) {
+      // Non-fatal
+    }
+  }
+
   // --- Auto-compact on timeout (exit 124) ---
   if (COMPACT_TIMEOUT_ENABLED && exitCode === 124 && !isNew && existing) {
+    // Save memory before compact wipes context
+    try {
+      const memPath = getMemoryPath();
+      console.log(`[${new Date().toLocaleTimeString()}] Pre-compact: saving memory to ${memPath}`);
+      await runClaudeOnce(
+        ["claude", "-p", `Session is about to compact. Save your current memory to ${memPath} now. Include: current status, what was accomplished, key context for next session. Keep it concise.`,
+         "--output-format", "text", "--resume", existing.sessionId, ...securityArgs],
+        primaryConfig.model, primaryConfig.api, baseEnv, 30_000
+      );
+    } catch (e) {
+      console.warn(`[${new Date().toLocaleTimeString()}] Pre-compact memory save failed:`, e);
+    }
+
     emitCompactEvent({ type: "auto-compact-start" });
     const compactOk = await runCompact(
       existing.sessionId,

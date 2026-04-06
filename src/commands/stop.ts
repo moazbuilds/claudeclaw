@@ -2,6 +2,9 @@ import { writeFile, unlink, readdir, readFile } from "fs/promises";
 import { join } from "path";
 import { homedir } from "os";
 import { getPidPath, cleanupPidFile } from "../pid";
+import { getSession } from "../sessions";
+import { getSettings, type SecurityConfig } from "../config";
+import { getMemoryPath } from "../memory";
 
 const CLAUDE_DIR = join(process.cwd(), ".claude");
 const HEARTBEAT_DIR = join(CLAUDE_DIR, "claudeclaw");
@@ -24,6 +27,38 @@ async function teardownStatusline() {
   }
 }
 
+async function preShutdownMemorySave(): Promise<void> {
+  const session = await getSession();
+  if (!session) return;
+
+  const settings = getSettings();
+  const memPath = getMemoryPath();
+  console.log(`[shutdown] Saving memory to ${memPath}...`);
+
+  try {
+    // Always include Write tool so memory can be saved regardless of security level
+    const securityArgs = ["--dangerously-skip-permissions"];
+    if (settings.security.level === "locked") {
+      securityArgs.push("--tools", "Read,Grep,Glob,Write");
+    }
+
+    const proc = Bun.spawn(
+      ["claude", "-p",
+        `Session is shutting down. Save your current memory to ${memPath} now. Include: current status, what was accomplished, key context for next session.`,
+        "--output-format", "text",
+        "--resume", session.sessionId,
+        ...securityArgs,
+        "--model", settings.model || "haiku",
+      ],
+      { stdout: "pipe", stderr: "pipe", timeout: 30_000 }
+    );
+    await proc.exited;
+    console.log("[shutdown] Memory saved.");
+  } catch (e) {
+    console.warn("[shutdown] Memory save failed:", e);
+  }
+}
+
 export async function stop() {
   const pidFile = getPidPath();
   let pid: string;
@@ -33,6 +68,9 @@ export async function stop() {
     console.log("No daemon is running (PID file not found).");
     process.exit(0);
   }
+
+  // Save memory before killing
+  await preShutdownMemorySave();
 
   try {
     process.kill(Number(pid), "SIGTERM");
