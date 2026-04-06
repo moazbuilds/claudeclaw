@@ -5,23 +5,45 @@ import { loadSettings, initConfig } from "../config";
 export async function send(args: string[]) {
   const telegramFlag = args.includes("--telegram");
   const discordFlag = args.includes("--discord");
-  const message = args.filter((a) => a !== "--telegram" && a !== "--discord").join(" ");
+
+  // Parse --agent <name>
+  let agentName: string | undefined;
+  const filtered: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--telegram" || a === "--discord") continue;
+    if (a === "--agent") {
+      agentName = args[i + 1];
+      i++;
+      continue;
+    }
+    filtered.push(a);
+  }
+  const message = filtered.join(" ");
 
   if (!message) {
-    console.error("Usage: claudeclaw send <message> [--telegram] [--discord]");
+    console.error("Usage: claudeclaw send <message> [--telegram] [--discord] [--agent <name>]");
     process.exit(1);
   }
 
   await initConfig();
   await loadSettings();
 
-  const session = await getSession();
+  const session = await getSession(agentName);
   if (!session) {
-    console.error("No active session. Start the daemon first.");
+    console.error(
+      agentName
+        ? `No active session for agent "${agentName}". Run the agent at least once first.`
+        : "No active session. Start the daemon first."
+    );
     process.exit(1);
   }
 
-  const result = await runUserMessage("send", message);
+  if (agentName) {
+    console.log(`[send] routing to agent: ${agentName}`);
+  }
+
+  const result = await runUserMessage("send", message, agentName);
   console.log(result.stdout);
 
   if (telegramFlag) {
