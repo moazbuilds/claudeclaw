@@ -55,6 +55,7 @@ const DEFAULT_SETTINGS: Settings = {
     prompt: "",
     excludeWindows: [],
     forwardToTelegram: true,
+    forwardToDiscord: true,
   },
   telegram: { token: "", allowedUserIds: [] },
   discord: { token: "", allowedUserIds: [], listenChannels: [] },
@@ -75,6 +76,7 @@ export interface HeartbeatConfig {
   prompt: string;
   excludeWindows: HeartbeatExcludeWindow[];
   forwardToTelegram: boolean;
+  forwardToDiscord: boolean;
 }
 
 export interface TelegramConfig {
@@ -217,7 +219,7 @@ function parseAgenticConfig(raw: any): AgenticConfig {
   };
 }
 
-function parseSettings(raw: Record<string, any>): Settings {
+function parseSettings(raw: Record<string, any>, discordUserIds?: string[]): Settings {
   const rawLevel = raw.security?.level;
   const level: SecurityLevel =
     typeof rawLevel === "string" && VALID_LEVELS.has(rawLevel as SecurityLevel)
@@ -242,6 +244,7 @@ function parseSettings(raw: Record<string, any>): Settings {
       prompt: raw.heartbeat?.prompt ?? "",
       excludeWindows: parseExcludeWindows(raw.heartbeat?.excludeWindows),
       forwardToTelegram: raw.heartbeat?.forwardToTelegram ?? false,
+      forwardToDiscord: raw.heartbeat?.forwardToDiscord ?? true,
     },
     telegram: {
       token: raw.telegram?.token ?? "",
@@ -249,7 +252,9 @@ function parseSettings(raw: Record<string, any>): Settings {
     },
     discord: {
       token: typeof raw.discord?.token === "string" ? raw.discord.token.trim() : "",
-      allowedUserIds: Array.isArray(raw.discord?.allowedUserIds)
+      allowedUserIds: discordUserIds && discordUserIds.length > 0
+        ? discordUserIds
+        : Array.isArray(raw.discord?.allowedUserIds)
           ? raw.discord.allowedUserIds.map(String)
           : [],
       listenChannels: Array.isArray(raw.discord?.listenChannels)
