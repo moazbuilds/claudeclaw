@@ -2,7 +2,7 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_plan: 17-03
+current_plan: 17-05
 status: in_progress
 last_updated: "2026-04-07T00:00:00.000Z"
 progress:
@@ -16,8 +16,19 @@ progress:
 
 ## Current Position
 **Phase:** 17 — Multi-Job Agents / Wizard Workflow (In Progress)
-**Current Plan:** 17-03 (next)
-**Status:** 17-02 complete
+**Current Plan:** 17-05 (next)
+**Status:** 17-04 complete (parallel with 17-03)
+
+### 2026-04-07 — Phase 17 Plan 4 (17-04) Completion
+- Extended `loadJobs()` in `src/jobs.ts` to scan both `.claude/claudeclaw/jobs/` AND `agents/*/jobs/*.md`
+- Added `label`, `enabled`, `model` fields to `Job` interface; directory location authoritative for `job.agent`
+- Disabled jobs (`enabled: false`) filtered at load time
+- New `src/migrations.ts` with idempotent `migrateLegacyAgentJobs()` shim — relocates Phase 16 single-job agents to `agents/<name>/jobs/default.md`, strips `agent:` line, prepends `label: default`
+- Wired into `src/commands/start.ts`: called once before first `loadJobs()`
+- Discord/Telegram cron-loop forwarders now use `${job.agent}: ${job.label}` format for agent jobs
+- 10 new tests across 2 files; 95/95 jobs+migrations+agents tests passing
+- Commits: d7dec94 (RED jobs), 8e147a8 (GREEN jobs), abad6bb (RED migrations), 543dd27 (GREEN migrations + start.ts wiring)
+- Requirements RUNTIME-01, MIGRATE-01, MIGRATE-02, DISCORD-01 complete
 
 ### 2026-04-07 — Phase 17 Plan 2 (17-02) Completion
 - Broadened `parseScheduleToCron` in `src/agents.ts` to handle 13 additional NL patterns
