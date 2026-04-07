@@ -151,6 +151,11 @@ interface TelegramCallbackQuery {
   data?: string;
 }
 
+interface InlineKeyboardButton {
+  text: string;
+  callback_data: string;
+}
+
 interface TelegramUpdate {
   update_id: number;
   message?: TelegramMessage;
@@ -386,6 +391,60 @@ function extractSendFileDirectives(text: string): {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
   return { cleanedText, filePaths };
+}
+
+// Parses [buttons: Label1 | Label2] directives (one directive = one row).
+// Supports Label::data syntax for custom callback data; defaults data to the label.
+// Callback data is prefixed with BUTTON_CALLBACK_PREFIX and capped at 64 bytes.
+const BUTTON_CALLBACK_PREFIX = "kcc_";
+
+function extractButtonDirectives(text: string): {
+  cleanedText: string;
+  buttonRows: InlineKeyboardButton[][];
+} {
+  const buttonRows: InlineKeyboardButton[][] = [];
+  const cleanedText = text
+    .replace(/\[buttons:([^\]\r\n]+)\]/gi, (_match, raw) => {
+      const row: InlineKeyboardButton[] = String(raw)
+        .split("|")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map((item) => {
+          const sep = item.indexOf("::");
+          const label = sep !== -1 ? item.slice(0, sep).trim() : item;
+          const data = sep !== -1 ? item.slice(sep + 2).trim() : item;
+          const fullData = `${BUTTON_CALLBACK_PREFIX}${data}`;
+          return { text: label, callback_data: fullData.slice(0, 64) };
+        })
+        .filter((b) => b.text);
+      if (row.length > 0) buttonRows.push(row);
+      return "";
+    })
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return { cleanedText, buttonRows };
+}
+
+async function sendMessageWithKeyboard(
+  token: string,
+  chatId: number,
+  text: string,
+  buttonRows: InlineKeyboardButton[][],
+  threadId?: number
+): Promise<void> {
+  const normalized = normalizeTelegramText(text).replace(/\[react:[^\]\r\n]+\]/gi, "");
+  const html = markdownToTelegramHtml(normalized);
+  const body: Record<string, unknown> = {
+    chat_id: chatId,
+    reply_markup: { inline_keyboard: buttonRows },
+    ...(threadId ? { message_thread_id: threadId } : {}),
+  };
+  try {
+    await callApi(token, "sendMessage", { ...body, text: html.slice(0, 4096), parse_mode: "HTML" });
+  } catch {
+    await callApi(token, "sendMessage", { ...body, text: normalized.slice(0, 4096) });
+  }
 }
 
 async function sendReaction(token: string, chatId: number, messageId: number, emoji: string): Promise<void> {
@@ -838,13 +897,16 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
       await sendMessage(config.token, chatId, `Error (exit ${result.exitCode}): ${result.stderr || "Unknown error"}`, threadId);
     } else {
       const { cleanedText: afterReact, reactionEmoji } = extractReactionDirective(result.stdout || "");
-      const { cleanedText, filePaths } = extractSendFileDirectives(afterReact);
+      const { cleanedText: afterFiles, filePaths } = extractSendFileDirectives(afterReact);
+      const { cleanedText, buttonRows } = extractButtonDirectives(afterFiles);
       if (reactionEmoji) {
         await sendReaction(config.token, chatId, message.message_id, reactionEmoji).catch((err) => {
           console.error(`[Telegram] Failed to send reaction for ${label}: ${err instanceof Error ? err.message : err}`);
         });
       }
-      if (cleanedText) {
+      if (cleanedText && buttonRows.length > 0) {
+        await sendMessageWithKeyboard(config.token, chatId, cleanedText, buttonRows, threadId);
+      } else if (cleanedText) {
         await sendMessage(config.token, chatId, cleanedText, threadId);
       }
       for (const fp of filePaths) {
@@ -855,7 +917,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
           await sendMessage(config.token, chatId, `Failed to send file: ${fp.split("/").pop()}`, threadId);
         }
       }
-      if (!cleanedText && filePaths.length === 0) {
+      if (!cleanedText && filePaths.length === 0 && buttonRows.length === 0) {
         await sendMessage(config.token, chatId, "(empty response)", threadId);
       }
     }
@@ -900,6 +962,51 @@ async function handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> 
       callback_query_id: query.id,
       text: answerText,
     }).catch(() => {});
+    return;
+  }
+
+  // General button press routed back to Claude
+  if (data.startsWith(BUTTON_CALLBACK_PREFIX) && query.message) {
+    const buttonLabel = data.slice(BUTTON_CALLBACK_PREFIX.length);
+    const chatId = query.message.chat.id;
+    const threadId = query.message.message_thread_id;
+    const fromId = query.from.id;
+
+    // Ack immediately — Telegram requires a response within 10s
+    await callApi(config.token, "answerCallbackQuery", {
+      callback_query_id: query.id,
+      text: "✓",
+    }).catch(() => {});
+
+    if (config.allowedUserIds.length > 0 && !config.allowedUserIds.includes(fromId)) return;
+
+    const fromLabel = query.from.username ?? String(fromId);
+    const prompt = `[Telegram from ${fromLabel}]\n[Telegram button] ${buttonLabel}`;
+    const typingInterval = setInterval(() => sendTyping(config.token, chatId, threadId), 4000);
+    try {
+      await sendTyping(config.token, chatId, threadId);
+      const result = await runUserMessage("telegram-button", prompt);
+      if (result.exitCode === 0 && result.stdout) {
+        const { cleanedText: afterReact, reactionEmoji } = extractReactionDirective(result.stdout);
+        const { cleanedText: afterFiles, filePaths } = extractSendFileDirectives(afterReact);
+        const { cleanedText, buttonRows } = extractButtonDirectives(afterFiles);
+        if (reactionEmoji) {
+          await sendReaction(config.token, chatId, query.message.message_id, reactionEmoji).catch(() => {});
+        }
+        if (cleanedText && buttonRows.length > 0) {
+          await sendMessageWithKeyboard(config.token, chatId, cleanedText, buttonRows, threadId);
+        } else if (cleanedText) {
+          await sendMessage(config.token, chatId, cleanedText, threadId);
+        }
+        for (const fp of filePaths) {
+          await sendDocumentToChat(config.token, chatId, fp, threadId).catch(() => {});
+        }
+      }
+    } catch (err) {
+      console.error(`[Telegram] Button handler error: ${err instanceof Error ? err.message : err}`);
+    } finally {
+      clearInterval(typingInterval);
+    }
     return;
   }
 
