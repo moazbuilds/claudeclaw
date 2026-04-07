@@ -21,7 +21,11 @@ import {
   listAgentJobs,
   deleteAgent,
   agentJobsDir,
+  applySoulPatch,
+  applyClaudeMdPatch,
+  updateAgent,
 } from "../agents";
+import { writeFile } from "fs/promises";
 import { cronMatches } from "../cron";
 
 const PROJECT = process.cwd();
@@ -504,5 +508,292 @@ describe("Phase 17: multi-job agents", () => {
         expect(parseScheduleToCron(input)).toBe(expected);
       });
     }
+  });
+});
+
+describe("Phase 17: SOUL/CLAUDE.md patching", () => {
+  const MARKED_SOUL = [
+    `## Personality`,
+    `<!-- claudeclaw:personality:start -->`,
+    `calm and clear`,
+    `<!-- claudeclaw:personality:end -->`,
+    ``,
+    `## Workflow`,
+    `<!-- claudeclaw:workflow:start -->`,
+    `do A then B`,
+    `<!-- claudeclaw:workflow:end -->`,
+    ``,
+    `## Core Truths`,
+    ``,
+    `Be helpful.`,
+    ``,
+  ].join("\n");
+
+  const LEGACY_SOUL = [
+    `_intro_`,
+    ``,
+    `## Personality`,
+    ``,
+    `calm and clear`,
+    ``,
+    `## Core Truths`,
+    ``,
+    `Be helpful.`,
+    ``,
+  ].join("\n");
+
+  it("empty patch returns input unchanged", () => {
+    expect(applySoulPatch(MARKED_SOUL, {})).toBe(MARKED_SOUL);
+  });
+
+  it("replaces workflow content between markers", () => {
+    const out = applySoulPatch(MARKED_SOUL, { workflow: "do X then Y" });
+    expect(out).toContain("do X then Y");
+    expect(out).not.toContain("do A then B");
+    expect(out).toContain("calm and clear"); // personality untouched
+    expect(out).toContain("Be helpful."); // core truths untouched
+  });
+
+  it("replaces personality content between markers, leaves workflow", () => {
+    const out = applySoulPatch(MARKED_SOUL, { personality: "sharp and warm" });
+    expect(out).toContain("sharp and warm");
+    expect(out).not.toContain("calm and clear");
+    expect(out).toContain("do A then B");
+    expect(out).toContain("Be helpful.");
+  });
+
+  it("applies both personality and workflow at once", () => {
+    const out = applySoulPatch(MARKED_SOUL, {
+      personality: "sharp",
+      workflow: "X",
+    });
+    expect(out).toContain("sharp");
+    expect(out).toContain("X");
+    expect(out).not.toContain("calm and clear");
+    expect(out).not.toContain("do A then B");
+  });
+
+  it("legacy SOUL without markers: adds workflow section after Personality", () => {
+    const out = applySoulPatch(LEGACY_SOUL, { workflow: "do new thing" });
+    expect(out).toContain("## Workflow");
+    expect(out).toContain("<!-- claudeclaw:workflow:start -->");
+    expect(out).toContain("do new thing");
+    expect(out).toContain("<!-- claudeclaw:workflow:end -->");
+    // Workflow comes before Core Truths
+    expect(out.indexOf("## Workflow")).toBeLessThan(out.indexOf("## Core Truths"));
+    expect(out.indexOf("## Personality")).toBeLessThan(out.indexOf("## Workflow"));
+  });
+
+  it("legacy SOUL without markers: replaces Personality section", () => {
+    const out = applySoulPatch(LEGACY_SOUL, { personality: "fierce" });
+    expect(out).toContain("fierce");
+    expect(out).not.toContain("calm and clear");
+    expect(out).toContain("Be helpful.");
+  });
+
+  it("applySoulPatch is idempotent", () => {
+    const once = applySoulPatch(MARKED_SOUL, { workflow: "stable", personality: "stable" });
+    const twice = applySoulPatch(once, { workflow: "stable", personality: "stable" });
+    expect(twice).toBe(once);
+  });
+
+  const MARKED_CLAUDE = [
+    `# Agent: x`,
+    ``,
+    `## Discord Channels`,
+    `<!-- claudeclaw:discord:start -->`,
+    `- #old`,
+    `<!-- claudeclaw:discord:end -->`,
+    ``,
+    `## Data Sources`,
+    `<!-- claudeclaw:datasources:start -->`,
+    `old sources`,
+    `<!-- claudeclaw:datasources:end -->`,
+    ``,
+  ].join("\n");
+
+  const LEGACY_CLAUDE = [
+    `# Agent: x`,
+    ``,
+    `## Role`,
+    ``,
+    `tester`,
+    ``,
+    `## Discord Channels`,
+    ``,
+    `- #old`,
+    ``,
+    `## Data Sources`,
+    ``,
+    `old sources`,
+    ``,
+  ].join("\n");
+
+  it("rewrites discord channels block (marked)", () => {
+    const out = applyClaudeMdPatch(MARKED_CLAUDE, { discordChannels: ["#a", "#b"] });
+    expect(out).toContain("#a");
+    expect(out).toContain("#b");
+    expect(out).not.toContain("#old");
+    expect(out).toContain("old sources"); // datasources untouched
+  });
+
+  it("rewrites data sources block (marked)", () => {
+    const out = applyClaudeMdPatch(MARKED_CLAUDE, { dataSources: "fresh" });
+    expect(out).toContain("fresh");
+    expect(out).not.toContain("old sources");
+    expect(out).toContain("#old"); // channels untouched
+  });
+
+  it("legacy CLAUDE.md: discord rewrite still works", () => {
+    const out = applyClaudeMdPatch(LEGACY_CLAUDE, { discordChannels: ["#new"] });
+    expect(out).toContain("#new");
+    expect(out).not.toContain("#old");
+    expect(out).toContain("old sources");
+    expect(out).toContain("tester");
+  });
+
+  it("legacy CLAUDE.md: dataSources rewrite still works", () => {
+    const out = applyClaudeMdPatch(LEGACY_CLAUDE, { dataSources: "shiny" });
+    expect(out).toContain("shiny");
+    expect(out).not.toContain("old sources");
+    expect(out).toContain("#old");
+  });
+
+  it("applyClaudeMdPatch idempotent", () => {
+    const once = applyClaudeMdPatch(MARKED_CLAUDE, {
+      discordChannels: ["#a"],
+      dataSources: "z",
+    });
+    const twice = applyClaudeMdPatch(once, {
+      discordChannels: ["#a"],
+      dataSources: "z",
+    });
+    expect(twice).toBe(once);
+  });
+});
+
+describe("Phase 17: updateAgent + MEMORY invariant", () => {
+  async function makeAgent(suffix: string) {
+    const name = uniq(`up-${suffix}`);
+    await createAgent({ name, role: "tester", personality: "calm" });
+    return name;
+  }
+
+  it("createAgent({workflow}) writes a Workflow section in SOUL.md", async () => {
+    const name = uniq("wf");
+    await createAgent({
+      name,
+      role: "tester",
+      personality: "calm",
+      workflow: "do the thing",
+    } as any);
+    const soul = await readFile(join(AGENTS_DIR, name, "SOUL.md"), "utf8");
+    expect(soul).toContain("## Workflow");
+    expect(soul).toContain("<!-- claudeclaw:workflow:start -->");
+    expect(soul).toContain("do the thing");
+    expect(soul).toContain("<!-- claudeclaw:workflow:end -->");
+  });
+
+  it("updateAgent({workflow}) does not modify MEMORY.md", async () => {
+    const name = await makeAgent("mem-wf");
+    const memPath = join(AGENTS_DIR, name, "MEMORY.md");
+    await writeFile(memPath, "important state\n", "utf8");
+    const before = (await stat(memPath)).mtimeMs;
+    await new Promise((r) => setTimeout(r, 15));
+    await updateAgent(name, { workflow: "always be sharp" });
+    const after = (await stat(memPath)).mtimeMs;
+    expect(after).toBe(before);
+    expect(await readFile(memPath, "utf8")).toBe("important state\n");
+    const soul = await readFile(join(AGENTS_DIR, name, "SOUL.md"), "utf8");
+    expect(soul).toContain("always be sharp");
+  });
+
+  it("updateAgent({personality}) does not modify MEMORY.md", async () => {
+    const name = await makeAgent("mem-p");
+    const memPath = join(AGENTS_DIR, name, "MEMORY.md");
+    await writeFile(memPath, "state\n", "utf8");
+    const before = (await stat(memPath)).mtimeMs;
+    await new Promise((r) => setTimeout(r, 15));
+    await updateAgent(name, { personality: "fierce" });
+    const after = (await stat(memPath)).mtimeMs;
+    expect(after).toBe(before);
+    const soul = await readFile(join(AGENTS_DIR, name, "SOUL.md"), "utf8");
+    expect(soul).toContain("fierce");
+  });
+
+  it("updateAgent({discordChannels}) does not modify MEMORY.md", async () => {
+    const name = await makeAgent("mem-d");
+    const memPath = join(AGENTS_DIR, name, "MEMORY.md");
+    await writeFile(memPath, "state\n", "utf8");
+    const before = (await stat(memPath)).mtimeMs;
+    await new Promise((r) => setTimeout(r, 15));
+    await updateAgent(name, { discordChannels: ["#alpha"] });
+    const after = (await stat(memPath)).mtimeMs;
+    expect(after).toBe(before);
+    const cmd = await readFile(join(AGENTS_DIR, name, "CLAUDE.md"), "utf8");
+    expect(cmd).toContain("#alpha");
+  });
+
+  it("updateAgent({dataSources}) does not modify MEMORY.md", async () => {
+    const name = await makeAgent("mem-ds");
+    const memPath = join(AGENTS_DIR, name, "MEMORY.md");
+    await writeFile(memPath, "state\n", "utf8");
+    const before = (await stat(memPath)).mtimeMs;
+    await new Promise((r) => setTimeout(r, 15));
+    await updateAgent(name, { dataSources: "vault://x" });
+    const after = (await stat(memPath)).mtimeMs;
+    expect(after).toBe(before);
+    const cmd = await readFile(join(AGENTS_DIR, name, "CLAUDE.md"), "utf8");
+    expect(cmd).toContain("vault://x");
+  });
+
+  it("updateAgent on legacy SOUL.md (no markers) adds workflow", async () => {
+    const name = await makeAgent("legacy");
+    // Overwrite SOUL.md with legacy format (no markers)
+    const soulPath = join(AGENTS_DIR, name, "SOUL.md");
+    await writeFile(
+      soulPath,
+      `## Personality\n\ncalm\n\n## Core Truths\n\nbe helpful\n`,
+      "utf8"
+    );
+    await updateAgent(name, { workflow: "fresh workflow" });
+    const soul = await readFile(soulPath, "utf8");
+    expect(soul).toContain("## Workflow");
+    expect(soul).toContain("fresh workflow");
+    expect(soul).toContain("calm");
+    expect(soul).toContain("be helpful");
+  });
+
+  it("updateAgent throws if agent does not exist", async () => {
+    await expect(updateAgent("definitely-not-an-agent-xyz", { workflow: "x" })).rejects.toThrow();
+  });
+
+  it("updateAgent function body contains zero MEMORY/session references", async () => {
+    const src = await readFile(join(PROJECT, "src", "agents.ts"), "utf8");
+    const idx = src.indexOf("export async function updateAgent");
+    expect(idx).toBeGreaterThan(-1);
+    // Find matching closing brace via depth tracking from the first `{` after idx.
+    const openIdx = src.indexOf("{", idx);
+    let depth = 0;
+    let endIdx = -1;
+    for (let i = openIdx; i < src.length; i++) {
+      const ch = src[i];
+      if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0) {
+          endIdx = i;
+          break;
+        }
+      }
+    }
+    expect(endIdx).toBeGreaterThan(openIdx);
+    const body = src.slice(openIdx, endIdx + 1);
+    expect(body).not.toMatch(/memoryPath/);
+    expect(body).not.toMatch(/MEMORY\.md/);
+    expect(body).not.toMatch(/ensureMemoryFile/);
+    expect(body).not.toMatch(/getMemoryPath/);
+    expect(body).not.toMatch(/sessionPath/);
+    expect(body).not.toMatch(/session\.json/);
   });
 });
