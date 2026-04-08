@@ -6,6 +6,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { transcribeAudioToText } from "../whisper";
 import { resolveSkillPrompt } from "../skills";
+import { fireJob, parseFireArgs } from "./fire";
 import { mkdir } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { processEventWithFallback, setGatewayEnabled } from "../gateway";
@@ -496,6 +497,39 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
 
     // Skill routing: detect slash commands and resolve to SKILL.md prompts
     const command = cleanContent.startsWith("/") ? cleanContent.trim().split(/\s+/, 1)[0].toLowerCase() : null;
+
+    // /fire <agent>:<label> — manual fire, bypasses skill resolution
+    if (command === "/fire") {
+      const fireArgs = cleanContent.trim().slice("/fire".length).trim().split(/\s+/).filter(Boolean);
+      const parsed = parseFireArgs(fireArgs);
+      if (!parsed) {
+        await sendMessage(
+          config.token,
+          channelId,
+          "Usage: `/fire <agent>:<label>` or `/fire <agent> <label>`",
+        );
+        return;
+      }
+      await sendMessage(config.token, channelId, `🔥 Firing \`${parsed.agent}:${parsed.label}\`...`);
+      try {
+        const fireRes = await fireJob(parsed.agent, parsed.label);
+        if (!fireRes.success) {
+          await sendMessage(config.token, channelId, `Fire failed: ${fireRes.error ?? "unknown error"}`);
+          return;
+        }
+        const body = (fireRes.output ?? "").slice(0, 1500) || "(no output)";
+        await sendMessage(
+          config.token,
+          channelId,
+          `✅ \`${parsed.agent}:${parsed.label}\` complete\n\n${body}`,
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await sendMessage(config.token, channelId, `Fire error: ${msg}`);
+      }
+      return;
+    }
+
     let skillContext: string | null = null;
     if (command) {
       try {

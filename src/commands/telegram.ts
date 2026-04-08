@@ -6,6 +6,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { transcribeAudioToText } from "../whisper";
 import { resolveSkillPrompt, listSkills } from "../skills";
+import { fireJob, parseFireArgs } from "./fire";
 import { mkdir } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { submitTelegramToGateway } from "../gateway";
@@ -707,6 +708,39 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
       `Compact warned: ${(session as any).compactWarned ? "yes" : "no"}`,
     ];
     await sendMessage(config.token, chatId, lines.join("\n"), threadId);
+    return;
+  }
+
+  if (command === "/fire") {
+    const rest = text.trim().slice("/fire".length).trim().split(/\s+/).filter(Boolean);
+    const parsed = parseFireArgs(rest);
+    if (!parsed) {
+      await sendMessage(
+        config.token,
+        chatId,
+        "Usage: /fire <agent>:<label> — or — /fire <agent> <label>",
+        threadId,
+      );
+      return;
+    }
+    await sendMessage(config.token, chatId, `🔥 Firing \`${parsed.agent}:${parsed.label}\`...`, threadId);
+    try {
+      const fireRes = await fireJob(parsed.agent, parsed.label);
+      if (!fireRes.success) {
+        await sendMessage(config.token, chatId, `Fire failed: ${fireRes.error ?? "unknown error"}`, threadId);
+        return;
+      }
+      const body = (fireRes.output ?? "").slice(0, 1500) || "(no output)";
+      await sendMessage(
+        config.token,
+        chatId,
+        `✅ ${parsed.agent}:${parsed.label} complete\n\n${body}`,
+        threadId,
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await sendMessage(config.token, chatId, `Fire error: ${msg}`, threadId);
+    }
     return;
   }
 

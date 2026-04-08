@@ -5,6 +5,7 @@ import type { StartWebUiOptions, WebServerHandle } from "./types";
 import { buildState, buildTechnicalInfo, sanitizeSettings } from "./services/state";
 import { readHeartbeatSettings, updateHeartbeatSettings } from "./services/settings";
 import { createQuickJob, deleteJob } from "./services/jobs";
+import { fireJob } from "../commands/fire";
 import { readLogs } from "./services/logs";
 
 // --- Security: CSRF Protection ---
@@ -261,8 +262,37 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
           name: j.name,
           schedule: j.schedule,
           promptPreview: j.prompt.slice(0, 160),
+          agent: j.agent,
+          label: j.label,
+          fireable: Boolean(j.agent && j.label),
         }));
         return json({ jobs });
+      }
+
+      if (url.pathname === "/api/jobs/fire" && req.method === "POST") {
+        const csrfError = requireCsrf(req);
+        if (csrfError) return csrfError;
+        try {
+          const body = (await req.json()) as { agent?: unknown; label?: unknown };
+          const agent = typeof body.agent === "string" ? body.agent.trim() : "";
+          const label = typeof body.label === "string" ? body.label.trim() : "";
+          if (!agent || !label) {
+            return json({ ok: false, error: "agent and label are required" });
+          }
+          const result = await fireJob(agent, label);
+          return json({
+            ok: result.success,
+            success: result.success,
+            exitCode: result.exitCode,
+            output: result.output,
+            error: result.error,
+            agent,
+            label,
+          });
+        } catch (err) {
+          console.error("Fire job failed:", err);
+          return json({ ok: false, error: "Failed to fire job" });
+        }
       }
 
       if (url.pathname === "/api/logs") {

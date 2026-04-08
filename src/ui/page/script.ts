@@ -399,6 +399,9 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
                 ""
               )) +
             "</div>" +
+            (j.fireable && j.agent && j.label
+              ? '<button class="quick-job-fire" type="button" data-fire-agent="' + escAttr(j.agent) + '" data-fire-label="' + escAttr(j.label) + '">Fire now</button>'
+              : "") +
             '<button class="quick-job-delete" type="button" data-delete-job="' + escAttr(j.name || "") + '">Delete</button>' +
           "</div>"
           );
@@ -873,6 +876,32 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
     document.addEventListener("click", async (event) => {
       const target = event.target;
       if (!(target instanceof HTMLElement)) return;
+      const fireBtn = target.closest("[data-fire-agent]");
+      if (fireBtn && fireBtn instanceof HTMLButtonElement) {
+        const agent = fireBtn.getAttribute("data-fire-agent") || "";
+        const label = fireBtn.getAttribute("data-fire-label") || "";
+        if (!agent || !label) return;
+        fireBtn.disabled = true;
+        const original = fireBtn.textContent;
+        fireBtn.textContent = "Firing...";
+        if (quickJobsStatus) quickJobsStatus.textContent = "Firing " + agent + ":" + label + "...";
+        try {
+          const res = await mutatingFetch("/api/jobs/fire", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ agent: agent, label: label }),
+          });
+          const out = await res.json();
+          if (!out.ok) throw new Error(out.error || "fire failed");
+          if (quickJobsStatus) quickJobsStatus.textContent = "Fired " + agent + ":" + label + " (exit " + (out.exitCode ?? 0) + ")";
+        } catch (err) {
+          if (quickJobsStatus) quickJobsStatus.textContent = "Fire failed: " + String(err instanceof Error ? err.message : err);
+        } finally {
+          fireBtn.disabled = false;
+          fireBtn.textContent = original || "Fire now";
+        }
+        return;
+      }
       const button = target.closest("[data-delete-job]");
       if (!button || !(button instanceof HTMLButtonElement)) return;
       const name = button.getAttribute("data-delete-job") || "";
