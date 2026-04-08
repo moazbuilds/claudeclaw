@@ -118,7 +118,11 @@ function buildChildEnv(baseEnv: Record<string, string>, model: string, api: stri
 /** Default timeout for a single Claude Code invocation (5 minutes). */
 const CLAUDE_TIMEOUT_MS = 5 * 60 * 1000;
 
-async function runClaudeOnce(
+export interface RunOptions {
+  modelOverride?: string;
+}
+
+export async function runClaudeOnce(
   baseArgs: string[],
   model: string,
   api: string,
@@ -438,7 +442,7 @@ async function loadAgentPrompts(agentName: string): Promise<string> {
   return parts.join("\n\n");
 }
 
-async function execClaude(name: string, prompt: string, agentName?: string): Promise<RunResult> {
+async function execClaude(name: string, prompt: string, agentName?: string, options?: RunOptions): Promise<RunResult> {
   await mkdir(LOGS_DIR, { recursive: true });
 
   // Ensure governance client is initialized
@@ -463,7 +467,14 @@ async function execClaude(name: string, prompt: string, agentName?: string): Pro
   let taskType = "unknown";
   let routingReasoning = "";
 
-  if (agentic.enabled) {
+  if (options?.modelOverride) {
+    primaryConfig = { model: options.modelOverride, api };
+    taskType = "job-override";
+    routingReasoning = `override: ${options.modelOverride}`;
+    console.log(
+      `[${new Date().toLocaleTimeString()}] Job model override: ${options.modelOverride}`,
+    );
+  } else if (agentic.enabled) {
     ensureGovernanceRouter(agentic.modes, agentic.defaultMode);
     const routing = await governanceSelectModel({
       prompt,
@@ -768,8 +779,8 @@ async function execClaude(name: string, prompt: string, agentName?: string): Pro
   return result;
 }
 
-export async function run(name: string, prompt: string, agentName?: string): Promise<RunResult> {
-  return enqueue(() => execClaude(name, prompt, agentName));
+export async function run(name: string, prompt: string, agentName?: string, options?: RunOptions): Promise<RunResult> {
+  return enqueue(() => execClaude(name, prompt, agentName, options));
 }
 
 async function streamClaude(

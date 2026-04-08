@@ -5,7 +5,7 @@ import { run, runUserMessage, streamUserMessage, bootstrap, ensureProjectClaudeM
 import { initGatewayProcessor } from "../event-processor";
 import { writeState, type StateData } from "../statusline";
 import { cronMatches, nextCronMatch } from "../cron";
-import { clearJobSchedule, loadJobs } from "../jobs";
+import { clearJobSchedule, loadJobs, resolveJobModel } from "../jobs";
 import { migrateLegacyAgentJobs } from "../migrations";
 import { ensureUserSymlinks } from "../install";
 import { writePidFile, cleanupPidFile, checkExistingDaemon } from "../pid";
@@ -741,7 +741,10 @@ export async function start(args: string[] = []) {
     for (const job of currentJobs) {
       if (cronMatches(job.schedule, now, currentSettings.timezoneOffsetMinutes)) {
         resolvePrompt(job.prompt)
-          .then((prompt) => run(job.name, prompt, job.agent))
+          .then(async (prompt) => {
+            const modelOverride = await resolveJobModel(job);
+            return run(job.name, prompt, job.agent, modelOverride ? { modelOverride } : undefined);
+          })
           .then((r) => {
             if (job.notify === false) return;
             if (job.notify === "error" && r.exitCode === 0) return;
