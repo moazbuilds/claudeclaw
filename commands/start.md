@@ -122,37 +122,93 @@ Start the heartbeat daemon for this project. Follow these steps exactly:
    - **Systemd service** (ask after all other setup): Use AskUserQuestion:
      - "Generate a systemd user service so ClaudeClaw auto-starts on boot and survives logout?" (header: "Systemd", options: "Yes — generate service file", "No — I'll manage it myself")
      - If "Yes":
-       1. Detect the system's paths by running: `which bun`, `which node`, `which claude`, and check if nvm is installed (`test -s "$HOME/.nvm/nvm.sh"`).
-       2. Generate a `claudeclaw.service` file at `~/.config/systemd/user/claudeclaw.service` using the detected paths:
-          - If nvm is detected: use a bash wrapper in `ExecStart` that sources `$NVM_DIR/nvm.sh` and runs `nvm use default` before launching bun.
-          - Include `$HOME/.local/bin` in PATH (for `claude` CLI).
-          - Include the linuxbrew/homebrew bin path if bun is installed there.
-          - Set `WorkingDirectory` to the current project directory.
-          - Set resource limits: `MemoryMax=2G`, `CPUQuota=80%`, `TasksMax=128`.
-          - Set `Restart=on-failure`, `RestartSec=10`.
-          - Log to `.claude/claudeclaw/logs/daemon.log`.
-       3. Run `systemctl --user daemon-reload && systemctl --user enable claudeclaw.service`.
-       4. Run `loginctl enable-linger $(whoami)` to ensure the service survives logout.
-       5. Tell the user the service is installed and show management commands:
+       1. Detect the system's paths by running:
+          ```bash
+          which bun
+          which claude
+          test -s "$HOME/.nvm/nvm.sh" && echo "nvm:yes" || echo "nvm:no"
           ```
+       2. Resolve the three configurable constants:
+          - `PROJECT_DIR` — current working directory (from `pwd`)
+          - `PLUGIN_ROOT` — the ClaudeClaw plugin directory. Use `${CLAUDE_PLUGIN_ROOT}` if set, otherwise `$HOME/.claude/plugins/cache/claudeclaw/claudeclaw/1.0.0`
+          - `BREW_BIN` — parent directory of `which bun` (e.g. `/home/linuxbrew/.linuxbrew/bin`). If bun is not under linuxbrew/homebrew, set to empty string.
+       3. Generate `~/.config/systemd/user/claudeclaw.service` using this template structure:
+          ```ini
+          [Unit]
+          Description=ClaudeClaw daemon
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+
+          # ── Configure these ──────────────────────────────────────────────
+          Environment=PROJECT_DIR=<detected project dir>
+          Environment=PLUGIN_ROOT=<detected plugin root>
+          Environment=BREW_BIN=<detected brew bin, or empty>
+          # ─────────────────────────────────────────────────────────────────
+
+          WorkingDirectory=<PROJECT_DIR>
+          ExecStart=/bin/bash -c '\
+            export NVM_DIR="$HOME/.nvm" && \
+            [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && \
+            nvm use default && \
+            export PATH="$HOME/.local/bin:${BREW_BIN}:$PATH" && \
+            exec bun run "${PLUGIN_ROOT}/src/index.ts" start --web'
+          Restart=on-failure
+          RestartSec=10
+          StandardOutput=append:<PROJECT_DIR>/.claude/claudeclaw/logs/daemon.log
+          StandardError=append:<PROJECT_DIR>/.claude/claudeclaw/logs/daemon.log
+
+          Environment=HOME=%h
+
+          # Resource limits
+          MemoryMax=2G
+          CPUQuota=80%
+          TasksMax=128
+
+          [Install]
+          WantedBy=default.target
+          ```
+          - If nvm is NOT detected: remove the nvm lines from `ExecStart` and instead set `Environment=PATH=<direct bun path>:<direct node path>:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin`
+          - The three `Environment=` constants at the top are the only lines users need to edit when moving projects or updating paths.
+       4. Run `mkdir -p ~/.config/systemd/user && systemctl --user daemon-reload && systemctl --user enable claudeclaw.service`.
+       5. Run `loginctl enable-linger $(whoami)` to ensure the service survives logout.
+       6. Tell the user the service is installed. Show the configurable constants and management commands:
+          ```
+          # Edit these if you move your project or update ClaudeClaw:
+          #   Environment=PROJECT_DIR=...
+          #   Environment=PLUGIN_ROOT=...
+          #   Environment=BREW_BIN=...
+
           systemctl --user start claudeclaw
           systemctl --user stop claudeclaw
           systemctl --user restart claudeclaw
           systemctl --user status claudeclaw
           journalctl --user -u claudeclaw -f
           ```
-       6. Ask: "Start the daemon via systemd now instead of nohup?" (header: "Start method", options: "Yes — use systemd", "No — use nohup as usual")
+       7. Ask: "Start the daemon via systemd now instead of nohup?" (header: "Start method", options: "Yes — use systemd", "No — use nohup as usual")
           - If systemd: run `systemctl --user start claudeclaw.service` instead of the nohup command in step 6.
      - If "No": proceed with the normal nohup launch in step 6.
 
    Update `.claude/claudeclaw/settings.json` with their answers.
 
 6. **Launch/start action**:
+
+   **If the user chose systemd in step 5**, start via systemd:
+   ```bash
+   systemctl --user start claudeclaw.service
+   ```
+   Wait 2 seconds, then check status with `systemctl --user status claudeclaw.service --no-pager`. If it's not `active (running)`, check `journalctl --user -u claudeclaw --no-pager -n 20` for errors and report to the user.
+
+   **Otherwise (default — nohup)**, start via nohup:
    ```bash
    mkdir -p .claude/claudeclaw/logs && nohup bun run ${CLAUDE_PLUGIN_ROOT}/src/index.ts start --web > .claude/claudeclaw/logs/daemon.log 2>&1 & echo $!
    ```
    Use the description "Starting ClaudeClaw server" for this command.
-   Wait 1 second, then check `cat .claude/claudeclaw/logs/daemon.log`. If it contains "Aborted: daemon already running", tell the user and exit.
+   Note: nohup keeps the daemon running after the terminal closes, but it will NOT survive a reboot. Recommend systemd for persistent setups.
+
+   **For both methods**: Wait 1 second, then check `cat .claude/claudeclaw/logs/daemon.log`. If it contains "Aborted: daemon already running", tell the user and exit.
    - Read `.claude/claudeclaw/settings.json` for `web.port` (default `4632` if missing) and `web.host` (default `127.0.0.1`).
    - Then try to open the dashboard directly:
      - Linux: `xdg-open http://<HOST>:<PORT>`
