@@ -2,22 +2,42 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_plan: Not started
-status: planning
-last_updated: "2026-04-08T16:51:07.310Z"
+current_plan: 18-03
+status: in_progress
+last_updated: "2026-04-08T17:30:00.000Z"
 progress:
   total_phases: 18
   completed_phases: 13
   total_plans: 29
-  completed_plans: 32
+  completed_plans: 33
 ---
 
 # State: ClaudeClaw v2 Upgrade
 
 ## Current Position
 **Phase:** 18 — Per-Job Model Override Runtime Wiring (In Progress)
-**Current Plan:** 18-02
-**Status:** 18-01 complete
+**Current Plan:** 18-03
+**Status:** 18-01, 18-02 complete
+
+### 2026-04-08 — Phase 18 Plan 2 (18-02) Completion
+- Added agent-level `defaultModel` as middle fallback tier in model resolution cascade
+- New `claudeclaw:model:start/end` marker block in `agents/<name>/CLAUDE.md` (Phase 17 managed-block pattern)
+- `AgentCreateOpts.defaultModel` + `AgentContext.defaultModel` plumbed through create/load/update
+- `renderClaudeMd` emits optional `## Default Model` section when set
+- `loadAgent` parses marker block lazily (swallows file-read errors for test compat)
+- `updateAgent` supports set/replace/clear (empty string) via new `applyDefaultModelPatch` helper; append mode rejected with explicit error (single-value field)
+- `applyDefaultModelPatch` lives OUTSIDE updateAgent function body so UPDATE-02 source-grep test remains meaningful
+- Clear path strips both the markers AND the `## Default Model` heading (no orphan empty headings)
+- `resolveJobModel` cascade extended: `job.model > loadAgent(job.agent).defaultModel > undefined`
+- Dynamic `await import("./agents")` in jobs.ts breaks would-be circular dependency
+- Agent load failures in cascade fall through to undefined (one bad agent cannot kill cron)
+- create-agent SKILL.md: new "Default model" wizard step, `defaultModel` carried through wizard JSON + scaffold bun -e snippet
+- update-agent SKILL.md: new menu option `8. Default model` with set/clear bun -e snippet; Delete/Done renumbered to 9/10
+- 16 new agents.test.ts assertions (UPDATE-02 source-grep test + MEMORY.md mtime test included)
+- 6 new jobs.test.ts assertions covering full cascade + nonexistent-agent fall-through
+- Full suite 730/743 (13 pre-existing failures unchanged from 18-01 baseline)
+- Commits: 4a86ca3 (RED), bd2f380 (Task 1 GREEN), f2bd7d4 (Task 2 GREEN)
+- Requirements MODEL-RT-03, MODEL-UI-01, MODEL-UI-02 complete
 
 ### 2026-04-08 — Phase 18 Plan 1 (18-01) Completion
 - Threaded `RunOptions.modelOverride` through `run() → execClaude() → runClaudeOnce()`
