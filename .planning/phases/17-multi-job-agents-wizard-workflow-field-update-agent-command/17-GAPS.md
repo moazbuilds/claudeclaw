@@ -227,7 +227,7 @@ Phase 17 cannot be marked verified until:
 - [ ] GAP-17-03 fixed (per-question echo + final review block + per-step temp-file persistence)
 - [ ] GAP-17-04 fixed (local cron vs remote schedule callout in wizard)
 - [ ] GAP-17-05 fixed (manual `fire` command — CLI + Discord/Telegram slash + Web UI button)
-- [ ] GAP-17-06 fixed (slash command discovery wired at user-level `~/.claude/commands/`)
+- [x] GAP-17-06 fixed (new `src/install.ts` module auto-wires `~/.claude/skills/*` + `~/.claude/commands/claudeclaw` symlinks on daemon startup; idempotent, non-destructive, 5 unit tests)
 - [ ] GAP-17-07 fixed (update-agent Workflow/Personality/DataSources get append mode, default non-destructive)
 - [x] GAP-17-08 fixed (frontmatter key `cron:` → `schedule:` to match native scheduler; migration of existing files; tests updated)
 

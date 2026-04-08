@@ -7,6 +7,7 @@ import { writeState, type StateData } from "../statusline";
 import { cronMatches, nextCronMatch } from "../cron";
 import { clearJobSchedule, loadJobs } from "../jobs";
 import { migrateLegacyAgentJobs } from "../migrations";
+import { ensureUserSymlinks } from "../install";
 import { writePidFile, cleanupPidFile, checkExistingDaemon } from "../pid";
 import { initConfig, loadSettings, reloadSettings, resolvePrompt, type HeartbeatConfig, type Settings } from "../config";
 import { getDayAndMinuteAtOffset } from "../timezone";
@@ -313,6 +314,24 @@ export async function start(args: string[] = []) {
   await initConfig();
   const settings = await loadSettings();
   await ensureProjectClaudeMd();
+
+  // Wire deployed claudeclaw's skills/commands into Claude Code's user-level
+  // discovery paths (~/.claude/skills/, ~/.claude/commands/). No-op in local
+  // dev. Idempotent and non-destructive.
+  try {
+    const links = await ensureUserSymlinks();
+    const now = new Date().toLocaleTimeString();
+    if (links.created.length > 0) {
+      console.log(`[${now}] Installed ${links.created.length} user symlink(s): ${links.created.join(", ")}`);
+    }
+    if (links.errors.length > 0) {
+      for (const e of links.errors) {
+        console.error(`[${now}] Symlink install error: ${e.path} → ${e.reason}`);
+      }
+    }
+  } catch (err) {
+    console.error(`[${new Date().toLocaleTimeString()}] ensureUserSymlinks failed:`, err);
+  }
 
   // Phase 17: migrate any Phase 16 single-job agents from flat dir into agents/<name>/jobs/default.md
   const migration = await migrateLegacyAgentJobs();
