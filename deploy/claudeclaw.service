@@ -1,0 +1,31 @@
+[Unit]
+Description=ClaudeClaw daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Change to your project directory
+WorkingDirectory=%h/claudeclaw
+ExecStart=/bin/bash -c '\
+  export HOME=%h && \
+  export NVM_DIR="$HOME/.nvm" && \
+  [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && \
+  nvm use default && \
+  export PATH="$HOME/.local/bin:/home/linuxbrew/.linuxbrew/bin:$PATH" && \
+  exec bun run $HOME/.claude/plugins/cache/claudeclaw/claudeclaw/1.0.0/src/index.ts start --web'
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:%h/claudeclaw/.claude/claudeclaw/logs/daemon.log
+StandardError=append:%h/claudeclaw/.claude/claudeclaw/logs/daemon.log
+
+# Environment
+Environment=HOME=%h
+
+# Resource limits
+MemoryMax=2G
+CPUQuota=80%
+TasksMax=128
+
+[Install]
+WantedBy=default.target

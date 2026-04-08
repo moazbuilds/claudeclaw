@@ -1,40 +1,70 @@
-# Multi-Session Thread Support
+# Multi-Session Support
 
-Technical documentation for ClaudeClaw's multi-session thread feature.
+Technical documentation for ClaudeClaw's multi-session feature (threads and channels).
 
 ## Overview
 
-Discord threads get independent Claude CLI sessions, enabling parallel conversations. The main channel and DMs continue using the single global session (backward compatible).
+Discord threads and non-default channels get independent Claude CLI sessions with isolated working directories. Channels in `listenChannels` and DMs use the global session. The bot responds to all guild messages without requiring an @mention.
 
 ## Architecture
 
 ```
 Discord Gateway
   │
-  ├─ Main channel message ──→ Global Queue ──→ Global Session (session.json)
-  ├─ DM message ─────────────→ Global Queue ──→ Global Session (session.json)
+  ├─ listenChannel message ──→ Global Queue ──→ Global Session (session.json, project cwd)
+  ├─ DM message ─────────────→ Global Queue ──→ Global Session (session.json, project cwd)
   │
-  ├─ Thread A message ───────→ Thread A Queue ──→ Thread A Session (sessions.json)
-  └─ Thread B message ───────→ Thread B Queue ──→ Thread B Session (sessions.json)
+  ├─ Other channel message ──→ Channel Queue ──→ Channel Session (sessions.json, own cwd)
+  ├─ Thread A message ───────→ Thread A Queue ──→ Thread A Session (sessions.json, own cwd)
+  └─ Thread B message ───────→ Thread B Queue ──→ Thread B Session (sessions.json, own cwd)
 ```
 
-- **Global queue**: Serializes non-thread messages (existing behavior).
-- **Per-thread queues**: Each thread has its own queue. Different threads execute in parallel; messages within the same thread are serialized.
+- **Global queue**: Serializes listenChannel and DM messages.
+- **Per-channel/thread queues**: Each has its own queue. Different channels/threads execute in parallel; messages within the same channel are serialized.
+
+## Session Routing
+
+The session selection logic in `discord.ts`:
+
+```typescript
+const isListenChannel = config.listenChannels.includes(channelId);
+const threadId = (isGuild && !isListenChannel) ? channelId : undefined;
+```
+
+- `listenChannels` → global session (project working directory)
+- Any other guild channel or thread → own session with isolated working directory
+- DMs → global session
+
+## Working Directory Isolation
+
+Each non-global session runs Claude in its own directory:
+
+```
+.claude/claudeclaw/sessions/<channelId>/
+```
+
+This means each channel/thread session has:
+- Its own `CLAUDE.md` (loaded automatically by Claude Code)
+- Its own memory directory
+- Its own Claude Code session files
+- Independent conversation history
+
+The global session runs in the project root directory as before.
 
 ## Session Lifecycle
 
 ### Creation
-1. A message arrives in a Discord thread.
-2. `discord.ts` detects the thread via `knownThreads` cache (populated from `GUILD_CREATE`, `THREAD_CREATE`, `THREAD_LIST_SYNC` events).
-3. `runUserMessage()` is called with the `threadId`.
-4. `execClaude()` checks `sessionManager.getThreadSession(threadId)` — returns `null` for new threads.
-5. Claude CLI is invoked with `--output-format json` to bootstrap a new session.
+1. A message arrives in a non-listenChannel guild channel (or thread).
+2. `runUserMessage()` is called with `channelId` as `threadId`.
+3. `execClaude()` checks `sessionManager.getThreadSession(threadId)` — returns `null` for new sessions.
+4. The session directory is created: `.claude/claudeclaw/sessions/<channelId>/`
+5. Claude CLI is spawned with `cwd` set to that directory, `--output-format json`.
 6. The returned `session_id` is saved via `sessionManager.createThreadSession(threadId, sessionId)`.
 
 ### Resume
-1. Subsequent messages in the same thread hit `getThreadSession(threadId)` which returns the existing `sessionId`.
-2. Claude CLI is invoked with `--resume <sessionId>`.
-3. Turn count is incremented per-thread.
+1. Subsequent messages hit `getThreadSession(threadId)` which returns the existing `sessionId`.
+2. Claude CLI is invoked with `--resume <sessionId>` in the same session directory.
+3. Turn count is incremented per-session.
 
 ### Cleanup
 Sessions are removed when:
@@ -44,15 +74,14 @@ Sessions are removed when:
 ## Concurrency Model
 
 ```
-Global Queue:    [msg1] → [msg2] → [msg3]     (serial)
-Thread A Queue:  [msgA1] → [msgA2]             (serial within thread)
-Thread B Queue:  [msgB1] → [msgB2]             (serial within thread)
+Global Queue:      [msg1] → [msg2] → [msg3]     (serial)
+Channel A Queue:   [msgA1] → [msgA2]             (serial within channel)
+Channel B Queue:   [msgB1] → [msgB2]             (serial within channel)
 
-Thread A and Thread B run in parallel.
-Global Queue runs independently of all thread queues.
+All queues run in parallel with each other.
 ```
 
-Each queue prevents concurrent `--resume` calls on the same session (which would cause Claude CLI errors). Different sessions can safely run concurrently.
+Each queue prevents concurrent `--resume` calls on the same session. Different sessions run concurrently.
 
 ## Storage
 
@@ -67,7 +96,7 @@ Each queue prevents concurrent `--resume` calls on the same session (which would
 }
 ```
 
-### Thread sessions: `.claude/claudeclaw/sessions.json`
+### Channel/thread sessions: `.claude/claudeclaw/sessions.json`
 ```json
 {
   "threads": {
@@ -83,36 +112,33 @@ Each queue prevents concurrent `--resume` calls on the same session (which would
 }
 ```
 
-Thread sessions use the Discord thread channel ID as the key.
+### Session working directories: `.claude/claudeclaw/sessions/<channelId>/`
+Each session directory is an independent Claude Code project context.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `src/sessionManager.ts` | Thread session CRUD, storage in `sessions.json` |
-| `src/runner.ts` | Per-thread queues, `threadId` parameter on `run()`/`runUserMessage()`/`execClaude()` |
-| `src/commands/discord.ts` | Thread detection via `knownThreads` cache, event handlers, `/status` enhancement |
+| `src/runner.ts` | Per-session queues, `cwd` parameter on `runClaudeOnce()`, `getSessionCwd()` helper |
+| `src/sessionManager.ts` | Session CRUD, storage in `sessions.json` |
+| `src/commands/discord.ts` | Channel/thread detection, session routing, `guildTriggerReason()` |
 | `src/sessions.ts` | Global session (unchanged) |
 
-## Thread Detection
+## Guild Trigger Reason
 
-Discord thread channels are tracked via gateway events:
+`guildTriggerReason()` determines why the bot responds. It returns a string for logging:
 
-| Event | Action |
-|-------|--------|
-| `GUILD_CREATE` | Cache all active threads from `data.threads` |
-| `THREAD_CREATE` | Add thread to cache |
-| `THREAD_DELETE` | Remove from cache + cleanup session |
-| `THREAD_UPDATE` | Remove if archived, add if unarchived |
-| `THREAD_LIST_SYNC` | Bulk-add active threads |
-
-The `knownThreads` map stores `threadId → { parentId }`. When a message's `channel_id` matches a known thread, it's routed to a thread-specific session.
-
-Threads in listen channels (where the parent channel is in `listenChannels`) auto-respond without requiring a mention.
+| Reason | Trigger |
+|--------|---------|
+| `reply_to_bot` | User replied to bot's message |
+| `mention` | User mentioned bot |
+| `listen_channel` | Message in a listenChannel |
+| `listen_channel_thread` | Thread whose parent is a listenChannel |
+| `guild_message` | Catch-all — bot responds to all guild messages |
 
 ## Limitations
 
-- No max thread session limit. Relies on Claude CLI's own rate limiting.
-- Thread sessions are not automatically compacted (global `/compact` command only affects the global session).
-- `/reset` only resets the global session, not thread sessions.
-- Thread sessions persist until thread deletion/archival.
+- No max session limit. Relies on Claude CLI's own rate limiting.
+- Channel sessions are not automatically compacted.
+- `/reset` only resets the global session, not channel/thread sessions.
+- Channel sessions persist until manually cleaned up (unlike threads which have delete/archive events).

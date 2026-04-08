@@ -95,9 +95,19 @@ Start the heartbeat daemon for this project. Follow these steps exactly:
      - Discord bot token (hint: create a bot at https://discord.com/developers/applications → Bot → Token. Enable **Message Content Intent** under Privileged Gateway Intents.)
      - Allowed Discord user IDs (hint: enable Developer Mode in Discord settings → right-click your profile → Copy User ID). These are large numbers — they will be stored as strings.
      - Set `discord.token` and `discord.allowedUserIds` (as array of strings) accordingly.
-     - Listen channel IDs (optional — hint: right-click a channel in Discord with Developer Mode enabled → Copy Channel ID). Channels where the bot responds to all messages without requiring an @mention.
+     - Listen channel IDs (optional — hint: right-click a channel in Discord with Developer Mode enabled → Copy Channel ID). Channels where the bot uses the global session and responds without requiring an @mention.
      - Set `discord.listenChannels` (as array of strings) accordingly.
      - Note: Discord bot connects via WebSocket gateway in-process with the daemon. It supports DMs, guild mentions/replies, slash commands (/start, /reset), voice messages, and image attachments. `discord.allowedUserIds` is an allowlist that applies to messages, slash commands, and button interactions.
+
+     Then use AskUserQuestion to ask two follow-up questions:
+
+     - "Should the bot respond to all guild channels without requiring an @mention? Non-listenChannel channels will get their own isolated session." (header: "All channels", options: "Yes — respond everywhere (Recommended)", "No — only listenChannels and @mentions")
+       - If "Yes": The bot already responds to all guild messages via the `guild_message` catch-all in `guildTriggerReason()`. No config change needed — just inform the user that listenChannels use the global session, and all other channels get their own isolated session.
+       - If "No": Tell the user they can customize `guildTriggerReason()` in `discord.ts` to remove the catch-all. For now, the bot will still respond everywhere.
+
+     - "Should each channel/thread have separate memory? Each gets its own CLAUDE.md and conversation context." (header: "Session isolation", options: "Yes — separate memory per channel (Recommended)", "No — shared memory across all channels")
+       - If "Yes": This is the default behavior — non-listenChannel sessions run in their own working directory (`.claude/claudeclaw/sessions/<channelId>/`) with isolated CLAUDE.md and memory.
+       - If "No": Tell the user they can set all channels as `listenChannels` to share the global session, or modify `getSessionCwd()` in `runner.ts`.
 
    - **Security level mapping** — set `security.level` in settings based on their choice:
      - "Locked" → `"locked"`
@@ -108,6 +118,32 @@ Start the heartbeat daemon for this project. Follow these steps exactly:
    - **If security is "Strict" or "Locked"**: Use AskUserQuestion to ask:
      - "Allow any specific tools on top of the security level? (e.g. Bash(git:*) to allow only git commands)" (header: "Allow tools", options: "None — use level defaults (Recommended)", "Bash(git:*) — git only", "Bash(git:*) Bash(npm:*) — git + npm")
      - If they pick an option with tools or type custom ones, set `security.allowedTools` to the list.
+
+   - **Systemd service** (ask after all other setup): Use AskUserQuestion:
+     - "Generate a systemd user service so ClaudeClaw auto-starts on boot and survives logout?" (header: "Systemd", options: "Yes — generate service file", "No — I'll manage it myself")
+     - If "Yes":
+       1. Detect the system's paths by running: `which bun`, `which node`, `which claude`, and check if nvm is installed (`test -s "$HOME/.nvm/nvm.sh"`).
+       2. Generate a `claudeclaw.service` file at `~/.config/systemd/user/claudeclaw.service` using the detected paths:
+          - If nvm is detected: use a bash wrapper in `ExecStart` that sources `$NVM_DIR/nvm.sh` and runs `nvm use default` before launching bun.
+          - Include `$HOME/.local/bin` in PATH (for `claude` CLI).
+          - Include the linuxbrew/homebrew bin path if bun is installed there.
+          - Set `WorkingDirectory` to the current project directory.
+          - Set resource limits: `MemoryMax=2G`, `CPUQuota=80%`, `TasksMax=128`.
+          - Set `Restart=on-failure`, `RestartSec=10`.
+          - Log to `.claude/claudeclaw/logs/daemon.log`.
+       3. Run `systemctl --user daemon-reload && systemctl --user enable claudeclaw.service`.
+       4. Run `loginctl enable-linger $(whoami)` to ensure the service survives logout.
+       5. Tell the user the service is installed and show management commands:
+          ```
+          systemctl --user start claudeclaw
+          systemctl --user stop claudeclaw
+          systemctl --user restart claudeclaw
+          systemctl --user status claudeclaw
+          journalctl --user -u claudeclaw -f
+          ```
+       6. Ask: "Start the daemon via systemd now instead of nohup?" (header: "Start method", options: "Yes — use systemd", "No — use nohup as usual")
+          - If systemd: run `systemctl --user start claudeclaw.service` instead of the nohup command in step 6.
+     - If "No": proceed with the normal nohup launch in step 6.
 
    Update `.claude/claudeclaw/settings.json` with their answers.
 
