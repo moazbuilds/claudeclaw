@@ -4,6 +4,29 @@ import { join } from "path";
 const JOBS_DIR = join(process.cwd(), ".claude", "claudeclaw", "jobs");
 const AGENTS_DIR = join(process.cwd(), "agents");
 
+export const VALID_MODEL_STRINGS: ReadonlySet<string> = new Set(["opus", "sonnet", "haiku", "glm"]);
+
+export function validateModelString(value: string | undefined, context: string): void {
+  if (value === undefined || value === "") return;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "") return;
+  if (!VALID_MODEL_STRINGS.has(normalized)) {
+    throw new Error(
+      `Invalid model "${value}" in ${context}. ` +
+        `Allowed: ${[...VALID_MODEL_STRINGS].join(", ")} (or omit for default)`,
+    );
+  }
+}
+
+export async function resolveJobModel(job: Job): Promise<string | undefined> {
+  if (job.model && job.model.trim() !== "") return job.model.trim().toLowerCase();
+  return undefined;
+}
+
+function ts(): string {
+  return new Date().toLocaleTimeString();
+}
+
 export interface Job {
   name: string;
   schedule: string;
@@ -91,7 +114,14 @@ export async function loadJobs(): Promise<Job[]> {
     if (!file.endsWith(".md")) continue;
     const content = await Bun.file(join(JOBS_DIR, file)).text();
     const job = parseJobFile(file.replace(/\.md$/, ""), content);
-    if (job && job.enabled !== false) jobs.push(job);
+    if (!job) continue;
+    try {
+      validateModelString(job.model, `standalone/${job.label ?? job.name}`);
+    } catch (err) {
+      console.error(`[${ts()}] Skipping job ${job.name}: ${(err as Error).message}`);
+      continue;
+    }
+    if (job.enabled !== false) jobs.push(job);
   }
 
   // 2. agents/<name>/jobs/*.md scan (Phase 17)
@@ -118,6 +148,12 @@ export async function loadJobs(): Promise<Job[]> {
       // Directory location is authoritative.
       job.agent = agentName;
       job.label = labelFromFile;
+      try {
+        validateModelString(job.model, `${agentName}/${labelFromFile}`);
+      } catch (err) {
+        console.error(`[${ts()}] Skipping job ${agentName}:${labelFromFile}: ${(err as Error).message}`);
+        continue;
+      }
       if (job.enabled === false) continue;
       jobs.push(job);
     }

@@ -7,7 +7,8 @@
 import { describe, it, expect, afterEach } from "bun:test";
 import { rm, mkdir, writeFile } from "fs/promises";
 import { join } from "path";
-import { loadJobs } from "../jobs";
+import { loadJobs, validateModelString, resolveJobModel, VALID_MODEL_STRINGS, type Job } from "../jobs";
+import { spyOn } from "bun:test";
 
 const PROJECT = process.cwd();
 const AGENTS_DIR = join(PROJECT, "agents");
@@ -101,5 +102,84 @@ describe("Phase 17: loadJobs multi-source", () => {
     const jobs = await loadJobs();
     const job = jobs.find((j) => j.name === `${agent}/bar`);
     expect(job!.agent).toBe(agent);
+  });
+});
+
+describe("Phase 18: validateModelString", () => {
+  it("allows undefined", () => {
+    expect(() => validateModelString(undefined, "ctx")).not.toThrow();
+  });
+  it("allows empty string", () => {
+    expect(() => validateModelString("", "ctx")).not.toThrow();
+  });
+  it("allows opus/sonnet/haiku/glm", () => {
+    for (const m of ["opus", "sonnet", "haiku", "glm"]) {
+      expect(() => validateModelString(m, "ctx")).not.toThrow();
+    }
+  });
+  it("is case-insensitive and trimmed", () => {
+    expect(() => validateModelString("  OPUS  ", "ctx")).not.toThrow();
+  });
+  it("rejects unknown model with context + allowed list in message", () => {
+    let caught: Error | null = null;
+    try {
+      validateModelString("opuz", "reg/digest-scan");
+    } catch (e) {
+      caught = e as Error;
+    }
+    expect(caught).not.toBeNull();
+    expect(caught!.message).toContain("opuz");
+    expect(caught!.message).toContain("reg/digest-scan");
+    expect(caught!.message).toContain("opus");
+    expect(caught!.message).toContain("sonnet");
+    expect(caught!.message).toContain("haiku");
+    expect(caught!.message).toContain("glm");
+  });
+  it("VALID_MODEL_STRINGS contains exactly the four models", () => {
+    expect(VALID_MODEL_STRINGS.size).toBe(4);
+    expect([...VALID_MODEL_STRINGS].sort()).toEqual(["glm", "haiku", "opus", "sonnet"]);
+  });
+});
+
+describe("Phase 18: resolveJobModel", () => {
+  const baseJob: Job = {
+    name: "x",
+    schedule: "0 9 * * *",
+    prompt: "",
+    recurring: true,
+    notify: true,
+  };
+  it("returns lowercased trimmed model when set", async () => {
+    expect(await resolveJobModel({ ...baseJob, model: "OPUS " })).toBe("opus");
+  });
+  it("returns undefined when model is undefined", async () => {
+    expect(await resolveJobModel({ ...baseJob })).toBeUndefined();
+  });
+  it("returns undefined when model is empty string", async () => {
+    expect(await resolveJobModel({ ...baseJob, model: "" })).toBeUndefined();
+  });
+});
+
+describe("Phase 18: loadJobs invalid model rejection", () => {
+  it("skips agent job with invalid model and logs error; valid sibling still loads", async () => {
+    const agent = uniq("badmodel");
+    await writeAgentJob(agent, "bad", "schedule: 0 9 * * *\nrecurring: true\nmodel: opuz");
+    await writeAgentJob(agent, "good", "schedule: 0 9 * * *\nrecurring: true\nmodel: opus");
+
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const jobs = await loadJobs();
+      const bad = jobs.find((j) => j.name === `${agent}/bad`);
+      const good = jobs.find((j) => j.name === `${agent}/good`);
+      expect(bad).toBeUndefined();
+      expect(good).toBeDefined();
+      expect(good!.model).toBe("opus");
+      const logged = errSpy.mock.calls.some((c) =>
+        String(c[0] ?? "").includes(`Skipping job ${agent}:bad`),
+      );
+      expect(logged).toBe(true);
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 });
