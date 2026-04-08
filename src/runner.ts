@@ -1,7 +1,6 @@
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { join } from "path";
 import { existsSync } from "fs";
-import { getSession, createSession, incrementTurn, markCompactWarned } from "./sessions";
 import {
   getThreadSession,
   createThreadSession,
@@ -59,21 +58,14 @@ export interface RunResult {
 
 const RATE_LIMIT_PATTERN = /you.ve hit your limit|out of extra usage/i;
 
-// Serial queue — prevents concurrent --resume on the same session
-// Global queue for non-thread messages (backward compatible)
-let globalQueue: Promise<unknown> = Promise.resolve();
 // Per-thread queues — each thread runs independently in parallel
+// "default" thread is used for heartbeat, cron, telegram, web UI, etc.
 const threadQueues = new Map<string, Promise<unknown>>();
 
-function enqueue<T>(fn: () => Promise<T>, threadId?: string): Promise<T> {
-  if (threadId) {
-    const current = threadQueues.get(threadId) ?? Promise.resolve();
-    const task = current.then(fn, fn);
-    threadQueues.set(threadId, task.catch(() => {}));
-    return task;
-  }
-  const task = globalQueue.then(fn, fn);
-  globalQueue = task.catch(() => {});
+function enqueue<T>(fn: () => Promise<T>, threadId: string): Promise<T> {
+  const current = threadQueues.get(threadId) ?? Promise.resolve();
+  const task = current.then(fn, fn);
+  threadQueues.set(threadId, task.catch(() => {}));
   return task;
 }
 
@@ -176,8 +168,7 @@ async function runClaudeOnce(
 const PROJECT_DIR = process.cwd();
 const SESSIONS_BASE = join(process.cwd(), ".claude", "claudeclaw", "sessions");
 
-function getSessionCwd(threadId?: string): string {
-  if (!threadId) return PROJECT_DIR;
+function getSessionCwd(threadId: string): string {
   return join(SESSIONS_BASE, threadId);
 }
 
@@ -328,7 +319,7 @@ export async function runCompact(
  * Returns { success, message }.
  */
 export async function compactCurrentSession(): Promise<{ success: boolean; message: string }> {
-  const existing = await getSession();
+  const existing = await getThreadSession("default");
   if (!existing) return { success: false, message: "No active session to compact." };
 
   const settings = getSettings();
@@ -351,12 +342,10 @@ export async function compactCurrentSession(): Promise<{ success: boolean; messa
     : { success: false, message: `❌ Compact failed (${existing.sessionId.slice(0, 8)})` };
 }
 
-async function execClaude(name: string, prompt: string, threadId?: string): Promise<RunResult> {
+async function execClaude(name: string, prompt: string, threadId: string): Promise<RunResult> {
   await mkdir(LOGS_DIR, { recursive: true });
 
-  const existing = threadId
-    ? await getThreadSession(threadId)
-    : await getSession();
+  const existing = await getThreadSession(threadId);
   const isNew = !existing;
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const logFile = join(LOGS_DIR, `${name}-${timestamp}.log`);
@@ -431,7 +420,11 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
 
   // Per-session working directory: thread/channel sessions run in their own directory
   const sessionCwd = getSessionCwd(threadId);
-  if (threadId) await mkdir(sessionCwd, { recursive: true });
+  await mkdir(sessionCwd, { recursive: true });
+
+  // Per-session memory isolation
+  const memoryDir = join(sessionCwd, "memory");
+  args.push("--settings", JSON.stringify({ autoMemoryDirectory: memoryDir }));
 
   let exec = await runClaudeOnce(args, primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs, sessionCwd);
   const primaryRateLimit = extractRateLimitMessage(exec.rawStdout, exec.stderr);
@@ -463,13 +456,8 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
       sessionId = json.session_id;
       stdout = json.result ?? "";
       // Save the real session ID from Claude Code
-      if (threadId) {
-        await createThreadSession(threadId, sessionId);
-        console.log(`[${new Date().toLocaleTimeString()}] Thread session created: ${sessionId} (thread ${threadId.slice(0, 8)})`);
-      } else {
-        await createSession(sessionId);
-        console.log(`[${new Date().toLocaleTimeString()}] Session created: ${sessionId}`);
-      }
+      await createThreadSession(threadId, sessionId);
+      console.log(`[${new Date().toLocaleTimeString()}] Thread session created: ${sessionId} (thread ${threadId.slice(0, 8)})`);
     } catch (e) {
       console.error(`[${new Date().toLocaleTimeString()}] Failed to parse session from Claude output:`, e);
     }
@@ -528,8 +516,8 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
       });
 
       if (retryExec.exitCode === 0) {
-        const count = threadId ? await incrementThreadTurn(threadId) : await incrementTurn();
-        console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${count} (after compact + retry)`);
+        const count = await incrementThreadTurn(threadId);
+        console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${count} (thread ${threadId.slice(0, 8)}, after compact + retry)`);
       }
       return retryResult;
     }
@@ -537,15 +525,11 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
 
   // --- Turn tracking & compact warning ---
   if (exitCode === 0 && !isNew) {
-    const turnCount = threadId ? await incrementThreadTurn(threadId) : await incrementTurn();
-    console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${turnCount}${threadId ? ` (thread ${threadId.slice(0, 8)})` : ""}`);
+    const turnCount = await incrementThreadTurn(threadId);
+    console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${turnCount} (thread ${threadId.slice(0, 8)})`);
 
     if (turnCount >= COMPACT_WARN_THRESHOLD && existing && !existing.compactWarned) {
-      if (threadId) {
-        await markThreadCompactWarned(threadId);
-      } else {
-        await markCompactWarned();
-      }
+      await markThreadCompactWarned(threadId);
       emitCompactEvent({ type: "warn", turnCount });
     }
   }
@@ -553,7 +537,7 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
   return result;
 }
 
-export async function run(name: string, prompt: string, threadId?: string): Promise<RunResult> {
+export async function run(name: string, prompt: string, threadId: string = "default"): Promise<RunResult> {
   return enqueue(() => execClaude(name, prompt, threadId), threadId);
 }
 
@@ -565,7 +549,7 @@ async function streamClaude(
 ): Promise<void> {
   await mkdir(LOGS_DIR, { recursive: true });
 
-  const existing = await getSession();
+  const existing = await getThreadSession("default");
   const { security, model, api } = getSettings();
   const securityArgs = buildSecurityArgs(security);
 
@@ -638,7 +622,7 @@ async function streamClaude(
           // Capture session ID for new sessions
           const sid = event.session_id as string | undefined;
           if (sid && !existing) {
-            await createSession(sid);
+            await createThreadSession("default", sid);
             console.log(`[${new Date().toLocaleTimeString()}] Session created (stream-json): ${sid}`);
           }
         } else if (event.type === "assistant") {
@@ -708,10 +692,10 @@ export async function runUserMessage(name: string, prompt: string, threadId?: st
  * session is created immediately. No-op if a session already exists.
  */
 export async function bootstrap(): Promise<void> {
-  const existing = await getSession();
+  const existing = await getThreadSession("default");
   if (existing) return;
 
   console.log(`[${new Date().toLocaleTimeString()}] Bootstrapping new session...`);
-  await execClaude("bootstrap", "Wakeup, my friend!");
+  await execClaude("bootstrap", "Wakeup, my friend!", "default");
   console.log(`[${new Date().toLocaleTimeString()}] Bootstrap complete — session is live.`);
 }
