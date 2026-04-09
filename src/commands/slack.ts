@@ -357,7 +357,7 @@ function extractBlockKitDirectives(text: string): {
     // Parse [[slack_select: Placeholder | Option1:opt1, Option2:opt2]]
     .replace(/\[\[slack_select:\s*(.+?)\]\]/gi, (_match, raw) => {
       const parts = String(raw).split("|");
-      const placeholder = parts.length > 1 ? parts[0].trim() : "請選擇";
+      const placeholder = parts.length > 1 ? parts[0].trim() : "Select...";
       const optionsStr = parts.length > 1 ? parts.slice(1).join("|").trim() : parts[0].trim();
       const options = optionsStr.split(",").map((pair) => {
         const trimmed = pair.trim();
@@ -963,14 +963,14 @@ async function handleMessage(event: SlackMessage): Promise<void> {
     const prefixedPrompt = promptParts.join("\n");
 
     // Show "thinking" status via Assistant API
-    await setAssistantStatus(config.botToken, channelId, replyThreadTs, "正在思考中...");
+    await setAssistantStatus(config.botToken, channelId, replyThreadTs, "Thinking...");
 
     // Add thinking reaction
     await sendReaction(config.botToken, channelId, event.ts, "hourglass_flowing_sand");
 
     // Periodically refresh assistant status to prevent Slack auto-expiry
     const statusRefreshInterval = setInterval(async () => {
-      await setAssistantStatus(config.botToken, channelId, replyThreadTs, "正在思考中...").catch(() => {});
+      await setAssistantStatus(config.botToken, channelId, replyThreadTs, "Thinking...").catch(() => {});
     }, 20_000);
 
     const result = await runUserMessage("slack", prefixedPrompt, sessionThreadId);
@@ -1167,7 +1167,7 @@ async function handleBlockAction(payload: any): Promise<void> {
   // Show thinking status and reaction
   const messageTs = message?.ts;
   if (replyThreadTs) {
-    await setAssistantStatus(config.botToken, channelId, replyThreadTs, "正在處理中...");
+    await setAssistantStatus(config.botToken, channelId, replyThreadTs, "Processing...");
   }
   if (messageTs) {
     await sendReaction(config.botToken, channelId, messageTs, "hourglass_flowing_sand");
@@ -1330,8 +1330,8 @@ async function handleSocketPayload(
         // Set suggested prompts for the new thread
         if (threadChannel && threadTs) {
           await setAssistantSuggestedPrompts(config.botToken, threadChannel, threadTs, [
-            { title: "專案狀態", message: "目前專案的狀態如何？" },
-            { title: "幫我分析", message: "請幫我分析一下..." },
+            { title: "Project status", message: "What is the current status of the project?" },
+            { title: "Analyze", message: "Please help me analyze..." },
           ]);
         }
       }
