@@ -184,10 +184,34 @@ ${pageStyles}
       </form>
     </section>
     </div>
-    <div id="chat-panel" class="chat-panel" hidden>
-      <div id="chat-messages" class="chat-messages"></div>
+    <div id="chat-panel" class="chat-panel" hidden><div class="chat-layout">
+      <div class="chat-sidebar" id="chat-sidebar">
+        <div class="chat-sidebar-header">
+          <h3>Sessions</h3>
+          <button id="new-session-btn" class="new-session-btn" type="button">+ New</button>
+        </div>
+        <div id="agent-selector" class="agent-selector" hidden>
+          <select id="agent-select"><option value="">Select agent...</option></select>
+        </div>
+        <div id="session-list" class="session-list">
+          <div class="session-loading">Loading sessions...</div>
+        </div>
+      </div>
+      <div class="chat-main">
+        <div id="chat-header" class="chat-header" hidden>
+          <span id="chat-session-agent" class="chat-agent-badge"></span>
+          <span id="chat-session-info" class="chat-session-info"></span>
+        </div>
+        <div id="load-more-container" class="load-more-container" hidden>
+          <button id="load-more-btn" class="load-more-btn" type="button">Load older messages</button>
+        </div>
+        <div id="chat-messages" class="chat-messages"></div>
       <div class="chat-input-area">
-        <form id="chat-form" class="chat-form">
+        <div id="inline-agent-selector" class="inline-agent-selector" hidden>
+            <label>Agent:</label>
+            <select id="inline-agent-select" class="inline-agent-select"></select>
+          </div>
+          <form id="chat-form" class="chat-form">
           <textarea
             id="chat-input"
             class="chat-input"
@@ -199,6 +223,8 @@ ${pageStyles}
           <button id="chat-send" class="chat-send" type="submit">Send</button>
         </form>
       </div>
+      </div><!-- chat-main -->
+      </div><!-- chat-layout -->
     </div>
   </main>
 

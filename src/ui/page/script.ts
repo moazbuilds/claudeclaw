@@ -943,6 +943,11 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
     const chatSend = $("chat-send");
 
     var CHAT_STORAGE_KEY = "claudeclaw.chat.history";
+    var activeSessionId = null;
+    var activeAgent = null;
+    var messagesOffset = 0;
+    var totalMessages = 0;
+    var MESSAGES_PER_PAGE = 10;
     let chatBusy = false;
     let chatAbortController = null;
     let chatElapsedTimer = null;
@@ -1110,6 +1115,212 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
       chatMessages.scrollTop = chatMessages.scrollHeight;
     }
 
+    // --- Session & Agent Management ---
+
+    async function loadSessions() {
+      var listEl = document.getElementById('session-list');
+      if (!listEl) return;
+      try {
+        var res = await fetch('/api/sessions');
+        var sessions = await res.json();
+        listEl.innerHTML = '';
+        if (!sessions.length) {
+          listEl.innerHTML = '<div class="session-loading">No sessions yet</div>';
+          return;
+        }
+        sessions.forEach(function(s) {
+          var item = document.createElement('div');
+          item.className = 'session-item' + (s.id === activeSessionId ? ' active' : '');
+          item.innerHTML = '<div class="session-item-header">'
+            + '<span class="session-agent">' + (s.agent || 'mike') + '</span>'
+            + '<span class="session-channel">' + (s.channel || '') + '</span>'
+            + '</div>'
+            + '<div class="session-preview">' + escapeHtml(s.lastMessage || s.firstMessage || '(empty)') + '</div>'
+            + '<div class="session-time">' + formatTime(s.lastUsedAt) + ' · ' + s.turnCount + ' turns</div>';
+          item.addEventListener('click', function() { selectSession(s.id, s.agent); });
+          listEl.appendChild(item);
+        });
+      } catch (e) {
+        listEl.innerHTML = '<div class="session-loading">Failed to load</div>';
+      }
+    }
+
+    async function loadAgents() {
+      var selectEl = document.getElementById('agent-select');
+      if (!selectEl) return;
+      try {
+        var res = await fetch('/api/agents');
+        var agents = await res.json();
+        selectEl.innerHTML = '<option value="">Select agent...</option>';
+        var inlineSelect = document.getElementById('inline-agent-select');
+        if (inlineSelect) inlineSelect.innerHTML = '';
+        agents.forEach(function(a) {
+          var opt = document.createElement('option');
+          opt.value = a.id;
+          opt.textContent = a.name + (a.description ? ' — ' + a.description.substring(0, 40) : '');
+          selectEl.appendChild(opt);
+          if (inlineSelect) {
+            var opt2 = opt.cloneNode(true);
+            inlineSelect.appendChild(opt2);
+          }
+        });
+      } catch {}
+    }
+
+    async function selectSession(sessionId, agent) {
+      activeSessionId = sessionId;
+      activeAgent = agent || 'mike';
+      messagesOffset = 0;
+
+      // Update sidebar active state
+      document.querySelectorAll('.session-item').forEach(function(el) { el.classList.remove('active'); });
+      var items = document.querySelectorAll('.session-item');
+      // Highlight by finding the clicked one (re-render is simpler)
+      loadSessions();
+
+      // Show header
+      var headerEl = document.getElementById('chat-header');
+      var agentBadge = document.getElementById('chat-session-agent');
+      var sessionInfo = document.getElementById('chat-session-info');
+      if (headerEl) headerEl.hidden = false;
+      if (agentBadge) agentBadge.textContent = activeAgent;
+      if (sessionInfo) sessionInfo.textContent = 'Session ' + sessionId.substring(0, 8);
+
+      // Load messages
+      chatHistory = [];
+      renderChatHistory();
+      await loadMessages(sessionId);
+    }
+
+    async function loadMessages(sessionId, loadMore) {
+      var loadMoreContainer = document.getElementById('load-more-container');
+      var loadMoreBtn = document.getElementById('load-more-btn');
+
+      if (!loadMore) {
+        // Initial load — get last N messages
+        try {
+          var res = await fetch('/api/sessions/' + sessionId + '/messages?limit=' + MESSAGES_PER_PAGE + '&offset=-1');
+          var messages = await res.json();
+          chatHistory = messages.map(function(m) { return { role: m.role, text: m.text }; });
+          renderChatHistory();
+
+          // Check if there are more
+          var countRes = await fetch('/api/sessions/' + sessionId + '/messages?limit=999999&offset=0');
+          var allMsgs = await countRes.json();
+          totalMessages = allMsgs.length;
+          messagesOffset = Math.max(0, totalMessages - MESSAGES_PER_PAGE);
+
+          if (messagesOffset > 0 && loadMoreContainer) {
+            loadMoreContainer.hidden = false;
+            if (loadMoreBtn) loadMoreBtn.textContent = 'Load older (' + messagesOffset + ' more)';
+          } else if (loadMoreContainer) {
+            loadMoreContainer.hidden = true;
+          }
+        } catch (e) {
+          console.error('Failed to load messages:', e);
+        }
+      } else {
+        // Load more — prepend older messages
+        var newOffset = Math.max(0, messagesOffset - MESSAGES_PER_PAGE);
+        var limit = messagesOffset - newOffset;
+        try {
+          var res = await fetch('/api/sessions/' + sessionId + '/messages?limit=' + limit + '&offset=' + newOffset);
+          var older = await res.json();
+          var olderMapped = older.map(function(m) { return { role: m.role, text: m.text }; });
+          chatHistory = olderMapped.concat(chatHistory);
+          messagesOffset = newOffset;
+          // Preserve scroll position
+          var chatMsgs = document.getElementById('chat-messages');
+          var scrollHeightBefore = chatMsgs ? chatMsgs.scrollHeight : 0;
+          renderChatHistory();
+          if (chatMsgs) { chatMsgs.scrollTop = chatMsgs.scrollHeight - scrollHeightBefore; }
+
+          if (messagesOffset <= 0 && loadMoreContainer) {
+            loadMoreContainer.hidden = true;
+          } else if (loadMoreBtn) {
+            loadMoreBtn.textContent = 'Load older (' + messagesOffset + ' more)';
+          }
+        } catch (e) {
+          console.error('Failed to load more:', e);
+        }
+      }
+    }
+
+    function escapeHtml(text) {
+      var div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    function formatTime(isoStr) {
+      if (!isoStr) return '';
+      try {
+        var d = new Date(isoStr);
+        var now = new Date();
+        if (d.toDateString() === now.toDateString()) {
+          return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        }
+        return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+      } catch { return ''; }
+    }
+
+    // --- Wire up UI ---
+
+    var newSessionBtn = document.getElementById('new-session-btn');
+    var agentSelectorEl = document.getElementById('agent-selector');
+    var agentSelectEl = document.getElementById('agent-select');
+    var loadMoreBtn2 = document.getElementById('load-more-btn');
+
+    if (newSessionBtn) {
+      newSessionBtn.addEventListener('click', function() {
+        // Start new session — clear chat, show agent dropdown above input
+        activeSessionId = null;
+        activeAgent = 'mike';
+        chatHistory = [];
+        renderChatHistory();
+        // Deselect sidebar items
+        document.querySelectorAll('.session-item').forEach(function(el) { el.classList.remove('active'); });
+        // Show header
+        var headerEl = document.getElementById('chat-header');
+        var agentBadge = document.getElementById('chat-session-agent');
+        var sessionInfo = document.getElementById('chat-session-info');
+        if (headerEl) headerEl.hidden = false;
+        if (agentBadge) agentBadge.textContent = 'mike';
+        if (sessionInfo) sessionInfo.textContent = 'New session';
+        // Show agent picker above input
+        var inlineAgent = document.getElementById('inline-agent-selector');
+        if (inlineAgent) inlineAgent.hidden = false;
+        // Focus input
+        if (chatInput) chatInput.focus();
+      });
+    }
+
+    // Inline agent selector above input
+    var inlineAgentSelect = document.getElementById('inline-agent-select');
+    if (inlineAgentSelect) {
+      inlineAgentSelect.addEventListener('change', function() {
+        activeAgent = inlineAgentSelect.value || 'mike';
+        var agentBadge = document.getElementById('chat-session-agent');
+        if (agentBadge) agentBadge.textContent = activeAgent;
+      });
+    }
+
+    if (loadMoreBtn2) {
+      loadMoreBtn2.addEventListener('click', function() {
+        if (activeSessionId) loadMessages(activeSessionId, true);
+      });
+    }
+
+    // Load sessions and agents on chat tab activation
+    var origSetActiveTab = setActiveTab;
+    setActiveTab = function(tab) {
+      origSetActiveTab(tab);
+      if (tab === 'chat') {
+        loadSessions();
+        loadAgents();
+      }
+    };
+
     function autoResizeChatInput() {
       if (!chatInput) return;
       chatInput.style.height = "auto";
@@ -1126,6 +1337,9 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
       setChatBusy(true);
 
       chatHistory.push({ role: "user", text: message });
+      // Hide agent selector after first message
+      var inlineAgent = document.getElementById('inline-agent-selector');
+      if (inlineAgent) inlineAgent.hidden = true;
       var assistantIdx = chatHistory.length;
       chatHistory.push({ role: "assistant", text: "", streaming: true });
       renderChatHistory();
