@@ -214,6 +214,17 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
           : "Not configured",
       });
 
+      pills.push({
+        cls: state.slack && state.slack.configured ? "ok" : "warn",
+        icon: "💬",
+        label: "Slack",
+        value: state.slack && state.slack.configured
+          ? (state.slack.allowedUserCount > 0
+              ? (state.slack.allowedUserCount + " user" + (state.slack.allowedUserCount !== 1 ? "s" : ""))
+              : "All users")
+          : "Not configured",
+      });
+
       return pills;
     }
 
