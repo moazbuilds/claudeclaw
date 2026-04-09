@@ -2,10 +2,10 @@ import { mkdir, readFile, writeFile } from "fs/promises";
 import { join } from "path";
 import { existsSync } from "fs";
 import {
-  getThreadSession,
-  createThreadSession,
-  incrementThreadTurn,
-  markThreadCompactWarned,
+  getSession,
+  createSession,
+  incrementTurn,
+  markCompactWarned,
 } from "./sessionManager";
 import { getSettings, type ModelConfig, type SecurityConfig } from "./config";
 import { buildClockPromptPrefix } from "./timezone";
@@ -58,14 +58,14 @@ export interface RunResult {
 
 const RATE_LIMIT_PATTERN = /you.ve hit your limit|out of extra usage/i;
 
-// Per-thread queues — each thread runs independently in parallel
-// "default" thread is used for heartbeat, cron, telegram, web UI, etc.
-const threadQueues = new Map<string, Promise<unknown>>();
+// Per-session queues — each session runs independently in parallel
+// "default" session is used for heartbeat, cron, telegram, web UI, etc.
+const sessionQueues = new Map<string, Promise<unknown>>();
 
-function enqueue<T>(fn: () => Promise<T>, threadId: string): Promise<T> {
-  const current = threadQueues.get(threadId) ?? Promise.resolve();
+function enqueue<T>(fn: () => Promise<T>, sessionKey: string): Promise<T> {
+  const current = sessionQueues.get(sessionKey) ?? Promise.resolve();
   const task = current.then(fn, fn);
-  threadQueues.set(threadId, task.catch(() => {}));
+  sessionQueues.set(sessionKey, task.catch(() => {}));
   return task;
 }
 
@@ -168,8 +168,8 @@ async function runClaudeOnce(
 const PROJECT_DIR = process.cwd();
 const SESSIONS_BASE = join(process.cwd(), ".claude", "claudeclaw", "sessions");
 
-function getSessionCwd(threadId: string): string {
-  return join(SESSIONS_BASE, threadId);
+function getSessionCwd(sessionKey: string): string {
+  return join(SESSIONS_BASE, sessionKey);
 }
 
 const DIR_SCOPE_PROMPT = [
@@ -319,7 +319,7 @@ export async function runCompact(
  * Returns { success, message }.
  */
 export async function compactCurrentSession(): Promise<{ success: boolean; message: string }> {
-  const existing = await getThreadSession("default");
+  const existing = await getSession("default");
   if (!existing) return { success: false, message: "No active session to compact." };
 
   const settings = getSettings();
@@ -342,10 +342,10 @@ export async function compactCurrentSession(): Promise<{ success: boolean; messa
     : { success: false, message: `❌ Compact failed (${existing.sessionId.slice(0, 8)})` };
 }
 
-async function execClaude(name: string, prompt: string, threadId: string): Promise<RunResult> {
+async function execClaude(name: string, prompt: string, sessionKey: string): Promise<RunResult> {
   await mkdir(LOGS_DIR, { recursive: true });
 
-  const existing = await getThreadSession(threadId);
+  const existing = await getSession(sessionKey);
   const isNew = !existing;
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const logFile = join(LOGS_DIR, `${name}-${timestamp}.log`);
@@ -418,8 +418,8 @@ async function execClaude(name: string, prompt: string, threadId: string): Promi
   const { CLAUDECODE: _, ...cleanEnv } = process.env;
   const baseEnv = { ...cleanEnv } as Record<string, string>;
 
-  // Per-session working directory: thread/channel sessions run in their own directory
-  const sessionCwd = getSessionCwd(threadId);
+  // Per-session working directory
+  const sessionCwd = getSessionCwd(sessionKey);
   await mkdir(sessionCwd, { recursive: true });
 
   // Per-session memory isolation
@@ -456,8 +456,8 @@ async function execClaude(name: string, prompt: string, threadId: string): Promi
       sessionId = json.session_id;
       stdout = json.result ?? "";
       // Save the real session ID from Claude Code
-      await createThreadSession(threadId, sessionId);
-      console.log(`[${new Date().toLocaleTimeString()}] Thread session created: ${sessionId} (thread ${threadId.slice(0, 8)})`);
+      await createSession(sessionKey, sessionId);
+      console.log(`[${new Date().toLocaleTimeString()}] Session created: ${sessionId} (key ${sessionKey.slice(0, 8)})`);
     } catch (e) {
       console.error(`[${new Date().toLocaleTimeString()}] Failed to parse session from Claude output:`, e);
     }
@@ -516,8 +516,8 @@ async function execClaude(name: string, prompt: string, threadId: string): Promi
       });
 
       if (retryExec.exitCode === 0) {
-        const count = await incrementThreadTurn(threadId);
-        console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${count} (thread ${threadId.slice(0, 8)}, after compact + retry)`);
+        const count = await incrementTurn(sessionKey);
+        console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${count} (session ${sessionKey.slice(0, 8)}, after compact + retry)`);
       }
       return retryResult;
     }
@@ -525,11 +525,11 @@ async function execClaude(name: string, prompt: string, threadId: string): Promi
 
   // --- Turn tracking & compact warning ---
   if (exitCode === 0 && !isNew) {
-    const turnCount = await incrementThreadTurn(threadId);
-    console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${turnCount} (thread ${threadId.slice(0, 8)})`);
+    const turnCount = await incrementTurn(sessionKey);
+    console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${turnCount} (session ${sessionKey.slice(0, 8)})`);
 
     if (turnCount >= COMPACT_WARN_THRESHOLD && existing && !existing.compactWarned) {
-      await markThreadCompactWarned(threadId);
+      await markCompactWarned(sessionKey);
       emitCompactEvent({ type: "warn", turnCount });
     }
   }
@@ -537,8 +537,8 @@ async function execClaude(name: string, prompt: string, threadId: string): Promi
   return result;
 }
 
-export async function run(name: string, prompt: string, threadId: string = "default"): Promise<RunResult> {
-  return enqueue(() => execClaude(name, prompt, threadId), threadId);
+export async function run(name: string, prompt: string, sessionKey: string = "default"): Promise<RunResult> {
+  return enqueue(() => execClaude(name, prompt, sessionKey), sessionKey);
 }
 
 async function streamClaude(
@@ -549,7 +549,7 @@ async function streamClaude(
 ): Promise<void> {
   await mkdir(LOGS_DIR, { recursive: true });
 
-  const existing = await getThreadSession("default");
+  const existing = await getSession("default");
   const { security, model, api } = getSettings();
   const securityArgs = buildSecurityArgs(security);
 
@@ -622,7 +622,7 @@ async function streamClaude(
           // Capture session ID for new sessions
           const sid = event.session_id as string | undefined;
           if (sid && !existing) {
-            await createThreadSession("default", sid);
+            await createSession("default", sid);
             console.log(`[${new Date().toLocaleTimeString()}] Session created (stream-json): ${sid}`);
           }
         } else if (event.type === "assistant") {
@@ -669,7 +669,7 @@ export async function streamUserMessage(
   onChunk: (text: string) => void,
   onUnblock: () => void
 ): Promise<void> {
-  return enqueue(() => streamClaude(name, prefixUserMessageWithClock(prompt), onChunk, onUnblock));
+  return enqueue(() => streamClaude(name, prefixUserMessageWithClock(prompt), onChunk, onUnblock), "default");
 }
 
 function prefixUserMessageWithClock(prompt: string): string {
@@ -683,8 +683,8 @@ function prefixUserMessageWithClock(prompt: string): string {
   }
 }
 
-export async function runUserMessage(name: string, prompt: string, threadId?: string): Promise<RunResult> {
-  return run(name, prefixUserMessageWithClock(prompt), threadId);
+export async function runUserMessage(name: string, prompt: string, sessionKey?: string): Promise<RunResult> {
+  return run(name, prefixUserMessageWithClock(prompt), sessionKey);
 }
 
 /**
@@ -692,7 +692,7 @@ export async function runUserMessage(name: string, prompt: string, threadId?: st
  * session is created immediately. No-op if a session already exists.
  */
 export async function bootstrap(): Promise<void> {
-  const existing = await getThreadSession("default");
+  const existing = await getSession("default");
   if (existing) return;
 
   console.log(`[${new Date().toLocaleTimeString()}] Bootstrapping new session...`);

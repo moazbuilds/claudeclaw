@@ -1,7 +1,7 @@
 import { ensureProjectClaudeMd, run, runUserMessage, compactCurrentSession } from "../runner";
 import { getSettings, loadSettings } from "../config";
 import { resetSession, peekSession } from "../sessions";
-import { listThreadSessions, removeThreadSession, peekThreadSession } from "../sessionManager";
+import { listSessions, removeSession, peekSessionEntry } from "../sessionManager";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
@@ -237,23 +237,23 @@ function extractReactionDirective(text: string): { cleanedText: string; reaction
 
 // --- Thread rejoin helper ---
 async function rejoinThreads(token: string): Promise<void> {
-  const threadSessions = await listThreadSessions();
-  for (const ts of threadSessions) {
+  const sessions = await listSessions();
+  for (const ts of sessions) {
     try {
-      await discordApi(token, "PUT", `/channels/${ts.threadId}/thread-members/@me`);
-      if (!knownThreads.has(ts.threadId)) {
-        const ch = await discordApi<{ parent_id?: string }>(token, "GET", `/channels/${ts.threadId}`);
+      await discordApi(token, "PUT", `/channels/${ts.key}/thread-members/@me`);
+      if (!knownThreads.has(ts.key)) {
+        const ch = await discordApi<{ parent_id?: string }>(token, "GET", `/channels/${ts.key}`);
         if (ch.parent_id) {
-          knownThreads.set(ts.threadId, { parentId: ch.parent_id });
+          knownThreads.set(ts.key, { parentId: ch.parent_id });
         }
       }
-      console.log(`[Discord] Rejoined thread: ${ts.threadId}`);
+      console.log(`[Discord] Rejoined thread: ${ts.key}`);
     } catch (err) {
-      console.error(`[Discord] Failed to rejoin thread ${ts.threadId}: ${err}`);
+      console.error(`[Discord] Failed to rejoin thread ${ts.key}: ${err}`);
     }
   }
-  if (threadSessions.length > 0) {
-    console.log(`[Discord] Rejoined ${threadSessions.length} thread(s) from sessions.json`);
+  if (sessions.length > 0) {
+    console.log(`[Discord] Rejoined ${sessions.length} session(s) from sessions.json`);
   }
 }
 
@@ -435,9 +435,9 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
   const isGuild = !!message.guild_id;
   const content = message.content;
 
-  // Recover lost thread from sessions.json (fallback for knownThreads volatility)
+  // Recover lost channel/thread from sessions.json (fallback for knownThreads volatility)
   if (isGuild && !knownThreads.has(channelId)) {
-    const persisted = await peekThreadSession(channelId);
+    const persisted = await peekSessionEntry(channelId);
     if (persisted) {
       try {
         const ch = await discordApi<{ parent_id?: string }>(config.token, "GET", `/channels/${channelId}`);
@@ -580,7 +580,7 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
           }
           if (foundId) {
             try {
-              await removeThreadSession(foundId);
+              await removeSession(foundId);
               await discordApi(config.token, "DELETE", `/channels/${foundId}`);
               knownThreads.delete(foundId);
               results.push(`🗑️ **${targetName}** — deleted`);
@@ -639,8 +639,8 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
     // listenChannels use global session; all other guild channels/threads get their own session
     const discordConfig = getSettings().discord;
     const isListenChannel = discordConfig.listenChannels.includes(channelId);
-    const threadId = (isGuild && !isListenChannel) ? channelId : undefined;
-    const result = await runUserMessage("discord", prefixedPrompt, threadId);
+    const sessionKey = (isGuild && !isListenChannel) ? channelId : undefined;
+    const result = await runUserMessage("discord", prefixedPrompt, sessionKey);
 
     if (result.exitCode !== 0) {
       await sendMessage(config.token, channelId, `Error (exit ${result.exitCode}): ${result.stderr || result.stdout || "Unknown error"}`);
@@ -711,7 +711,7 @@ async function handleInteractionCreate(token: string, interaction: DiscordIntera
         await respondToInteraction(interaction, { content: "📊 No active session." });
         return;
       }
-      const threadSessions = await listThreadSessions();
+      const sessions = await listSessions();
       const lines = [
         "📊 **Session Status**",
         `Session: \`${session.sessionId.slice(0, 8)}\``,
@@ -722,13 +722,13 @@ async function handleInteractionCreate(token: string, interaction: DiscordIntera
         `Last used: ${session.lastUsedAt}`,
         `Compact warned: ${(session as any).compactWarned ? "yes" : "no"}`,
       ];
-      if (threadSessions.length > 0) {
-        lines.push("", `**Thread Sessions:** ${threadSessions.length}`);
-        for (const ts of threadSessions.slice(0, 5)) {
-          lines.push(`  Thread \`${ts.threadId.slice(0, 8)}\` → Session \`${ts.sessionId.slice(0, 8)}\` (${ts.turnCount} turns)`);
+      if (sessions.length > 0) {
+        lines.push("", `**Sessions:** ${sessions.length}`);
+        for (const ts of sessions.slice(0, 5)) {
+          lines.push(`  \`${ts.key.slice(0, 8)}\` → Session \`${ts.sessionId.slice(0, 8)}\` (${ts.turnCount} turns)`);
         }
-        if (threadSessions.length > 5) {
-          lines.push(`  ... and ${threadSessions.length - 5} more`);
+        if (sessions.length > 5) {
+          lines.push(`  ... and ${sessions.length - 5} more`);
         }
       }
       await respondToInteraction(interaction, { content: lines.join("\n") });
@@ -997,7 +997,7 @@ function handleDispatch(token: string, eventName: string, data: any): void {
       } else {
         console.log(`[Discord] GUILD_CREATE: no active threads in guild ${data.id}`);
       }
-      // Rejoin all known threads from sessions.json so gateway sends MESSAGE_CREATE
+      // Rejoin all persisted sessions so gateway sends MESSAGE_CREATE
       rejoinThreads(token).catch((err) =>
         console.error(`[Discord] Failed to rejoin threads: ${err}`),
       );
@@ -1016,8 +1016,8 @@ function handleDispatch(token: string, eventName: string, data: any): void {
     case "THREAD_DELETE":
       if (data.id) {
         knownThreads.delete(data.id);
-        removeThreadSession(data.id).catch((err) =>
-          console.error(`[Discord] Failed to cleanup thread session: ${err}`),
+        removeSession(data.id).catch((err) =>
+          console.error(`[Discord] Failed to cleanup session: ${err}`),
         );
         debugLog(`Thread removed: ${data.id}`);
       }
@@ -1027,7 +1027,7 @@ function handleDispatch(token: string, eventName: string, data: any): void {
       if (data.id && data.parent_id) {
         if (data.thread_metadata?.archived) {
           knownThreads.delete(data.id);
-          removeThreadSession(data.id).catch((err) =>
+          removeSession(data.id).catch((err) =>
             console.error(`[Discord] Failed to cleanup archived thread session: ${err}`),
           );
           debugLog(`Thread archived and cleaned up: ${data.id}`);

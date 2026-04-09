@@ -3,9 +3,9 @@ import { join } from "path";
 const HEARTBEAT_DIR = join(process.cwd(), ".claude", "claudeclaw");
 const SESSIONS_FILE = join(HEARTBEAT_DIR, "sessions.json");
 
-export interface ThreadSession {
+export interface Session {
   sessionId: string;
-  threadId: string;
+  key: string;
   createdAt: string;
   lastUsedAt: string;
   turnCount: number;
@@ -13,7 +13,7 @@ export interface ThreadSession {
 }
 
 interface SessionsData {
-  threads: Record<string, ThreadSession>;
+  sessions: Record<string, Session>;
 }
 
 let sessionsCache: SessionsData | null = null;
@@ -21,10 +21,21 @@ let sessionsCache: SessionsData | null = null;
 async function loadSessions(): Promise<SessionsData> {
   if (sessionsCache) return sessionsCache;
   try {
-    sessionsCache = await Bun.file(SESSIONS_FILE).json();
+    const raw = await Bun.file(SESSIONS_FILE).json();
+    // Migrate from legacy "threads"/"threadId" format
+    if (raw.threads && !raw.sessions) {
+      raw.sessions = {};
+      for (const [k, v] of Object.entries(raw.threads)) {
+        const entry = v as any;
+        raw.sessions[k] = { ...entry, key: entry.threadId ?? entry.key ?? k };
+        delete raw.sessions[k].threadId;
+      }
+      delete raw.threads;
+    }
+    sessionsCache = raw;
     return sessionsCache!;
   } catch {
-    sessionsCache = { threads: {} };
+    sessionsCache = { sessions: {} };
     return sessionsCache;
   }
 }
@@ -34,12 +45,12 @@ async function saveSessions(data: SessionsData): Promise<void> {
   await Bun.write(SESSIONS_FILE, JSON.stringify(data, null, 2) + "\n");
 }
 
-/** Get session for a thread. Returns null if no session exists yet. */
-export async function getThreadSession(
-  threadId: string,
+/** Get session by key. Returns null if no session exists yet. */
+export async function getSession(
+  key: string,
 ): Promise<{ sessionId: string; turnCount: number; compactWarned: boolean } | null> {
   const data = await loadSessions();
-  const session = data.threads[threadId];
+  const session = data.sessions[key];
   if (!session) return null;
 
   if (typeof session.turnCount !== "number") session.turnCount = 0;
@@ -55,12 +66,12 @@ export async function getThreadSession(
   };
 }
 
-/** Create a new thread session after Claude outputs a session_id. */
-export async function createThreadSession(threadId: string, sessionId: string): Promise<void> {
+/** Create a new session after Claude outputs a session_id. */
+export async function createSession(key: string, sessionId: string): Promise<void> {
   const data = await loadSessions();
-  data.threads[threadId] = {
+  data.sessions[key] = {
     sessionId,
-    threadId,
+    key,
     createdAt: new Date().toISOString(),
     lastUsedAt: new Date().toISOString(),
     turnCount: 0,
@@ -69,18 +80,18 @@ export async function createThreadSession(threadId: string, sessionId: string): 
   await saveSessions(data);
 }
 
-/** Remove a thread session (e.g., on thread delete/archive). */
-export async function removeThreadSession(threadId: string): Promise<void> {
+/** Remove a session (e.g., on channel/thread delete or archive). */
+export async function removeSession(key: string): Promise<void> {
   const data = await loadSessions();
-  if (!data.threads[threadId]) return;
-  delete data.threads[threadId];
+  if (!data.sessions[key]) return;
+  delete data.sessions[key];
   await saveSessions(data);
 }
 
-/** Increment turn counter for a thread session. */
-export async function incrementThreadTurn(threadId: string): Promise<number> {
+/** Increment turn counter for a session. */
+export async function incrementTurn(key: string): Promise<number> {
   const data = await loadSessions();
-  const session = data.threads[threadId];
+  const session = data.sessions[key];
   if (!session) return 0;
   if (typeof session.turnCount !== "number") session.turnCount = 0;
   session.turnCount += 1;
@@ -88,23 +99,23 @@ export async function incrementThreadTurn(threadId: string): Promise<number> {
   return session.turnCount;
 }
 
-/** Mark compact warning sent for a thread session. */
-export async function markThreadCompactWarned(threadId: string): Promise<void> {
+/** Mark compact warning sent for a session. */
+export async function markCompactWarned(key: string): Promise<void> {
   const data = await loadSessions();
-  const session = data.threads[threadId];
+  const session = data.sessions[key];
   if (!session) return;
   session.compactWarned = true;
   await saveSessions(data);
 }
 
-/** List all active thread sessions. */
-export async function listThreadSessions(): Promise<ThreadSession[]> {
+/** List all active sessions. */
+export async function listSessions(): Promise<Session[]> {
   const data = await loadSessions();
-  return Object.values(data.threads);
+  return Object.values(data.sessions);
 }
 
-/** Peek at a thread session without updating lastUsedAt. */
-export async function peekThreadSession(threadId: string): Promise<ThreadSession | null> {
+/** Peek at a session without updating lastUsedAt. */
+export async function peekSessionEntry(key: string): Promise<Session | null> {
   const data = await loadSessions();
-  return data.threads[threadId] ?? null;
+  return data.sessions[key] ?? null;
 }
