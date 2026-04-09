@@ -13,6 +13,7 @@
     "@types/bun": "^1.3.9"
   },
   "dependencies": {
+    "@slack/bolt": "^4.7.0",
     "ogg-opus-decoder": "^1.7.3"
   }
 }

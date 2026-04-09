@@ -9,6 +9,7 @@ import { writePidFile, cleanupPidFile, checkExistingDaemon } from "../pid";
 import { initConfig, loadSettings, reloadSettings, resolvePrompt, type HeartbeatConfig, type Settings } from "../config";
 import { getDayAndMinuteAtOffset } from "../timezone";
 import { startWebUi, type WebServerHandle } from "../web";
+import { slack } from "./slack";
 import type { Job } from "../jobs";
 
 const CLAUDE_DIR = join(process.cwd(), ".claude");
@@ -201,6 +202,7 @@ export async function start(args: string[] = []) {
   let telegramFlag = false;
   let discordFlag = false;
   let debugFlag = false;
+  let slackFlag = false;
   let webFlag = false;
   let replaceExistingFlag = false;
   let webPortFlag: number | null = null;
@@ -218,6 +220,8 @@ export async function start(args: string[] = []) {
       discordFlag = true;
     } else if (arg === "--debug") {
       debugFlag = true;
+    } else if (arg === "--slack") {
+      slackFlag = true;
     } else if (arg === "--web") {
       webFlag = true;
     } else if (arg === "--replace-existing") {
@@ -394,6 +398,22 @@ export async function start(args: string[] = []) {
 
   await initDiscord(currentSettings.discord.token);
   if (!discordToken) console.log("  Discord: not configured");
+
+  // --- Slack ---
+  async function initSlack() {
+    const slackSettings = (currentSettings as any).slack;
+    if (slackFlag && slackSettings?.appToken && slackSettings?.botToken) {
+      console.log(`[${ts()}] Slack: enabled`);
+      slack();
+    } else if (slackFlag) {
+      console.log('  Slack: not configured (missing appToken/botToken)');
+    } else {
+      console.log('  Slack: not enabled');
+    }
+  }
+
+  await initSlack();
+
 
   function isAddrInUse(err: unknown): boolean {
     if (!err || typeof err !== "object") return false;

@@ -56,6 +56,7 @@ const DEFAULT_SETTINGS: Settings = {
     excludeWindows: [],
     forwardToTelegram: true,
   },
+  slack: { appToken: "", botToken: "", allowedUserIds: [] },
   telegram: { token: "", allowedUserIds: [] },
   discord: { token: "", allowedUserIds: [], listenChannels: [] },
   security: { level: "moderate", allowedTools: [], disallowedTools: [] },
@@ -82,7 +83,13 @@ export interface TelegramConfig {
   allowedUserIds: number[];
 }
 
-export interface DiscordConfig {
+export interface SlackConfig {
+  appToken: string;
+  botToken: string;
+  allowedUserIds: string[];
+}
+
+interface DiscordConfig {
   token: string;
   allowedUserIds: string[]; // Discord snowflake IDs exceed Number.MAX_SAFE_INTEGER
   listenChannels: string[]; // Channel IDs where bot responds to all messages (no mention needed)
@@ -108,6 +115,7 @@ export interface Settings {
   timezone: string;
   timezoneOffsetMinutes: number;
   heartbeat: HeartbeatConfig;
+  slack: SlackConfig;
   telegram: TelegramConfig;
   discord: DiscordConfig;
   security: SecurityConfig;
@@ -242,6 +250,11 @@ function parseSettings(raw: Record<string, any>): Settings {
       prompt: raw.heartbeat?.prompt ?? "",
       excludeWindows: parseExcludeWindows(raw.heartbeat?.excludeWindows),
       forwardToTelegram: raw.heartbeat?.forwardToTelegram ?? false,
+    },
+    slack: {
+      appToken: typeof raw.slack?.appToken === "string" ? raw.slack.appToken.trim() : "",
+      botToken: typeof raw.slack?.botToken === "string" ? raw.slack.botToken.trim() : "",
+      allowedUserIds: Array.isArray(raw.slack?.allowedUserIds) ? raw.slack.allowedUserIds.map(String) : [],
     },
     telegram: {
       token: raw.telegram?.token ?? "",
