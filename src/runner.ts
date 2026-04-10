@@ -11,6 +11,7 @@ import {
 import { getSettings, type ModelConfig, type SecurityConfig } from "./config";
 import { buildClockPromptPrefix } from "./timezone";
 import { selectModel } from "./model-router";
+import { getPluginManager, type EventContext } from "./plugins";
 
 const LOGS_DIR = join(process.cwd(), ".claude/claudeclaw/logs");
 // Resolve prompts relative to the claudeclaw installation, not the project dir
@@ -58,6 +59,15 @@ export interface RunResult {
 }
 
 const RATE_LIMIT_PATTERN = /you.ve hit your limit|out of extra usage/i;
+
+function pluginCtx(threadId?: string): EventContext {
+  return {
+    sessionKey: threadId || "global",
+    conversationId: threadId || "global",
+    channelId: threadId || "global",
+    workspaceDir: process.cwd(),
+  };
+}
 
 // Serial queue — prevents concurrent --resume on the same session
 // Global queue for non-thread messages (backward compatible)
@@ -393,6 +403,11 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
     args.push("--resume", existing.sessionId);
   }
 
+  // ── Plugins: before_agent_start ──
+  const pm = getPluginManager();
+  const ctx = pluginCtx(threadId);
+  if (pm) await pm.emit("before_agent_start", { prompt }, ctx);
+
   // Build the appended system prompt: prompt files + directory scoping
   // This is passed on EVERY invocation (not just new sessions) because
   // --append-system-prompt does not persist across --resume.
@@ -410,6 +425,12 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
     } catch (e) {
       console.error(`[${new Date().toLocaleTimeString()}] Failed to read project CLAUDE.md:`, e);
     }
+  }
+
+  // ── Plugins: before_prompt_build (collect context injections) ──
+  if (pm) {
+    const pluginResult = await pm.emit("before_prompt_build", { prompt }, ctx);
+    if (pluginResult?.appendSystemContext) appendParts.push(pluginResult.appendSystemContext);
   }
 
   if (security.level !== "unrestricted") appendParts.push(DIR_SCOPE_PROMPT);
@@ -469,6 +490,18 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
     exitCode,
   };
 
+  // ── Plugins: observation + agent_end (fire-and-forget) ──
+  if (pm && exitCode === 0) {
+    pm.emitAsync("tool_result_persist", {
+      toolName: name,
+      params: { prompt },
+      message: { content: [{ type: "text", text: stdout.slice(0, 1000) }] },
+    }, ctx);
+    pm.emitAsync("agent_end", {
+      messages: [{ role: "assistant", content: stdout }],
+    }, ctx);
+  }
+
   const output = [
     `# ${name}`,
     `Date: ${new Date().toISOString()}`,
@@ -498,6 +531,7 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
       timeoutMs
     );
     emitCompactEvent({ type: "auto-compact-done", success: compactOk });
+    if (compactOk && pm) pm.emitAsync("after_compaction", {}, ctx);
 
     if (compactOk) {
       console.log(`[${new Date().toLocaleTimeString()}] Retrying ${name} after compact...`);
@@ -557,6 +591,11 @@ async function streamClaude(
   const { security, model, api } = getSettings();
   const securityArgs = buildSecurityArgs(security);
 
+  // ── Plugins: before_agent_start ──
+  const streamPm = getPluginManager();
+  const streamCtx = pluginCtx();
+  if (streamPm) await streamPm.emit("before_agent_start", { prompt }, streamCtx);
+
   // stream-json gives us events as they happen — text before tool calls,
   // so we can unblock the UI as soon as Claude acknowledges, not after sub-agents finish.
   // --verbose is required for stream-json to produce output in -p (print) mode.
@@ -573,6 +612,12 @@ async function streamClaude(
       const claudeMd = await Bun.file(PROJECT_CLAUDE_MD).text();
       if (claudeMd.trim()) appendParts.push(claudeMd.trim());
     } catch {}
+  }
+
+  // ── Plugins: before_prompt_build (collect context injections) ──
+  if (streamPm) {
+    const pluginResult = await streamPm.emit("before_prompt_build", { prompt }, streamCtx);
+    if (pluginResult?.appendSystemContext) appendParts.push(pluginResult.appendSystemContext);
   }
 
   if (security.level !== "unrestricted") appendParts.push(DIR_SCOPE_PROMPT);
@@ -642,6 +687,14 @@ async function streamClaude(
               hasActivity = true;
             } else if (block.type === "tool_use") {
               hasActivity = true;
+              // ── Plugins: capture per-tool observation from stream ──
+              if (streamPm && block.name) {
+                streamPm.emitAsync("tool_result_persist", {
+                  toolName: block.name,
+                  params: block.input ?? {},
+                  message: { content: [{ type: "text", text: JSON.stringify(block.input ?? {}).slice(0, 500) }] },
+                }, streamCtx);
+              }
             }
           }
           if (hasActivity) maybeUnblock();
@@ -663,6 +716,9 @@ async function streamClaude(
   await proc.exited;
   // Ensure unblock fires even if something unexpected happened
   maybeUnblock();
+
+  // ── Plugins: agent_end for streaming runs ──
+  if (streamPm) streamPm.emitAsync("agent_end", { messages: [] }, streamCtx);
 
   console.log(`[${new Date().toLocaleTimeString()}] Done: ${name}`);
 }
