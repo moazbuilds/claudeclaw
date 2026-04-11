@@ -244,11 +244,11 @@ function parseSettings(raw: Record<string, any>): Settings {
       forwardToTelegram: raw.heartbeat?.forwardToTelegram ?? false,
     },
     telegram: {
-      token: raw.telegram?.token ?? "",
+      token: process.env.TELEGRAM_TOKEN || raw.telegram?.token || "",
       allowedUserIds: raw.telegram?.allowedUserIds ?? [],
     },
     discord: {
-      token: typeof raw.discord?.token === "string" ? raw.discord.token.trim() : "",
+      token: process.env.DISCORD_TOKEN || (typeof raw.discord?.token === "string" ? raw.discord.token.trim() : ""),
       allowedUserIds: Array.isArray(raw.discord?.allowedUserIds)
           ? raw.discord.allowedUserIds.map(String)
           : [],

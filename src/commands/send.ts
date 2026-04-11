@@ -1,5 +1,5 @@
 import { runUserMessage } from "../runner";
-import { getSession } from "../sessions";
+import { DEFAULT_SESSION_KEY, getSession } from "../sessionManager";
 import { loadSettings, initConfig } from "../config";
 
 export async function send(args: string[]) {
@@ -15,7 +15,7 @@ export async function send(args: string[]) {
   await initConfig();
   await loadSettings();
 
-  const session = await getSession();
+  const session = await getSession(DEFAULT_SESSION_KEY);
   if (!session) {
     console.error("No active session. Start the daemon first.");
     process.exit(1);

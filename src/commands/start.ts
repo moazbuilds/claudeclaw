@@ -32,6 +32,18 @@ const DIM = "\\x1b[2m";
 const RED = "\\x1b[31m";
 const GREEN = "\\x1b[32m";
 
+function stripAnsi(s) { return s.replace(/\\x1b\\[[0-9;]*m/g, ""); }
+function visibleLen(s) {
+  var clean = stripAnsi(s);
+  var len = 0;
+  for (var i = 0; i < clean.length; i++) {
+    var code = clean.codePointAt(i);
+    if (code > 0xffff) { i++; len += 2; }
+    else { len++; }
+  }
+  return len;
+}
+
 function fmt(ms) {
   if (ms <= 0) return GREEN + "now!" + R;
   var s = Math.floor(ms / 1000);
@@ -51,20 +63,26 @@ function alive() {
 }
 
 var B = DIM + "\\u2502" + R;
-var TL = DIM + "\\u256d" + R;
-var TR = DIM + "\\u256e" + R;
-var BL = DIM + "\\u2570" + R;
-var BR = DIM + "\\u256f" + R;
-var H = DIM + "\\u2500" + R;
-var HEADER = TL + H.repeat(6) + " \\ud83e\\udd9e ClaudeClaw \\ud83e\\udd9e " + H.repeat(6) + TR;
-var FOOTER = BL + H.repeat(30) + BR;
+var TITLE = " \\ud83e\\udd9e ClaudeClaw \\ud83e\\udd9e ";
+var PAD = 6;
+var INNER_W = PAD + visibleLen(TITLE) + PAD;
+
+function render(content) {
+  var contentW = visibleLen(content);
+  var w = Math.max(contentW, INNER_W);
+  var titlePad = w - visibleLen(TITLE);
+  var leftPad = Math.floor(titlePad / 2);
+  var rightPad = titlePad - leftPad;
+  var H = DIM + "\\u2500" + R;
+  var header = DIM + "\\u256d" + R + H.repeat(leftPad) + TITLE + H.repeat(rightPad) + DIM + "\\u256e" + R;
+  var footer = DIM + "\\u2570" + R + H.repeat(w) + DIM + "\\u256f" + R;
+  var gap = w - contentW;
+  var padded = gap > 0 ? content + " ".repeat(gap) : content;
+  process.stdout.write(header + "\\n" + B + padded + B + "\\n" + footer);
+}
 
 if (!alive()) {
-  process.stdout.write(
-    HEADER + "\\n" +
-    B + "        " + RED + "\\u25cb offline" + R + "              " + B + "\\n" +
-    FOOTER
-  );
+  render("        " + RED + "\\u25cb offline" + R);
   process.exit(0);
 }
 
@@ -89,15 +107,9 @@ try {
     info.push(GREEN + "\\ud83c\\udfae" + R);
   }
 
-  var mid = " " + info.join(" " + B + " ") + " ";
-
-  process.stdout.write(HEADER + "\\n" + B + mid + B + "\\n" + FOOTER);
+  render(" " + info.join(" " + B + " ") + " ");
 } catch {
-  process.stdout.write(
-    HEADER + "\\n" +
-    B + DIM + "         waiting...         " + R + B + "\\n" +
-    FOOTER
-  );
+  render(DIM + "         waiting...         " + R);
 }
 `;
 

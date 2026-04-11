@@ -1,12 +1,12 @@
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { join } from "path";
 import { existsSync } from "fs";
-import { getSession, createSession, incrementTurn, markCompactWarned } from "./sessions";
 import {
-  getThreadSession,
-  createThreadSession,
-  incrementThreadTurn,
-  markThreadCompactWarned,
+  DEFAULT_SESSION_KEY,
+  getSession,
+  createSession,
+  incrementTurn,
+  markCompactWarned,
 } from "./sessionManager";
 import { getSettings, type ModelConfig, type SecurityConfig } from "./config";
 import { buildClockPromptPrefix } from "./timezone";
@@ -59,21 +59,13 @@ export interface RunResult {
 
 const RATE_LIMIT_PATTERN = /you.ve hit your limit|out of extra usage/i;
 
-// Serial queue — prevents concurrent --resume on the same session
-// Global queue for non-thread messages (backward compatible)
-let globalQueue: Promise<unknown> = Promise.resolve();
-// Per-thread queues — each thread runs independently in parallel
-const threadQueues = new Map<string, Promise<unknown>>();
+// Per-session queues — each session runs independently in parallel
+const sessionQueues = new Map<string, Promise<unknown>>();
 
-function enqueue<T>(fn: () => Promise<T>, threadId?: string): Promise<T> {
-  if (threadId) {
-    const current = threadQueues.get(threadId) ?? Promise.resolve();
-    const task = current.then(fn, fn);
-    threadQueues.set(threadId, task.catch(() => {}));
-    return task;
-  }
-  const task = globalQueue.then(fn, fn);
-  globalQueue = task.catch(() => {});
+function enqueue<T>(fn: () => Promise<T>, sessionKey: string): Promise<T> {
+  const current = sessionQueues.get(sessionKey) ?? Promise.resolve();
+  const task = current.then(fn, fn);
+  sessionQueues.set(sessionKey, task.catch(() => {}));
   return task;
 }
 
@@ -124,7 +116,8 @@ async function runClaudeOnce(
   model: string,
   api: string,
   baseEnv: Record<string, string>,
-  timeoutMs: number = CLAUDE_TIMEOUT_MS
+  timeoutMs: number = CLAUDE_TIMEOUT_MS,
+  cwd?: string
 ): Promise<{ rawStdout: string; stderr: string; exitCode: number }> {
   const args = [...baseArgs];
   const normalizedModel = model.trim().toLowerCase();
@@ -134,6 +127,7 @@ async function runClaudeOnce(
     stdout: "pipe",
     stderr: "pipe",
     env: buildChildEnv(baseEnv, model, api),
+    cwd: cwd ?? PROJECT_DIR,
   });
 
   const timeoutPromise = new Promise<never>((_, reject) => {
@@ -172,6 +166,11 @@ async function runClaudeOnce(
 }
 
 const PROJECT_DIR = process.cwd();
+const SESSIONS_BASE = join(process.cwd(), ".claude", "claudeclaw", "sessions");
+
+function getSessionCwd(sessionKey: string): string {
+  return join(SESSIONS_BASE, sessionKey);
+}
 
 const DIR_SCOPE_PROMPT = [
   `CRITICAL SECURITY CONSTRAINT: You are scoped to the project directory: ${PROJECT_DIR}`,
@@ -320,7 +319,7 @@ export async function runCompact(
  * Returns { success, message }.
  */
 export async function compactCurrentSession(): Promise<{ success: boolean; message: string }> {
-  const existing = await getSession();
+  const existing = await getSession(DEFAULT_SESSION_KEY);
   if (!existing) return { success: false, message: "No active session to compact." };
 
   const settings = getSettings();
@@ -343,12 +342,10 @@ export async function compactCurrentSession(): Promise<{ success: boolean; messa
     : { success: false, message: `❌ Compact failed (${existing.sessionId.slice(0, 8)})` };
 }
 
-async function execClaude(name: string, prompt: string, threadId?: string): Promise<RunResult> {
+async function execClaude(name: string, prompt: string, sessionKey: string): Promise<RunResult> {
   await mkdir(LOGS_DIR, { recursive: true });
 
-  const existing = threadId
-    ? await getThreadSession(threadId)
-    : await getSession();
+  const existing = await getSession(sessionKey);
   const isNew = !existing;
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const logFile = join(LOGS_DIR, `${name}-${timestamp}.log`);
@@ -421,7 +418,15 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
   const { CLAUDECODE: _, ...cleanEnv } = process.env;
   const baseEnv = { ...cleanEnv } as Record<string, string>;
 
-  let exec = await runClaudeOnce(args, primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs);
+  // Per-session working directory
+  const sessionCwd = getSessionCwd(sessionKey);
+  await mkdir(sessionCwd, { recursive: true });
+
+  // Per-session memory isolation
+  const memoryDir = join(sessionCwd, "memory");
+  args.push("--settings", JSON.stringify({ autoMemoryDirectory: memoryDir }));
+
+  let exec = await runClaudeOnce(args, primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs, sessionCwd);
   const primaryRateLimit = extractRateLimitMessage(exec.rawStdout, exec.stderr);
   let usedFallback = false;
 
@@ -429,7 +434,7 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
     console.warn(
       `[${new Date().toLocaleTimeString()}] Claude limit reached; retrying with fallback${fallbackConfig.model ? ` (${fallbackConfig.model})` : ""}...`
     );
-    exec = await runClaudeOnce(args, fallbackConfig.model, fallbackConfig.api, baseEnv, timeoutMs);
+    exec = await runClaudeOnce(args, fallbackConfig.model, fallbackConfig.api, baseEnv, timeoutMs, sessionCwd);
     usedFallback = true;
   }
 
@@ -451,13 +456,8 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
       sessionId = json.session_id;
       stdout = json.result ?? "";
       // Save the real session ID from Claude Code
-      if (threadId) {
-        await createThreadSession(threadId, sessionId);
-        console.log(`[${new Date().toLocaleTimeString()}] Thread session created: ${sessionId} (thread ${threadId.slice(0, 8)})`);
-      } else {
-        await createSession(sessionId);
-        console.log(`[${new Date().toLocaleTimeString()}] Session created: ${sessionId}`);
-      }
+      await createSession(sessionKey, sessionId);
+      console.log(`[${new Date().toLocaleTimeString()}] Session created: ${sessionId} (key ${sessionKey.slice(0, 8)})`);
     } catch (e) {
       console.error(`[${new Date().toLocaleTimeString()}] Failed to parse session from Claude output:`, e);
     }
@@ -516,8 +516,8 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
       });
 
       if (retryExec.exitCode === 0) {
-        const count = threadId ? await incrementThreadTurn(threadId) : await incrementTurn();
-        console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${count} (after compact + retry)`);
+        const count = await incrementTurn(sessionKey);
+        console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${count} (session ${sessionKey.slice(0, 8)}, after compact + retry)`);
       }
       return retryResult;
     }
@@ -525,15 +525,11 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
 
   // --- Turn tracking & compact warning ---
   if (exitCode === 0 && !isNew) {
-    const turnCount = threadId ? await incrementThreadTurn(threadId) : await incrementTurn();
-    console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${turnCount}${threadId ? ` (thread ${threadId.slice(0, 8)})` : ""}`);
+    const turnCount = await incrementTurn(sessionKey);
+    console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${turnCount} (session ${sessionKey.slice(0, 8)})`);
 
     if (turnCount >= COMPACT_WARN_THRESHOLD && existing && !existing.compactWarned) {
-      if (threadId) {
-        await markThreadCompactWarned(threadId);
-      } else {
-        await markCompactWarned();
-      }
+      await markCompactWarned(sessionKey);
       emitCompactEvent({ type: "warn", turnCount });
     }
   }
@@ -541,8 +537,8 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
   return result;
 }
 
-export async function run(name: string, prompt: string, threadId?: string): Promise<RunResult> {
-  return enqueue(() => execClaude(name, prompt, threadId), threadId);
+export async function run(name: string, prompt: string, sessionKey: string = DEFAULT_SESSION_KEY): Promise<RunResult> {
+  return enqueue(() => execClaude(name, prompt, sessionKey), sessionKey);
 }
 
 async function streamClaude(
@@ -553,7 +549,7 @@ async function streamClaude(
 ): Promise<void> {
   await mkdir(LOGS_DIR, { recursive: true });
 
-  const existing = await getSession();
+  const existing = await getSession(DEFAULT_SESSION_KEY);
   const { security, model, api } = getSettings();
   const securityArgs = buildSecurityArgs(security);
 
@@ -626,7 +622,7 @@ async function streamClaude(
           // Capture session ID for new sessions
           const sid = event.session_id as string | undefined;
           if (sid && !existing) {
-            await createSession(sid);
+            await createSession(DEFAULT_SESSION_KEY, sid);
             console.log(`[${new Date().toLocaleTimeString()}] Session created (stream-json): ${sid}`);
           }
         } else if (event.type === "assistant") {
@@ -673,7 +669,7 @@ export async function streamUserMessage(
   onChunk: (text: string) => void,
   onUnblock: () => void
 ): Promise<void> {
-  return enqueue(() => streamClaude(name, prefixUserMessageWithClock(prompt), onChunk, onUnblock));
+  return enqueue(() => streamClaude(name, prefixUserMessageWithClock(prompt), onChunk, onUnblock), DEFAULT_SESSION_KEY);
 }
 
 function prefixUserMessageWithClock(prompt: string): string {
@@ -687,8 +683,8 @@ function prefixUserMessageWithClock(prompt: string): string {
   }
 }
 
-export async function runUserMessage(name: string, prompt: string, threadId?: string): Promise<RunResult> {
-  return run(name, prefixUserMessageWithClock(prompt), threadId);
+export async function runUserMessage(name: string, prompt: string, sessionKey?: string): Promise<RunResult> {
+  return run(name, prefixUserMessageWithClock(prompt), sessionKey);
 }
 
 /**
@@ -696,10 +692,10 @@ export async function runUserMessage(name: string, prompt: string, threadId?: st
  * session is created immediately. No-op if a session already exists.
  */
 export async function bootstrap(): Promise<void> {
-  const existing = await getSession();
+  const existing = await getSession(DEFAULT_SESSION_KEY);
   if (existing) return;
 
   console.log(`[${new Date().toLocaleTimeString()}] Bootstrapping new session...`);
-  await execClaude("bootstrap", "Wakeup, my friend!");
+  await execClaude("bootstrap", "Wakeup, my friend!", DEFAULT_SESSION_KEY);
   console.log(`[${new Date().toLocaleTimeString()}] Bootstrap complete — session is live.`);
 }
