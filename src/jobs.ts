@@ -1,7 +1,14 @@
 import { readdir } from "fs/promises";
-import { join } from "path";
+import { join, isAbsolute } from "path";
+import { loadSettings, DEFAULT_JOBS_DIR } from "./config";
 
-const JOBS_DIR = join(process.cwd(), ".claude", "claudeclaw", "jobs");
+async function resolveJobsDir(): Promise<string> {
+  const settings = await loadSettings();
+  if (!settings.jobsPath) return DEFAULT_JOBS_DIR;
+  return isAbsolute(settings.jobsPath)
+    ? settings.jobsPath
+    : join(process.cwd(), settings.jobsPath);
+}
 
 export interface Job {
   name: string;
@@ -55,17 +62,18 @@ function parseJobFile(name: string, content: string): Job | null {
 }
 
 export async function loadJobs(): Promise<Job[]> {
+  const jobsDir = await resolveJobsDir();
   const jobs: Job[] = [];
   let files: string[];
   try {
-    files = await readdir(JOBS_DIR);
+    files = await readdir(jobsDir);
   } catch {
     return jobs;
   }
 
   for (const file of files) {
     if (!file.endsWith(".md")) continue;
-    const content = await Bun.file(join(JOBS_DIR, file)).text();
+    const content = await Bun.file(join(jobsDir, file)).text();
     const job = parseJobFile(file.replace(/\.md$/, ""), content);
     if (job) jobs.push(job);
   }
@@ -73,7 +81,8 @@ export async function loadJobs(): Promise<Job[]> {
 }
 
 export async function clearJobSchedule(jobName: string): Promise<void> {
-  const path = join(JOBS_DIR, `${jobName}.md`);
+  const jobsDir = await resolveJobsDir();
+  const path = join(jobsDir, `${jobName}.md`);
   const content = await Bun.file(path).text();
   const match = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/);
   if (!match) return;
