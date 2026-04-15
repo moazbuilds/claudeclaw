@@ -40,7 +40,7 @@ Parse `$ARGUMENTS` to identify what the user wants. If no arguments are given, s
    - Enabled: yes/no
    - Address: host:port
 
-3. Also list any cron jobs from `.claude/claudeclaw/jobs/` with their name and schedule.
+3. Also list any cron jobs from `.claude/claudeclaw/jobs/` with their name, schedule, and notify mode.
 4. Remind the user that changes are hot-reloaded every 30s — no daemon restart needed.
 
 ### `heartbeat on` / `heartbeat off` / `heartbeat enable` / `heartbeat disable`
