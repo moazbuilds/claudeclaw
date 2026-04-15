@@ -393,23 +393,20 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
     args.push("--resume", existing.sessionId);
   }
 
-  // Build the appended system prompt: prompt files + directory scoping
+  // Build the appended system prompt: CLAUDE.md + directory scoping
   // This is passed on EVERY invocation (not just new sessions) because
   // --append-system-prompt does not persist across --resume.
-  const promptContent = await loadPrompts();
+  // Prompt files (IDENTITY.md, USER.md, SOUL.md) are already embedded in
+  // CLAUDE.md by ensureProjectClaudeMd(), which runs before every call.
   const appendParts: string[] = [
     "You are running inside ClaudeClaw.",
   ];
-  if (promptContent) appendParts.push(promptContent);
 
-  // Load the project's CLAUDE.md if it exists
-  if (existsSync(PROJECT_CLAUDE_MD)) {
-    try {
-      const claudeMd = await Bun.file(PROJECT_CLAUDE_MD).text();
-      if (claudeMd.trim()) appendParts.push(claudeMd.trim());
-    } catch (e) {
-      console.error(`[${new Date().toLocaleTimeString()}] Failed to read project CLAUDE.md:`, e);
-    }
+  try {
+    const claudeMd = await Bun.file(PROJECT_CLAUDE_MD).text();
+    if (claudeMd.trim()) appendParts.push(claudeMd.trim());
+  } catch (e) {
+    console.error(`[${new Date().toLocaleTimeString()}] Failed to read project CLAUDE.md:`, e);
   }
 
   if (security.level !== "unrestricted") appendParts.push(DIR_SCOPE_PROMPT);
@@ -564,16 +561,12 @@ async function streamClaude(
 
   if (existing) args.push("--resume", existing.sessionId);
 
-  const promptContent = await loadPrompts();
   const appendParts: string[] = ["You are running inside ClaudeClaw."];
-  if (promptContent) appendParts.push(promptContent);
 
-  if (existsSync(PROJECT_CLAUDE_MD)) {
-    try {
-      const claudeMd = await Bun.file(PROJECT_CLAUDE_MD).text();
-      if (claudeMd.trim()) appendParts.push(claudeMd.trim());
-    } catch {}
-  }
+  try {
+    const claudeMd = await Bun.file(PROJECT_CLAUDE_MD).text();
+    if (claudeMd.trim()) appendParts.push(claudeMd.trim());
+  } catch {}
 
   if (security.level !== "unrestricted") appendParts.push(DIR_SCOPE_PROMPT);
   if (appendParts.length > 0) {
