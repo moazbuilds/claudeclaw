@@ -59,11 +59,21 @@ The setup wizard walks you through model, heartbeat, Telegram, Discord, and secu
 
 ### Session Continuity Hooks (Optional but Recommended)
 
-Wire two hooks in `~/.claude/settings.json` to enable automatic session handoffs — saving state on `/compact` and resetting proactively at turn 40:
+Wire three hooks in `~/.claude/settings.json` so Claw orients itself on startup, saves state before compaction, and resets proactively at turn 40:
 
 ```json
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claudeclaw/hooks/claw-session-start.sh"
+          }
+        ]
+      }
+    ],
     "PreCompact": [
       {
         "hooks": [
@@ -90,6 +100,11 @@ Wire two hooks in `~/.claude/settings.json` to enable automatic session handoffs
 
 Replace `/path/to/claudeclaw` with your install path (e.g. `~/.claude/plugins/marketplaces/moazbuilds/plugin`).
 
+**How it works:**
+- **SessionStart** — outputs the paths of IDENTITY.md, USER.md, SOUL.md, and CLAUDE.md so Claw reads them immediately; also flags any `PRIOR_SESSION_STATE.md` handoff file from the previous session
+- **PreCompact** — writes `PRIOR_SESSION_STATE.md` with session metadata before `/compact` runs, then resets `session.json` to null so the next session starts clean
+- **UserPromptSubmit** — proactively writes handoff and resets at turn threshold to avoid context wall surprises
+
 Also add the handoff file to your project's `.gitignore` to avoid accidental commits:
 
 ```
@@ -98,6 +113,7 @@ PRIOR_SESSION_STATE.md
 
 **Optional env vars:**
 - `CLAUDECLAW_PROJECT_DIR` — project root (defaults to `$PWD`)
+- `CLAUDECLAW_INSTALL_DIR` — claudeclaw install path (auto-detected from hook script location if unset)
 - `CLAUDECLAW_TURN_THRESHOLD` — turns before proactive reset (default: `40`)
 
 ## What Would Be Built Next?
