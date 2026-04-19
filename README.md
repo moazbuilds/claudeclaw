@@ -90,6 +90,12 @@ Wire two hooks in `~/.claude/settings.json` to enable automatic session handoffs
 
 Replace `/path/to/claudeclaw` with your install path (e.g. `~/.claude/plugins/marketplaces/moazbuilds/plugin`).
 
+Also add the handoff file to your project's `.gitignore` to avoid accidental commits:
+
+```
+PRIOR_SESSION_STATE.md
+```
+
 **Optional env vars:**
 - `CLAUDECLAW_PROJECT_DIR` — project root (defaults to `$PWD`)
 - `CLAUDECLAW_TURN_THRESHOLD` — turns before proactive reset (default: `40`)
