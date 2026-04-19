@@ -641,7 +641,7 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
     const result = await runUserMessage("discord", prefixedPrompt, threadId);
 
     if (result.exitCode !== 0) {
-      await sendMessage(config.token, channelId, `Error (exit ${result.exitCode}): ${result.stderr || result.stdout || "Unknown error"}`);
+      await sendMessage(config.token, channelId, `Error (exit ${result.exitCode}): ${result.stdout || result.stderr || "Unknown error"}`);
     } else {
       const { cleanedText, reactionEmoji } = extractReactionDirective(result.stdout || "");
       if (reactionEmoji) {
