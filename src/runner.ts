@@ -362,7 +362,7 @@ export async function compactCurrentSession(): Promise<{ success: boolean; messa
   const settings = getSettings();
   const securityArgs = buildSecurityArgs(settings.security);
   const baseEnv = cleanSpawnEnv();
-  const timeoutMs = (settings as any).sessionTimeoutMs || CLAUDE_TIMEOUT_MS;
+  const timeoutMs = settings.sessionTimeoutMs;
 
   const ok = await runCompact(
     existing.sessionId,
@@ -416,7 +416,7 @@ async function execClaude(name: string, prompt: string, threadId?: string, model
     api: fallback?.api ?? "",
   };
   const securityArgs = buildSecurityArgs(security);
-  const timeoutMs = timeoutMsOverride ?? (settings as any).sessionTimeoutMs ?? CLAUDE_TIMEOUT_MS;
+  const timeoutMs = timeoutMsOverride ?? settings.sessionTimeoutMs;
 
   console.log(
     `[${new Date().toLocaleTimeString()}] Running: ${name} (${isNew ? "new session" : `resume ${existing.sessionId.slice(0, 8)}`}, security: ${security.level})`
