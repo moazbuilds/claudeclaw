@@ -14,10 +14,14 @@ export interface GlobalSession {
 
 let current: GlobalSession | null = null;
 
+const validSession = (s: GlobalSession | null): GlobalSession | null =>
+  s && typeof s.sessionId === "string" && s.sessionId ? s : null;
+
 async function loadSession(): Promise<GlobalSession | null> {
-  if (current) return current;
+  if (current) return validSession(current);
   try {
     current = await Bun.file(SESSION_FILE).json();
+    if (!validSession(current)) { current = null; return null; }
     return current;
   } catch {
     return null;
@@ -32,15 +36,16 @@ async function saveSession(session: GlobalSession): Promise<void> {
 /** Returns the existing session or null. Never creates one. */
 export async function getSession(): Promise<{ sessionId: string; turnCount: number; compactWarned: boolean } | null> {
   const existing = await loadSession();
-  if (existing) {
-    // Backfill missing fields from older session.json files
-    if (typeof existing.turnCount !== "number") existing.turnCount = 0;
-    if (typeof existing.compactWarned !== "boolean") existing.compactWarned = false;
-    existing.lastUsedAt = new Date().toISOString();
-    await saveSession(existing);
-    return { sessionId: existing.sessionId, turnCount: existing.turnCount, compactWarned: existing.compactWarned };
+  if (!existing || typeof existing.sessionId !== "string" || !existing.sessionId) {
+    current = null;
+    return null;
   }
-  return null;
+  // Backfill missing fields from older session.json files
+  if (typeof existing.turnCount !== "number") existing.turnCount = 0;
+  if (typeof existing.compactWarned !== "boolean") existing.compactWarned = false;
+  existing.lastUsedAt = new Date().toISOString();
+  await saveSession(existing);
+  return { sessionId: existing.sessionId, turnCount: existing.turnCount, compactWarned: existing.compactWarned };
 }
 
 /** Save a session ID obtained from Claude Code's output. */

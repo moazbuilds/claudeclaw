@@ -57,6 +57,43 @@ Then open a Claude Code session and run:
 ```
 The setup wizard walks you through model, heartbeat, Telegram, Discord, and security, then your daemon is live with a web dashboard.
 
+### Session Continuity Hooks (Optional but Recommended)
+
+Wire two hooks in `~/.claude/settings.json` to enable automatic session handoffs — saving state on `/compact` and resetting proactively at turn 40:
+
+```json
+{
+  "hooks": {
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claudeclaw/hooks/claw-pre-compact.sh"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claudeclaw/hooks/claw-state-handoff.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Replace `/path/to/claudeclaw` with your install path (e.g. `~/.claude/plugins/marketplaces/moazbuilds/plugin`).
+
+**Optional env vars:**
+- `CLAUDECLAW_PROJECT_DIR` — project root (defaults to `$PWD`)
+- `CLAUDECLAW_TURN_THRESHOLD` — turns before proactive reset (default: `40`)
+
 ## What Would Be Built Next?
 
 > **Mega Post:** Help shape the next ClaudeClaw features.
