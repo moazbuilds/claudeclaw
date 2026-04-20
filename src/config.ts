@@ -8,6 +8,9 @@ const SETTINGS_FILE = join(HEARTBEAT_DIR, "settings.json");
 const JOBS_DIR = join(HEARTBEAT_DIR, "jobs");
 const LOGS_DIR = join(HEARTBEAT_DIR, "logs");
 
+/** Default Claude session timeout (30 minutes). Exported so runner.ts can reference the same value. */
+export const DEFAULT_SESSION_TIMEOUT_MS = 30 * 60 * 1000;
+
 const DEFAULT_SETTINGS: Settings = {
   model: "",
   api: "",
@@ -61,7 +64,7 @@ const DEFAULT_SETTINGS: Settings = {
   security: { level: "moderate", allowedTools: [], disallowedTools: [] },
   web: { enabled: false, host: "127.0.0.1", port: 4632 },
   stt: { baseUrl: "", model: "" },
-  sessionTimeoutMs: 30 * 60 * 1000,
+  sessionTimeoutMs: DEFAULT_SESSION_TIMEOUT_MS,
 };
 
 export interface HeartbeatExcludeWindow {
@@ -278,7 +281,7 @@ function parseSettings(raw: Record<string, any>): Settings {
     },
     sessionTimeoutMs: typeof raw.sessionTimeoutMs === "number" && raw.sessionTimeoutMs > 0
       ? raw.sessionTimeoutMs
-      : 30 * 60 * 1000,
+      : DEFAULT_SESSION_TIMEOUT_MS,
   };
 }
 
