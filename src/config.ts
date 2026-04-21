@@ -331,10 +331,71 @@ function extractDiscordUserIds(rawText: string): string[] {
   return items;
 }
 
+/**
+ * Matches `$VAR`, `${VAR}`, or `${VAR:-default}` env-var references.
+ * VAR is a standard POSIX-ish identifier: `[A-Za-z_][A-Za-z0-9_]*`.
+ *
+ * Capture groups:
+ *   1. VAR  (from `${VAR}` / `${VAR:-default}`)
+ *   2. default value  (from `${VAR:-default}`, may be empty)
+ *   3. VAR  (from bare `$VAR`)
+ *
+ * Escape sequence: `$$` → literal `$`.
+ */
+const ENV_VAR_PATTERN = /\$(?:\$|\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}|([A-Za-z_][A-Za-z0-9_]*))/g;
+
+/**
+ * Recursively substitute env-var references in every string leaf of a
+ * JSON-shaped value. Object keys and non-string leaves are left alone, so
+ * numeric fields (`allowedUserIds`), booleans, and arrays of numbers are
+ * untouched. Unresolved references with no `:-default` are left literal and
+ * logged once per unique variable name so misconfiguration is visible.
+ *
+ * Syntax supported in any string value:
+ *   $VAR                 — bare reference
+ *   ${VAR}               — braced reference (lets you embed: "pre-${VAR}-post")
+ *   ${VAR:-default}      — fallback if VAR is unset
+ *   $$                   — literal `$`
+ *
+ * Use case: keep `settings.json` committable / template-able by referencing
+ * secrets from the environment instead of inlining them. Works for any
+ * string field — telegram.token, discord.token, api, fallback.api, future
+ * additions — with zero per-field plumbing.
+ */
+export function substituteEnvVars(
+  value: unknown,
+  env: Record<string, string | undefined> = process.env,
+  warned: Set<string> = new Set()
+): any {
+  if (typeof value === "string") {
+    return value.replace(ENV_VAR_PATTERN, (match, braceName, braceDefault, bareName) => {
+      if (match === "$$") return "$";
+      const name: string = braceName ?? bareName;
+      const resolved = env[name];
+      if (resolved !== undefined) return resolved;
+      if (braceDefault !== undefined) return braceDefault;
+      if (!warned.has(name)) {
+        console.warn(`[config] Env var "$${name}" not set — leaving placeholder in settings`);
+        warned.add(name);
+      }
+      return match;
+    });
+  }
+  if (Array.isArray(value)) return value.map((v) => substituteEnvVars(v, env, warned));
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = substituteEnvVars(v, env, warned);
+    }
+    return out;
+  }
+  return value;
+}
+
 export async function loadSettings(): Promise<Settings> {
   if (cached) return cached;
   const rawText = await Bun.file(SETTINGS_FILE).text();
-  const raw = JSON.parse(rawText);
+  const raw = substituteEnvVars(JSON.parse(rawText));
   cached = parseSettings(raw, extractDiscordUserIds(rawText));
   return cached;
 }
@@ -342,7 +403,7 @@ export async function loadSettings(): Promise<Settings> {
 /** Re-read settings from disk, bypassing cache. */
 export async function reloadSettings(): Promise<Settings> {
   const rawText = await Bun.file(SETTINGS_FILE).text();
-  const raw = JSON.parse(rawText);
+  const raw = substituteEnvVars(JSON.parse(rawText));
   cached = parseSettings(raw, extractDiscordUserIds(rawText));
   return cached;
 }

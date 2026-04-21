@@ -57,6 +57,37 @@ Then open a Claude Code session and run:
 ```
 The setup wizard walks you through model, heartbeat, Telegram, Discord, and security, then your daemon is live with a web dashboard.
 
+### Env-var references in `settings.json`
+
+Any string field in `.claude/claudeclaw/settings.json` can reference an
+environment variable instead of inlining the value — useful for keeping
+the file committable while secrets stay in a gitignored shell env file,
+a keychain, or a secrets manager.
+
+```jsonc
+{
+  "model": "opus",
+  "api": "$ANTHROPIC_API_KEY",
+  "fallback": { "model": "glm", "api": "${GLM_API_KEY}" },
+  "telegram": { "token": "${TELEGRAM_BOT_TOKEN:-}" },
+  "discord":  { "token": "$DISCORD_BOT_TOKEN" }
+}
+```
+
+Supported syntax (shell-like):
+
+| Form | Meaning |
+|---|---|
+| `$VAR` | Substitute `process.env.VAR`, or leave literal if unset |
+| `${VAR}` | Same, useful for embedding: `"pre-${VAR}-post"` |
+| `${VAR:-default}` | Use `default` when `VAR` is unset |
+| `$$` | Literal `$` character |
+
+Applies to **every** string leaf — object keys, numbers, arrays of
+numbers, and booleans are never rewritten. Unresolved references with no
+default are left literal and logged once per variable name so
+misconfiguration is visible at startup.
+
 ## What Would Be Built Next?
 
 > **Mega Post:** Help shape the next ClaudeClaw features.
