@@ -2,13 +2,21 @@ import { readdir } from "fs/promises";
 import { join } from "path";
 
 const JOBS_DIR = join(process.cwd(), ".claude", "claudeclaw", "jobs");
+const AGENTS_DIR = join(process.cwd(), "agents");
 
 export interface Job {
+  /** Scheduler key. For standalone jobs this is the file stem. For agent-scoped jobs this is "agent/label". */
   name: string;
   schedule: string;
   prompt: string;
   recurring: boolean;
   notify: true | false | "error";
+  /** If set, this job is scoped to an agent. Triggers `--agent <name>` when fired. */
+  agent?: string;
+  /** Human-readable label for agent-scoped jobs (file stem). */
+  label?: string;
+  /** When false, the job is loaded but not scheduled. Defaults to true. */
+  enabled?: boolean;
 }
 
 function parseFrontmatterValue(raw: string): string {
@@ -51,24 +59,75 @@ function parseJobFile(name: string, content: string): Job | null {
     : notifyRaw === "error" ? "error"
     : true;
 
-  return { name, schedule, prompt, recurring, notify };
+  const agentLine = lines.find((l) => l.startsWith("agent:"));
+  const agentRaw = agentLine ? parseFrontmatterValue(agentLine.replace("agent:", "")) : "";
+  const agent = agentRaw || undefined;
+
+  const labelLine = lines.find((l) => l.startsWith("label:"));
+  const labelRaw = labelLine ? parseFrontmatterValue(labelLine.replace("label:", "")) : "";
+  const label = labelRaw || undefined;
+
+  const enabledLine = lines.find((l) => l.startsWith("enabled:"));
+  const enabledRaw = enabledLine
+    ? parseFrontmatterValue(enabledLine.replace("enabled:", "")).toLowerCase()
+    : "";
+  const enabled =
+    enabledRaw === "false" || enabledRaw === "no" || enabledRaw === "0"
+      ? false
+      : undefined;
+
+  return { name, schedule, prompt, recurring, notify, agent, label, enabled };
 }
 
 export async function loadJobs(): Promise<Job[]> {
   const jobs: Job[] = [];
-  let files: string[];
-  try {
-    files = await readdir(JOBS_DIR);
-  } catch {
-    return jobs;
-  }
 
-  for (const file of files) {
+  // 1. Legacy / standalone scan: .claude/claudeclaw/jobs/*.md
+  let flatFiles: string[] = [];
+  try {
+    flatFiles = await readdir(JOBS_DIR);
+  } catch {
+    /* missing dir is fine */
+  }
+  for (const file of flatFiles) {
     if (!file.endsWith(".md")) continue;
     const content = await Bun.file(join(JOBS_DIR, file)).text();
     const job = parseJobFile(file.replace(/\.md$/, ""), content);
-    if (job) jobs.push(job);
+    if (!job) continue;
+    if (job.enabled !== false) jobs.push(job);
   }
+
+  // 2. Agent-scoped scan: agents/<name>/jobs/*.md
+  // agents/ lives at project root (outside .claude/), so Discord-triggered
+  // file creation by the claude subprocess is not blocked by Claude Code's
+  // hardcoded write protection on .claude/ paths.
+  let agentDirs: string[] = [];
+  try {
+    agentDirs = await readdir(AGENTS_DIR);
+  } catch {
+    return jobs; // no agents/ at project root — nothing more to scan
+  }
+  for (const agentName of agentDirs) {
+    const agentJobsDir = join(AGENTS_DIR, agentName, "jobs");
+    let jobFiles: string[] = [];
+    try {
+      jobFiles = await readdir(agentJobsDir);
+    } catch {
+      continue; // agent has no jobs/ subdir — skip
+    }
+    for (const file of jobFiles) {
+      if (!file.endsWith(".md")) continue;
+      const labelFromFile = file.replace(/\.md$/, "");
+      const content = await Bun.file(join(agentJobsDir, file)).text();
+      const job = parseJobFile(`${agentName}/${labelFromFile}`, content);
+      if (!job) continue;
+      // Directory location is authoritative — override any frontmatter agent/label.
+      job.agent = agentName;
+      job.label = labelFromFile;
+      if (job.enabled !== false) jobs.push(job);
+    }
+  }
+
   return jobs;
 }
 
