@@ -8,6 +8,7 @@ import { transcribeAudioToText } from "../whisper";
 import { resolveSkillPrompt, listSkills } from "../skills";
 import { mkdir } from "node:fs/promises";
 import { extname, join } from "node:path";
+import { submitTelegramToGateway } from "../gateway";
 
 // --- Markdown → Telegram HTML conversion (ported from nanobot) ---
 
@@ -172,6 +173,57 @@ interface TelegramFile {
 }
 
 let telegramDebug = false;
+
+// --- Security: Rate Limiting ---
+interface RateLimitEntry {
+  count: number;
+  resetAt: number;
+}
+
+const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
+const RATE_LIMIT_MAX = 30; // 30 messages per user per minute
+const rateLimitMap = new Map<number, RateLimitEntry>();
+
+function checkRateLimit(userId: number): boolean {
+  const now = Date.now();
+  const entry = rateLimitMap.get(userId);
+
+  if (!entry || now > entry.resetAt) {
+    rateLimitMap.set(userId, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    return true;
+  }
+
+  if (entry.count >= RATE_LIMIT_MAX) {
+    return false;
+  }
+
+  entry.count++;
+  return true;
+}
+
+// --- Security: File size limit ---
+const MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024; // 25MB
+
+// --- Security: Filename sanitization ---
+function sanitizeFilename(name: string): string {
+  // Remove path traversal attempts and null bytes
+  const sanitized = name.replace(/\x00/g, "").replace(/\.\./g, "_");
+  // Keep only safe characters
+  const safe = sanitized.replace(/[^a-zA-Z0-9._-]/g, "_");
+  // Limit length to 255 chars
+  return safe.slice(0, 255);
+}
+
+// --- Security: Helper to fetch with size validation ---
+async function fetchWithSizeLimit(url: string): Promise<Uint8Array> {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Telegram file download failed: ${response.status} ${response.statusText}`);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.length > MAX_FILE_SIZE_BYTES) {
+    throw new Error(`File too large: ${bytes.length} bytes (max: ${MAX_FILE_SIZE_BYTES})`);
+  }
+  return bytes;
+}
 
 function debugLog(message: string): void {
   if (!telegramDebug) return;
@@ -359,15 +411,23 @@ async function sendDocumentToChat(
 
 function extractReactionDirective(text: string): { cleanedText: string; reactionEmoji: string | null } {
   let reactionEmoji: string | null = null;
-  const cleanedText = text
-    .replace(/\[react:([^\]\r\n]+)\]/gi, (_match, raw) => {
-      const candidate = String(raw).trim();
-      if (!reactionEmoji && candidate) reactionEmoji = candidate;
-      return "";
-    })
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+  
+  // Step 1: Extract reaction directive
+  let cleanedText = text.replace(/\[react:([^\]\r\n]+)\]/gi, (_match, raw) => {
+    const candidate = String(raw).trim();
+    if (!reactionEmoji && candidate) reactionEmoji = candidate;
+    return "";
+  });
+  
+  // Step 2: Remove trailing whitespace before newlines
+  cleanedText = cleanedText.replace(/[ \t]+\n/g, "\n");
+  
+  // Step 3: Collapse excessive newlines
+  cleanedText = cleanedText.replace(/\n{3,}/g, "\n\n");
+  
+  // Step 4: Trim final result
+  cleanedText = cleanedText.trim();
+  
   return { cleanedText, reactionEmoji };
 }
 
@@ -433,8 +493,7 @@ async function downloadImageFromMessage(token: string, message: TelegramMessage)
 
   const remotePath = fileMeta.result.file_path;
   const downloadUrl = `${FILE_API_BASE}${token}/${remotePath}`;
-  const response = await fetch(downloadUrl);
-  if (!response.ok) throw new Error(`Telegram file download failed: ${response.status} ${response.statusText}`);
+  const bytes = await fetchWithSizeLimit(downloadUrl);
 
   const dir = join(process.cwd(), ".claude", "claudeclaw", "inbox", "telegram");
   await mkdir(dir, { recursive: true });
@@ -442,10 +501,9 @@ async function downloadImageFromMessage(token: string, message: TelegramMessage)
   const remoteExt = extname(remotePath);
   const docExt = extname(imageDocument?.file_name ?? "");
   const mimeExt = extensionFromMimeType(imageDocument?.mime_type);
-  const ext = remoteExt || docExt || mimeExt || ".jpg";
+  const ext = sanitizeFilename(remoteExt || docExt || mimeExt || ".jpg");
   const filename = `${message.chat.id}-${message.message_id}-${Date.now()}${ext}`;
   const localPath = join(dir, filename);
-  const bytes = new Uint8Array(await response.arrayBuffer());
   await Bun.write(localPath, bytes);
   return localPath;
 }
@@ -464,8 +522,7 @@ async function downloadVoiceFromMessage(token: string, message: TelegramMessage)
   debugLog(
     `Voice download: fileId=${fileId} remotePath=${remotePath} mime=${audioLike.mime_type ?? "unknown"} expectedSize=${audioLike.file_size ?? "unknown"}`
   );
-  const response = await fetch(downloadUrl);
-  if (!response.ok) throw new Error(`Telegram file download failed: ${response.status} ${response.statusText}`);
+  const bytes = await fetchWithSizeLimit(downloadUrl);
 
   const dir = join(process.cwd(), ".claude", "claudeclaw", "inbox", "telegram");
   await mkdir(dir, { recursive: true });
@@ -474,10 +531,9 @@ async function downloadVoiceFromMessage(token: string, message: TelegramMessage)
   const docExt = extname(message.document?.file_name ?? "");
   const audioExt = extname(message.audio?.file_name ?? "");
   const mimeExt = extensionFromAudioMimeType(audioLike.mime_type);
-  const ext = remoteExt || docExt || audioExt || mimeExt || ".ogg";
+  const ext = sanitizeFilename(remoteExt || docExt || audioExt || mimeExt || ".ogg");
   const filename = `${message.chat.id}-${message.message_id}-${Date.now()}${ext}`;
   const localPath = join(dir, filename);
-  const bytes = new Uint8Array(await response.arrayBuffer());
   await Bun.write(localPath, bytes);
   const header = Array.from(bytes.slice(0, 8))
     .map((b) => b.toString(16).padStart(2, "0"))
@@ -510,19 +566,15 @@ async function downloadDocumentFromMessage(
 
   const remotePath = fileMeta.result.file_path;
   const downloadUrl = `${FILE_API_BASE}${token}/${remotePath}`;
-  const response = await fetch(downloadUrl);
-  if (!response.ok) {
-    throw new Error(`Telegram file download failed: ${response.status} ${response.statusText}`);
-  }
+  const bytes = await fetchWithSizeLimit(downloadUrl);
 
   const dir = join(process.cwd(), ".claude", "claudeclaw", "inbox", "telegram");
   await mkdir(dir, { recursive: true });
 
-  const originalName = doc.file_name ?? `document${extname(remotePath) || ""}`;
-  const ext = extname(originalName) || extname(remotePath) || "";
+  const originalName = sanitizeFilename(doc.file_name ?? `document${extname(remotePath) || ""}`);
+  const ext = sanitizeFilename(extname(originalName)) || sanitizeFilename(extname(remotePath)) || "";
   const filename = `${message.chat.id}-${message.message_id}-${Date.now()}${ext}`;
   const localPath = join(dir, filename);
-  const bytes = new Uint8Array(await response.arrayBuffer());
   await Bun.write(localPath, bytes);
   return { localPath, originalName };
 }
@@ -591,6 +643,12 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
   debugLog(
     `Handle message chat=${chatId} type=${chatType} from=${userId ?? "unknown"} reason=${triggerReason} text="${(text ?? "").slice(0, 80)}"`
   );
+
+  // Security: Rate limit check
+  if (userId && !checkRateLimit(userId)) {
+    debugLog(`Rate limited: userId=${userId}`);
+    return;
+  }
 
   if (userId && config.allowedUserIds.length > 0 && !config.allowedUserIds.includes(userId)) {
     if (isPrivate) {
@@ -831,33 +889,28 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
         "The user attached a document, but downloading it failed. Respond and ask them to resend."
       );
     }
-    const prefixedPrompt = promptParts.join("\n");
-    const result = await runUserMessage("telegram", prefixedPrompt);
-
-    if (result.exitCode !== 0) {
-      await sendMessage(config.token, chatId, `Error (exit ${result.exitCode}): ${result.stderr || "Unknown error"}`, threadId);
+    // Check per-adapter feature flag for gateway routing
+    if (process.env.USE_GATEWAY_TELEGRAM === "true") {
+      const gatewayResult = await submitTelegramToGateway(message);
+      if (!gatewayResult.success) {
+        await sendMessage(config.token, chatId, `Gateway error: ${gatewayResult.error}`, threadId);
+        return;
+      }
+      // Gateway processed successfully - response handled by processor
+      return;
     } else {
-      const { cleanedText: afterReact, reactionEmoji } = extractReactionDirective(result.stdout || "");
-      const { cleanedText, filePaths } = extractSendFileDirectives(afterReact);
-      if (reactionEmoji) {
-        await sendReaction(config.token, chatId, message.message_id, reactionEmoji).catch((err) => {
-          console.error(`[Telegram] Failed to send reaction for ${label}: ${err instanceof Error ? err.message : err}`);
-        });
+      // Legacy path - direct Claude invocation
+      const prompt = promptParts.join("\n");
+      const result = await runUserMessage("telegram", prompt);
+
+      if (result.exitCode !== 0) {
+        await sendMessage(config.token, chatId, `Error: ${result.stderr || "Unknown error"}`, threadId);
+        return;
       }
-      if (cleanedText) {
-        await sendMessage(config.token, chatId, cleanedText, threadId);
-      }
-      for (const fp of filePaths) {
-        try {
-          await sendDocumentToChat(config.token, chatId, fp, threadId);
-        } catch (err) {
-          console.error(`[Telegram] Failed to send document for ${label}: ${err instanceof Error ? err.message : err}`);
-          await sendMessage(config.token, chatId, `Failed to send file: ${fp.split("/").pop()}`, threadId);
-        }
-      }
-      if (!cleanedText && filePaths.length === 0) {
-        await sendMessage(config.token, chatId, "(empty response)", threadId);
-      }
+
+      const responseText = result.stdout || "Done.";
+      await sendMessage(config.token, chatId, responseText, threadId);
+      return;
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -883,7 +936,13 @@ async function handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> 
     try {
       const resp = await fetch(`http://127.0.0.1:9999/confirm/${pendingId}/${action}`);
       const result = await resp.json() as { ok: boolean };
-      answerText = action === "yes" && result.ok ? "✅ Đã gửi!" : result.ok ? "❌ Dismissed" : "⚠️ Not found";
+      if (action === "yes" && result.ok) {
+        answerText = "✅ Đã gửi!";
+      } else if (result.ok) {
+        answerText = "❌ Dismissed";
+      } else {
+        answerText = "⚠️ Not found";
+      }
       if (query.message) {
         const statusLine = action === "yes" ? "\n\n✅ Sent" : "\n\n❌ Dismissed";
         const newText = (query.message.text ?? "").replace(/\n\nReply:.*$/s, statusLine);
