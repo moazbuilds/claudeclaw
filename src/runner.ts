@@ -2,17 +2,23 @@ import { mkdir, readFile, writeFile } from "fs/promises";
 import { join } from "path";
 import { existsSync } from "fs";
 import { getSession, createSession, incrementTurn, markCompactWarned } from "./sessions";
-import {
-  getThreadSession,
-  createThreadSession,
-  incrementThreadTurn,
-  markThreadCompactWarned,
-} from "./sessionManager";
-import { getSettings, type ModelConfig, type SecurityConfig } from "./config";
+import { getSettings, type ModelConfig, type SecurityConfig, type AgenticMode } from "./config";
 import { buildClockPromptPrefix } from "./timezone";
-import { selectModel } from "./model-router";
+import { selectModel as governanceSelectModel, configureRouter as configureGovernanceRouter } from "./governance/model-router";
+import { recordInvocationStart, recordInvocationCompletion, recordInvocationFailure } from "./governance/usage-tracker";
+import { recordExecutionMetric, checkLimits, handleTrigger as watchdogHandleTrigger } from "./governance/watchdog";
+import { getGovernanceClient, type GovernanceClient } from "./governance/client";
 
 const LOGS_DIR = join(process.cwd(), ".claude/claudeclaw/logs");
+
+// Initialize governance router with agentic modes from settings
+let governanceInitialized = false;
+function ensureGovernanceRouter(modes?: AgenticMode[], defaultMode?: string): void {
+  if (!governanceInitialized && modes && defaultMode) {
+    configureGovernanceRouter({ modes, defaultMode, defaultProvider: "anthropic", defaultModel: "claude-3-5-sonnet" });
+    governanceInitialized = true;
+  }
+}
 // Resolve prompts relative to the claudeclaw installation, not the project dir
 const PROMPTS_DIR = join(import.meta.dir, "..", "prompts");
 const HEARTBEAT_PROMPT_FILE = join(PROMPTS_DIR, "heartbeat", "HEARTBEAT.md");
@@ -60,20 +66,11 @@ export interface RunResult {
 const RATE_LIMIT_PATTERN = /you.ve hit your limit|out of extra usage/i;
 
 // Serial queue — prevents concurrent --resume on the same session
-// Global queue for non-thread messages (backward compatible)
-let globalQueue: Promise<unknown> = Promise.resolve();
-// Per-thread queues — each thread runs independently in parallel
-const threadQueues = new Map<string, Promise<unknown>>();
+let queue: Promise<unknown> = Promise.resolve();
 
-function enqueue<T>(fn: () => Promise<T>, threadId?: string): Promise<T> {
-  if (threadId) {
-    const current = threadQueues.get(threadId) ?? Promise.resolve();
-    const task = current.then(fn, fn);
-    threadQueues.set(threadId, task.catch(() => {}));
-    return task;
-  }
-  const task = globalQueue.then(fn, fn);
-  globalQueue = task.catch(() => {});
+function enqueue<T>(fn: () => Promise<T>): Promise<T> {
+  const task = queue.then(fn, fn);
+  queue = task.catch(() => {});
   return task;
 }
 
@@ -327,7 +324,7 @@ export async function compactCurrentSession(): Promise<{ success: boolean; messa
   const securityArgs = buildSecurityArgs(settings.security);
   const { CLAUDECODE: _, ...cleanEnv } = process.env;
   const baseEnv = { ...cleanEnv } as Record<string, string>;
-  const timeoutMs = (settings as any).sessionTimeoutMs || CLAUDE_TIMEOUT_MS;
+  const timeoutMs = (getSettings() as any).sessionTimeoutMs || CLAUDE_TIMEOUT_MS;
 
   const ok = await runCompact(
     existing.sessionId,
@@ -343,18 +340,101 @@ export async function compactCurrentSession(): Promise<{ success: boolean; messa
     : { success: false, message: `❌ Compact failed (${existing.sessionId.slice(0, 8)})` };
 }
 
-async function execClaude(name: string, prompt: string, threadId?: string): Promise<RunResult> {
+/**
+ * Policy-aware tool execution wrapper.
+ * Evaluates tool requests against policy before allowing execution.
+ */
+async function evaluateToolForExecution(
+  toolName: string,
+  toolArgs: Record<string, unknown> | undefined,
+  context: {
+    source: string;
+    channelId?: string;
+    userId?: string;
+    skillName?: string;
+    sessionId?: string;
+    claudeSessionId?: string | null;
+    eventId: string;
+  }
+): Promise<{ allowed: boolean; decision: import("./policy/engine").PolicyDecision }> {
+  const gc = getGovernanceClient();
+  const request: import("./policy/engine").ToolRequestContext = {
+    eventId: context.eventId,
+    source: context.source,
+    channelId: context.channelId,
+    userId: context.userId,
+    skillName: context.skillName,
+    toolName,
+    toolArgs,
+    sessionId: context.sessionId,
+    claudeSessionId: context.claudeSessionId,
+    timestamp: new Date().toISOString(),
+  };
+
+  const decision = gc.evaluateToolRequest(request);
+  
+  if (decision.action === "deny") {
+    console.warn(`[policy] Tool ${toolName} denied: ${decision.reason}`);
+    return { allowed: false, decision };
+  }
+  
+  if (decision.action === "require_approval") {
+    console.warn(`[policy] Tool ${toolName} requires approval: ${decision.reason}`);
+    // Enqueue for approval
+    const entry = await gc.requestApproval(request, decision);
+    if (entry) {
+      console.warn(`[policy] Approval request enqueued: ${entry.id}`);
+    }
+    return { allowed: false, decision };
+  }
+  
+  return { allowed: true, decision };
+}
+
+/**
+ * Get context for policy evaluation from current session and settings.
+ */
+async function getPolicyContext(source: string): Promise<{
+  eventId: string;
+  source: string;
+  channelId?: string;
+  userId?: string;
+  skillName?: string;
+  sessionId?: string;
+  claudeSessionId?: string | null;
+}> {
+  const existing = await getSession();
+  const settings = getSettings();
+  return {
+    eventId: crypto.randomUUID(),
+    source,
+    channelId: undefined, // Will be populated from event context
+    userId: settings.userId,
+    skillName: undefined,
+    sessionId: existing?.sessionId,
+    claudeSessionId: existing?.sessionId ?? null,
+  };
+}
+
+async function execClaude(name: string, prompt: string): Promise<RunResult> {
   await mkdir(LOGS_DIR, { recursive: true });
 
-  const existing = threadId
-    ? await getThreadSession(threadId)
-    : await getSession();
+  // Ensure governance client is initialized
+  const gc = getGovernanceClient();
+
+  const existing = await getSession();
   const isNew = !existing;
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const logFile = join(LOGS_DIR, `${name}-${timestamp}.log`);
 
-  const settings = getSettings();
-  const { security, model, api, fallback, agentic } = settings;
+  const { security, model, api, fallback, agentic } = getSettings();
+
+  // Generate invocation ID for tracking
+  const invocationId = crypto.randomUUID();
+  const invocationSessionId = existing?.sessionId;
+
+  // Initialize watchdog metrics
+  await recordExecutionMetric({ invocationId, sessionId: invocationSessionId }, {});
 
   // Determine which model to use based on agentic routing
   let primaryConfig: ModelConfig;
@@ -362,12 +442,26 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
   let routingReasoning = "";
 
   if (agentic.enabled) {
-    const routing = selectModel(prompt, agentic.modes, agentic.defaultMode);
-    primaryConfig = { model: routing.model, api };
-    taskType = routing.taskType;
-    routingReasoning = routing.reasoning;
+    ensureGovernanceRouter(agentic.modes, agentic.defaultMode);
+    const routing = await governanceSelectModel({
+      prompt,
+      taskType: agentic.defaultMode,
+      sessionId: existing?.sessionId,
+      channelId: undefined,
+      source: name,
+    });
+    primaryConfig = { model: routing.selectedModel, api: routing.selectedProvider === "openai" ? "" : api };
+    taskType = routing.reason;
+    routingReasoning = routing.reason;
+    // Handle budget block
+    if (routing.budgetState === "block") {
+      console.warn(`[${new Date().toLocaleTimeString()}] Execution blocked: budget limit exceeded`);
+      // Record failure and return
+      await recordInvocationFailure(invocationId, { type: "budget-blocked", message: `Budget state: ${routing.budgetState}` });
+      return { stdout: "", stderr: "Execution blocked: budget limit exceeded", exitCode: 0 };
+    }
     console.log(
-      `[${new Date().toLocaleTimeString()}] Agentic routing: ${routing.taskType} → ${routing.model} (${routing.reasoning})`
+      `[${new Date().toLocaleTimeString()}] Agentic routing: ${routing.selectedModel} (${routing.reason})`
     );
   } else {
     primaryConfig = { model, api };
@@ -378,7 +472,7 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
     api: fallback?.api ?? "",
   };
   const securityArgs = buildSecurityArgs(security);
-  const timeoutMs = (settings as any).sessionTimeoutMs || CLAUDE_TIMEOUT_MS;
+  const timeoutMs = (getSettings() as any).sessionTimeoutMs || CLAUDE_TIMEOUT_MS;
 
   console.log(
     `[${new Date().toLocaleTimeString()}] Running: ${name} (${isNew ? "new session" : `resume ${existing.sessionId.slice(0, 8)}`}, security: ${security.level})`
@@ -421,7 +515,27 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
   const { CLAUDECODE: _, ...cleanEnv } = process.env;
   const baseEnv = { ...cleanEnv } as Record<string, string>;
 
-  let exec = await runClaudeOnce(args, primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs);
+  // Record invocation start
+  const invocationContext = {
+    sessionId: existing?.sessionId,
+    claudeSessionId: existing?.sessionId ?? null,
+    source: name,
+    channelId: undefined,
+    provider: primaryConfig.model.startsWith("gpt") || primaryConfig.model.startsWith("o1") || primaryConfig.model.startsWith("o3") ? "openai" : "anthropic",
+    model: primaryConfig.model,
+    metadata: { taskType, routingReasoning },
+  };
+  await recordInvocationStart(invocationContext, invocationId);
+
+  let exec: { rawStdout: string; stderr: string; exitCode: number };
+  try {
+    exec = await runClaudeOnce(args, primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs);
+  } catch (err) {
+    // Record failure
+    await recordInvocationFailure(invocationId, { type: "execution-error", message: err instanceof Error ? err.message : String(err) });
+    throw err;
+  }
+
   const primaryRateLimit = extractRateLimitMessage(exec.rawStdout, exec.stderr);
   let usedFallback = false;
 
@@ -431,6 +545,10 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
     );
     exec = await runClaudeOnce(args, fallbackConfig.model, fallbackConfig.api, baseEnv, timeoutMs);
     usedFallback = true;
+    // If fallback also fails, record failure
+    if (extractRateLimitMessage(exec.rawStdout, exec.stderr)) {
+      await recordInvocationFailure(invocationId, { type: "rate-limit", message: "Both primary and fallback hit rate limit" });
+    }
   }
 
   const rawStdout = exec.rawStdout;
@@ -451,13 +569,8 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
       sessionId = json.session_id;
       stdout = json.result ?? "";
       // Save the real session ID from Claude Code
-      if (threadId) {
-        await createThreadSession(threadId, sessionId);
-        console.log(`[${new Date().toLocaleTimeString()}] Thread session created: ${sessionId} (thread ${threadId.slice(0, 8)})`);
-      } else {
-        await createSession(sessionId);
-        console.log(`[${new Date().toLocaleTimeString()}] Session created: ${sessionId}`);
-      }
+      await createSession(sessionId);
+      console.log(`[${new Date().toLocaleTimeString()}] Session created: ${sessionId}`);
     } catch (e) {
       console.error(`[${new Date().toLocaleTimeString()}] Failed to parse session from Claude output:`, e);
     }
@@ -468,6 +581,23 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
     stderr,
     exitCode,
   };
+
+  // Record successful completion
+  await recordInvocationCompletion(invocationId, undefined, undefined);
+
+  // Check watchdog limits
+  const watchdogDecision = await checkLimits({ invocationId, sessionId: invocationSessionId });
+  if (watchdogDecision.state === "suspend" || watchdogDecision.state === "kill") {
+    console.warn(`[${new Date().toLocaleTimeString()}] Watchdog ${watchdogDecision.state}: ${watchdogDecision.reason}`);
+    await watchdogHandleTrigger({ invocationId, sessionId: invocationSessionId }, watchdogDecision);
+    // Send escalation notification for watchdog triggers
+    try {
+      const { handleWatchdogTrigger } = await import("./escalation");
+      await handleWatchdogTrigger(watchdogDecision, { invocationId, sessionId: invocationSessionId });
+    } catch (escalationError) {
+      console.error("[escalation] Failed to send watchdog notification:", escalationError);
+    }
+  }
 
   const output = [
     `# ${name}`,
@@ -516,8 +646,14 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
       });
 
       if (retryExec.exitCode === 0) {
-        const count = threadId ? await incrementThreadTurn(threadId) : await incrementTurn();
+        const count = await incrementTurn();
         console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${count} (after compact + retry)`);
+        // Check watchdog after successful retry
+        const retryWatchdogDecision = await checkLimits({ invocationId, sessionId: invocationSessionId });
+        if (retryWatchdogDecision.state === "suspend" || retryWatchdogDecision.state === "kill") {
+          console.warn(`[${new Date().toLocaleTimeString()}] Watchdog ${retryWatchdogDecision.state} after retry: ${retryWatchdogDecision.reason}`);
+          await watchdogHandleTrigger({ invocationId, sessionId: invocationSessionId }, retryWatchdogDecision);
+        }
       }
       return retryResult;
     }
@@ -525,15 +661,11 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
 
   // --- Turn tracking & compact warning ---
   if (exitCode === 0 && !isNew) {
-    const turnCount = threadId ? await incrementThreadTurn(threadId) : await incrementTurn();
-    console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${turnCount}${threadId ? ` (thread ${threadId.slice(0, 8)})` : ""}`);
+    const turnCount = await incrementTurn();
+    console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${turnCount}`);
 
     if (turnCount >= COMPACT_WARN_THRESHOLD && existing && !existing.compactWarned) {
-      if (threadId) {
-        await markThreadCompactWarned(threadId);
-      } else {
-        await markCompactWarned();
-      }
+      await markCompactWarned();
       emitCompactEvent({ type: "warn", turnCount });
     }
   }
@@ -541,8 +673,8 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
   return result;
 }
 
-export async function run(name: string, prompt: string, threadId?: string): Promise<RunResult> {
-  return enqueue(() => execClaude(name, prompt, threadId), threadId);
+export async function run(name: string, prompt: string): Promise<RunResult> {
+  return enqueue(() => execClaude(name, prompt));
 }
 
 async function streamClaude(
@@ -687,8 +819,8 @@ function prefixUserMessageWithClock(prompt: string): string {
   }
 }
 
-export async function runUserMessage(name: string, prompt: string, threadId?: string): Promise<RunResult> {
-  return run(name, prefixUserMessageWithClock(prompt), threadId);
+export async function runUserMessage(name: string, prompt: string): Promise<RunResult> {
+  return run(name, prefixUserMessageWithClock(prompt));
 }
 
 /**
