@@ -336,7 +336,8 @@ async function execClaude(name: string, prompt: string): Promise<RunResult> {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const logFile = join(LOGS_DIR, `${name}-${timestamp}.log`);
 
-  const { security, model, api, fallback, agentic } = getSettings();
+  const settings = getSettings();
+  const { security, model, api, fallback, agentic } = settings;
 
   // Determine which model to use based on agentic routing
   let primaryConfig: ModelConfig;
