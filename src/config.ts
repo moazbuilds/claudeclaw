@@ -5,8 +5,15 @@ import { normalizeTimezoneName, resolveTimezoneOffsetMinutes } from "./timezone"
 
 const HEARTBEAT_DIR = join(process.cwd(), ".claude", "claudeclaw");
 const SETTINGS_FILE = join(HEARTBEAT_DIR, "settings.json");
-const JOBS_DIR = join(HEARTBEAT_DIR, "jobs");
+const DEFAULT_JOBS_DIR = join(HEARTBEAT_DIR, "jobs");
 const LOGS_DIR = join(HEARTBEAT_DIR, "logs");
+
+export function getJobsDir(): string {
+  if (cached?.jobsDir) {
+    return isAbsolute(cached.jobsDir) ? cached.jobsDir : join(process.cwd(), cached.jobsDir);
+  }
+  return DEFAULT_JOBS_DIR;
+}
 
 const DEFAULT_SETTINGS: Settings = {
   model: "",
@@ -113,6 +120,7 @@ export interface Settings {
   security: SecurityConfig;
   web: WebConfig;
   stt: SttConfig;
+  jobsDir?: string;
 }
 
 export interface AgenticMode {
@@ -152,7 +160,7 @@ let cached: Settings | null = null;
 
 export async function initConfig(): Promise<void> {
   await mkdir(HEARTBEAT_DIR, { recursive: true });
-  await mkdir(JOBS_DIR, { recursive: true });
+  await mkdir(getJobsDir(), { recursive: true });
   await mkdir(LOGS_DIR, { recursive: true });
 
   if (!existsSync(SETTINGS_FILE)) {
@@ -217,7 +225,10 @@ function parseAgenticConfig(raw: any): AgenticConfig {
   };
 }
 
-function parseSettings(raw: Record<string, any>): Settings {
+function parseSettings(
+  raw: Record<string, any>,
+  discordUserIds?: string[],
+): Settings {
   const rawLevel = raw.security?.level;
   const level: SecurityLevel =
     typeof rawLevel === "string" && VALID_LEVELS.has(rawLevel as SecurityLevel)
@@ -244,12 +255,14 @@ function parseSettings(raw: Record<string, any>): Settings {
       forwardToTelegram: raw.heartbeat?.forwardToTelegram ?? false,
     },
     telegram: {
-      token: raw.telegram?.token ?? "",
+      token: process.env.TELEGRAM_TOKEN?.trim() || (typeof raw.telegram?.token === "string" ? raw.telegram.token.trim() : ""),
       allowedUserIds: raw.telegram?.allowedUserIds ?? [],
     },
     discord: {
-      token: typeof raw.discord?.token === "string" ? raw.discord.token.trim() : "",
-      allowedUserIds: Array.isArray(raw.discord?.allowedUserIds)
+      token: process.env.DISCORD_TOKEN?.trim() || (typeof raw.discord?.token === "string" ? raw.discord.token.trim() : ""),
+      allowedUserIds: Array.isArray(discordUserIds) && discordUserIds.length > 0
+        ? discordUserIds
+        : Array.isArray(raw.discord?.allowedUserIds)
           ? raw.discord.allowedUserIds.map(String)
           : [],
       listenChannels: Array.isArray(raw.discord?.listenChannels)
@@ -274,6 +287,7 @@ function parseSettings(raw: Record<string, any>): Settings {
       baseUrl: typeof raw.stt?.baseUrl === "string" ? raw.stt.baseUrl.trim() : "",
       model: typeof raw.stt?.model === "string" ? raw.stt.model.trim() : "",
     },
+    ...(typeof raw.jobsDir === "string" && raw.jobsDir.trim() ? { jobsDir: raw.jobsDir.trim() } : {}),
   };
 }
 

@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "fs/promises";
 import { join } from "path";
-import { JOBS_DIR } from "../constants";
+import { getJobsDir } from "../../config";
 
 export interface QuickJobInput {
   time?: unknown;
@@ -35,10 +35,10 @@ export async function createQuickJob(input: QuickJobInput): Promise<{ name: stri
   const schedule = `${minute} ${hour} * * *`;
   const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
   const name = `quick-${stamp}-${hour.toString().padStart(2, "0")}${minute.toString().padStart(2, "0")}`;
-  const path = join(JOBS_DIR, `${name}.md`);
+  const path = join(getJobsDir(), `${name}.md`);
   const content = `---\nschedule: "${schedule}"\nrecurring: ${recurring ? "true" : "false"}\n---\n${prompt}\n`;
 
-  await mkdir(JOBS_DIR, { recursive: true });
+  await mkdir(getJobsDir(), { recursive: true });
   await writeFile(path, content, "utf-8");
   return { name, schedule, recurring };
 }
@@ -48,6 +48,6 @@ export async function deleteJob(name: string): Promise<void> {
   if (!/^[a-zA-Z0-9._-]+$/.test(jobName)) {
     throw new Error("Invalid job name.");
   }
-  const path = join(JOBS_DIR, `${jobName}.md`);
+  const path = join(getJobsDir(), `${jobName}.md`);
   await Bun.file(path).delete();
 }
