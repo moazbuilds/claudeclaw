@@ -260,7 +260,7 @@ function parseSettings(
     },
     discord: {
       token: process.env.DISCORD_TOKEN?.trim() || (typeof raw.discord?.token === "string" ? raw.discord.token.trim() : ""),
-      allowedUserIds: Array.isArray(discordUserIds)
+      allowedUserIds: Array.isArray(discordUserIds) && discordUserIds.length > 0
         ? discordUserIds
         : Array.isArray(raw.discord?.allowedUserIds)
           ? raw.discord.allowedUserIds.map(String)
