@@ -9,6 +9,7 @@ const PID_FILE = join(HEARTBEAT_DIR, "daemon.pid");
 const STATE_FILE = join(HEARTBEAT_DIR, "state.json");
 const SETTINGS_FILE = join(HEARTBEAT_DIR, "settings.json");
 
+
 function formatCountdown(ms: number): string {
   if (ms <= 0) return "now!";
   const s = Math.floor(ms / 1000);
