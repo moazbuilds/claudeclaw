@@ -273,6 +273,9 @@ function guildTriggerReason(message: DiscordMessage): string | null {
   const config = getSettings().discord;
   if (config.listenChannels.includes(message.channel_id)) return "listen_channel";
 
+  // Listen guild (respond to all messages in any channel/thread of this guild)
+  if (message.guild_id && config.listenGuilds?.includes(message.guild_id)) return "listen_guild";
+
   // Thread whose parent channel is a listen channel
   const threadInfo = knownThreads.get(message.channel_id);
   if (threadInfo && config.listenChannels.includes(threadInfo.parentId)) return "listen_channel_thread";
