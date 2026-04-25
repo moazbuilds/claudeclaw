@@ -378,7 +378,7 @@ export async function compactCurrentSession(): Promise<{ success: boolean; messa
     : { success: false, message: `❌ Compact failed (${existing.sessionId.slice(0, 8)})` };
 }
 
-async function execClaude(name: string, prompt: string, threadId?: string): Promise<RunResult> {
+async function execClaude(name: string, prompt: string, threadId?: string, modelOverride?: string): Promise<RunResult> {
   await mkdir(LOGS_DIR, { recursive: true });
 
   const existing = threadId
@@ -396,7 +396,10 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
   let taskType = "unknown";
   let routingReasoning = "";
 
-  if (agentic.enabled) {
+  if (modelOverride) {
+    primaryConfig = { model: modelOverride, api };
+    console.log(`[${new Date().toLocaleTimeString()}] Job model override: ${modelOverride}`);
+  } else if (agentic.enabled) {
     const routing = selectModel(prompt, agentic.modes, agentic.defaultMode);
     primaryConfig = { model: routing.model, api };
     taskType = routing.taskType;
@@ -574,8 +577,8 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
   return result;
 }
 
-export async function run(name: string, prompt: string, threadId?: string): Promise<RunResult> {
-  return enqueue(() => execClaude(name, prompt, threadId), threadId);
+export async function run(name: string, prompt: string, threadId?: string, modelOverride?: string): Promise<RunResult> {
+  return enqueue(() => execClaude(name, prompt, threadId, modelOverride), threadId);
 }
 
 async function streamClaude(
