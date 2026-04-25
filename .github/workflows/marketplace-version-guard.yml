@@ -43,6 +43,8 @@ jobs:
           if ! printf '%s\n' "$changed_files" | grep -Fxq ".claude-plugin/marketplace.json"; then
             echo "Shipped plugin files changed but .claude-plugin/marketplace.json was not updated."
             echo "Run: bun run bump:marketplace-version"
+            echo "If your PR also changes the plugin manifest, you may also need:"
+            echo "  bun run bump:plugin-version"
             exit 1
           fi
 
@@ -57,6 +59,8 @@ jobs:
           if [ "$base_version" = "$head_version" ]; then
             echo "Shipped plugin files changed but marketplace version did not change ($head_version)."
             echo "Run: bun run bump:marketplace-version"
+            echo "If your PR also changes the plugin manifest, you may also need:"
+            echo "  bun run bump:plugin-version"
             exit 1
           fi
 

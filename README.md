@@ -57,6 +57,19 @@ Then open a Claude Code session and run:
 ```
 The setup wizard walks you through model, heartbeat, Telegram, Discord, and security, then your daemon is live with a web dashboard.
 
+### Contributor Note: Plugin Version Metadata
+
+If you change shipped plugin files under `src/`, `commands/`, `prompts/`, or `.claude-plugin/`, the plugin metadata version may also need to be bumped so Claude Code and marketplace consumers detect the update correctly.
+
+Helpers:
+
+```bash
+bun run bump:plugin-version
+bun run bump:marketplace-version
+```
+
+Docs-only and other non-shipped changes do not require these bumps.
+
 ## What Would Be Built Next?
 
 > **Mega Post:** Help shape the next ClaudeClaw features.
