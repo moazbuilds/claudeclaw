@@ -63,7 +63,7 @@ const DEFAULT_SETTINGS: Settings = {
     excludeWindows: [],
     forwardToTelegram: true,
   },
-  telegram: { token: "", allowedUserIds: [] },
+  telegram: { token: "", allowedUserIds: [], listenChats: [] },
   discord: { token: "", allowedUserIds: [], listenChannels: [] },
   security: { level: "moderate", allowedTools: [], disallowedTools: [] },
   web: { enabled: false, host: "127.0.0.1", port: 4632 },
@@ -87,6 +87,7 @@ export interface HeartbeatConfig {
 export interface TelegramConfig {
   token: string;
   allowedUserIds: number[];
+  listenChats: number[];
 }
 
 export interface DiscordConfig {
@@ -257,6 +258,7 @@ function parseSettings(
     telegram: {
       token: process.env.TELEGRAM_TOKEN?.trim() || (typeof raw.telegram?.token === "string" ? raw.telegram.token.trim() : ""),
       allowedUserIds: raw.telegram?.allowedUserIds ?? [],
+      listenChats: Array.isArray(raw.telegram?.listenChats) ? raw.telegram.listenChats.map(Number) : [],
     },
     discord: {
       token: process.env.DISCORD_TOKEN?.trim() || (typeof raw.discord?.token === "string" ? raw.discord.token.trim() : ""),
