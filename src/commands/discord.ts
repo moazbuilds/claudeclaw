@@ -240,6 +240,7 @@ async function rejoinThreads(token: string): Promise<void> {
   const threadSessions = await listThreadSessions();
   for (const ts of threadSessions) {
     try {
+      await discordApi(token, "DELETE", `/channels/${ts.threadId}/thread-members/@me`).catch(() => {});
       await discordApi(token, "PUT", `/channels/${ts.threadId}/thread-members/@me`);
       if (!knownThreads.has(ts.threadId)) {
         const ch = await discordApi<{ parent_id?: string }>(token, "GET", `/channels/${ts.threadId}`);
@@ -433,7 +434,7 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
   const channelId = message.channel_id;
   const isDM = !message.guild_id;
   const isGuild = !!message.guild_id;
-  const content = message.content;
+  const content = message.content.replace(/\0/g, "");
 
   // Recover lost thread from sessions.json (fallback for knownThreads volatility)
   if (isGuild && !knownThreads.has(channelId)) {
@@ -1008,6 +1009,11 @@ function handleDispatch(token: string, eventName: string, data: any): void {
       if (data.id && data.parent_id) {
         knownThreads.set(data.id, { parentId: data.parent_id });
         debugLog(`Thread tracked: ${data.id} (parent: ${data.parent_id})`);
+        if (getSettings().discord.listenChannels.includes(data.parent_id)) {
+          discordApi(token, "PUT", `/channels/${data.id}/thread-members/@me`).catch((err) =>
+            console.error(`[Discord] Failed to join thread ${data.id}: ${err}`),
+          );
+        }
       }
       break;
 
