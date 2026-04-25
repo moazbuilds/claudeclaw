@@ -1,12 +1,13 @@
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { join } from "path";
 import { existsSync } from "fs";
-import { getSession, createSession, incrementTurn, markCompactWarned } from "./sessions";
+import { getSession, createSession, incrementTurn, markCompactWarned, backupSession } from "./sessions";
 import {
   getThreadSession,
   createThreadSession,
   incrementThreadTurn,
   markThreadCompactWarned,
+  removeThreadSession,
 } from "./sessionManager";
 import { getSettings, DEFAULT_SESSION_TIMEOUT_MS, type ModelConfig, type SecurityConfig } from "./config";
 import { buildClockPromptPrefix } from "./timezone";
@@ -94,6 +95,37 @@ export interface RunResult {
 }
 
 const RATE_LIMIT_PATTERN = /you.ve hit your limit|out of extra usage/i;
+
+// Claude Code prints this when --resume references a session it no longer
+// has on disk (cleared, expired, compacted away, or moved to another machine).
+// When we see it, the cached session ID is dead and the only recovery is to
+// drop --resume and start fresh.
+const STALE_SESSION_PATTERN = /No conversation found with session ID/i;
+
+function isStaleSessionError(stdout: string, stderr: string): boolean {
+  return STALE_SESSION_PATTERN.test(stderr) || STALE_SESSION_PATTERN.test(stdout);
+}
+
+/** Strip --resume <id> from a claude argv list so it runs as a brand-new session. */
+function stripResume(args: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--resume") {
+      i += 1; // skip the session id that follows
+      continue;
+    }
+    out.push(args[i]!);
+  }
+  return out;
+}
+
+/** Replace the value following --output-format (mutates a copy and returns it). */
+function withOutputFormat(args: string[], format: string): string[] {
+  const out = [...args];
+  const idx = out.indexOf("--output-format");
+  if (idx >= 0 && idx + 1 < out.length) out[idx + 1] = format;
+  return out;
+}
 
 // Serial queue — prevents concurrent --resume on the same session
 // Global queue for non-thread messages (backward compatible)
@@ -505,19 +537,62 @@ async function execClaude(name: string, prompt: string, threadId?: string, model
     usedFallback = true;
   }
 
-  const rawStdout = exec.rawStdout;
-  const stderr = exec.stderr;
-  const exitCode = exec.exitCode;
+  let rawStdout = exec.rawStdout;
+  let stderr = exec.stderr;
+  let exitCode = exec.exitCode;
   let stdout = rawStdout;
   let sessionId = existing?.sessionId ?? "unknown";
+  let recoveredFromStale = false;
   const rateLimitMessage = extractRateLimitMessage(rawStdout, stderr);
 
   if (rateLimitMessage) {
     stdout = rateLimitMessage;
   }
 
-  // For new sessions, parse the JSON to extract session_id and result text
-  if (!rateLimitMessage && isNew && exitCode === 0) {
+  // --- Stale session recovery ---
+  // Claude Code returns "No conversation found with session ID: <id>" when
+  // --resume points at a session it no longer has (cleared, expired, etc.).
+  // The cached ID is dead; back it up, drop --resume, and retry as a new
+  // session so the user isn't permanently stuck.
+  if (
+    !rateLimitMessage &&
+    !isNew &&
+    exitCode !== 0 &&
+    existing &&
+    isStaleSessionError(rawStdout, stderr)
+  ) {
+    console.warn(
+      `[${new Date().toLocaleTimeString()}] Stale session ${existing.sessionId.slice(0, 8)} for ${name}; recovering with a new session...`
+    );
+
+    if (threadId) {
+      await removeThreadSession(threadId);
+    } else {
+      await backupSession();
+    }
+
+    const retryArgs = withOutputFormat(stripResume(args), "json");
+    const retryConfig = usedFallback ? fallbackConfig : primaryConfig;
+    const retryExec = await runClaudeOnce(
+      retryArgs,
+      retryConfig.model,
+      retryConfig.api,
+      baseEnv,
+      timeoutMs
+    );
+
+    rawStdout = retryExec.rawStdout;
+    stderr = retryExec.stderr;
+    exitCode = retryExec.exitCode;
+    stdout = rawStdout;
+    recoveredFromStale = true;
+  }
+
+  // For new sessions, parse the JSON to extract session_id and result text.
+  // After a stale-session recovery, the retry was forced to JSON output too,
+  // so reuse the same parsing branch by treating it as a "new" session.
+  const parseAsNew = (isNew || recoveredFromStale);
+  if (!rateLimitMessage && parseAsNew && exitCode === 0) {
     try {
       const json = JSON.parse(rawStdout);
       sessionId = json.session_id;
@@ -559,7 +634,9 @@ async function execClaude(name: string, prompt: string, threadId?: string, model
   console.log(`[${new Date().toLocaleTimeString()}] Done: ${name} → ${logFile}`);
 
   // --- Auto-compact on timeout (exit 124) ---
-  if (COMPACT_TIMEOUT_ENABLED && exitCode === 124 && !isNew && existing) {
+  // Skip after a stale-session recovery: `existing` references the dead
+  // session ID, so /compact would fail the same way --resume just did.
+  if (COMPACT_TIMEOUT_ENABLED && exitCode === 124 && !isNew && existing && !recoveredFromStale) {
     emitCompactEvent({ type: "auto-compact-start" });
     const compactOk = await runCompact(
       existing.sessionId,
@@ -596,7 +673,9 @@ async function execClaude(name: string, prompt: string, threadId?: string, model
   }
 
   // --- Turn tracking & compact warning ---
-  if (exitCode === 0 && !isNew) {
+  // Recovered sessions were just created (turnCount = 0); the next call will
+  // resume normally and start counting from there.
+  if (exitCode === 0 && !isNew && !recoveredFromStale) {
     const turnCount = threadId ? await incrementThreadTurn(threadId) : await incrementTurn();
     console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${turnCount}${threadId ? ` (thread ${threadId.slice(0, 8)})` : ""}`);
 
@@ -670,6 +749,9 @@ async function streamClaude(
   let buf = "";
   let unblocked = false;
   let textEmitted = false;
+  // Drain stderr concurrently so we can detect stale-session errors and
+  // avoid backpressure if Claude prints a lot to stderr (verbose/--debug).
+  const stderrPromise = new Response(proc.stderr).text();
 
   const maybeUnblock = () => {
     if (!unblocked) {
@@ -732,6 +814,28 @@ async function streamClaude(
   }
 
   await proc.exited;
+  const stderrText = await stderrPromise;
+
+  // --- Stale session recovery (stream path) ---
+  // Same situation as execClaude: --resume hit a session Claude no longer
+  // has. Back up the dead ID and re-stream as a brand-new session so the
+  // user gets a real reply instead of a silent error.
+  if (
+    existing &&
+    !textEmitted &&
+    (proc.exitCode ?? 0) !== 0 &&
+    isStaleSessionError("", stderrText)
+  ) {
+    console.warn(
+      `[${new Date().toLocaleTimeString()}] Stale session ${existing.sessionId.slice(0, 8)} for ${name} (stream); recovering with a new session...`
+    );
+    await backupSession();
+    // Recurse without pre-firing onUnblock: the recursive call manages its
+    // own unblock so the UI keeps showing "typing" until the real reply lands.
+    await streamClaude(name, prompt, onChunk, onUnblock);
+    return;
+  }
+
   // Ensure unblock fires even if something unexpected happened
   maybeUnblock();
 
