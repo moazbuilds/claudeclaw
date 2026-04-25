@@ -107,7 +107,6 @@ let resumeGatewayUrl: string | null = null;
 let heartbeatAcked = true;
 let running = true;
 let discordDebug = false;
-let hasGottenReady = false;
 
 // Bot identity (populated from READY)
 let botUserId: string | null = null;
@@ -953,14 +952,6 @@ function handleDispatch(token: string, eventName: string, data: any): void {
 
   switch (eventName) {
     case "READY":
-      if (hasGottenReady) {
-        // In-process reconnect with a fresh IDENTIFY — Discord's gateway won't reliably
-        // deliver thread messages after this even with DELETE+PUT rejoin. Exit cleanly
-        // so systemd provides a fresh process, which reliably restores thread delivery.
-        console.log("[Discord] READY on reconnect — exiting for clean restart");
-        process.exit(0);
-      }
-      hasGottenReady = true;
       gatewaySessionId = data.session_id;
       resumeGatewayUrl = data.resume_gateway_url;
       botUserId = data.user.id;
