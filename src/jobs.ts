@@ -131,8 +131,18 @@ export async function loadJobs(): Promise<Job[]> {
   return jobs;
 }
 
+function resolveJobPath(jobName: string): string {
+  const slash = jobName.indexOf("/");
+  if (slash !== -1) {
+    const agentName = jobName.slice(0, slash);
+    const label = jobName.slice(slash + 1);
+    return join(AGENTS_DIR, agentName, "jobs", `${label}.md`);
+  }
+  return join(JOBS_DIR, `${jobName}.md`);
+}
+
 export async function clearJobSchedule(jobName: string): Promise<void> {
-  const path = join(JOBS_DIR, `${jobName}.md`);
+  const path = resolveJobPath(jobName);
   const content = await Bun.file(path).text();
   const match = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/);
   if (!match) return;

@@ -8,6 +8,7 @@ const PID_FILE = join(HEARTBEAT_DIR, "daemon.pid");
 const STATE_FILE = join(HEARTBEAT_DIR, "state.json");
 const SETTINGS_FILE = join(HEARTBEAT_DIR, "settings.json");
 const JOBS_DIR = join(HEARTBEAT_DIR, "jobs");
+const AGENTS_DIR = join(process.cwd(), "agents");
 
 function formatCountdown(ms: number): string {
   if (ms <= 0) return "now!";
@@ -100,16 +101,36 @@ async function showStatus(): Promise<boolean> {
   } catch {}
 
   try {
-    const files = await readdir(JOBS_DIR);
-    const mdFiles = files.filter((f) => f.endsWith(".md"));
-    if (mdFiles.length > 0) {
-      console.log(`  Jobs: ${mdFiles.length}`);
-      for (const f of mdFiles) {
+    const jobLines: string[] = [];
+    // Legacy jobs
+    try {
+      const files = await readdir(JOBS_DIR);
+      for (const f of files.filter((f) => f.endsWith(".md"))) {
         const content = await Bun.file(join(JOBS_DIR, f)).text();
         const match = content.match(/schedule:\s*["']?([^"'\n]+)/);
         const schedule = match ? match[1].trim() : "unknown";
-        console.log(`    - ${f.replace(/\.md$/, "")} [${schedule}]`);
+        jobLines.push(`    - ${f.replace(/\.md$/, "")} [${schedule}]`);
       }
+    } catch {}
+    // Agent-scoped jobs: agents/<name>/jobs/*.md
+    try {
+      const agentDirs = await readdir(AGENTS_DIR);
+      for (const agentName of agentDirs) {
+        try {
+          const agentJobsDir = join(AGENTS_DIR, agentName, "jobs");
+          const files = await readdir(agentJobsDir);
+          for (const f of files.filter((f) => f.endsWith(".md"))) {
+            const content = await Bun.file(join(agentJobsDir, f)).text();
+            const match = content.match(/schedule:\s*["']?([^"'\n]+)/);
+            const schedule = match ? match[1].trim() : "unknown";
+            jobLines.push(`    - ${agentName}/${f.replace(/\.md$/, "")} [${schedule}]`);
+          }
+        } catch {}
+      }
+    } catch {}
+    if (jobLines.length > 0) {
+      console.log(`  Jobs: ${jobLines.length}`);
+      for (const line of jobLines) console.log(line);
     }
   } catch {}
 
