@@ -1,0 +1,58 @@
+name: Plugin Version Guard
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  plugin-version-guard:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require plugin version bump for shipped plugin changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          changed_files="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+
+          echo "Changed files:"
+          printf '%s\n' "$changed_files"
+
+          if [ -z "$changed_files" ]; then
+            echo "No changed files detected."
+            exit 0
+          fi
+
+          shipped_pattern='^(src/|commands/|prompts/|\.claude-plugin/)'
+
+          if ! printf '%s\n' "$changed_files" | grep -Eq "$shipped_pattern"; then
+            echo "Docs-only or non-shipped changes detected; plugin version bump not required."
+            exit 0
+          fi
+
+          if ! printf '%s\n' "$changed_files" | grep -Fxq ".claude-plugin/plugin.json"; then
+            echo "Shipped plugin files changed but .claude-plugin/plugin.json was not updated."
+            echo "Run: bun run bump:plugin-version"
+            exit 1
+          fi
+
+          base_version="$(git show "$BASE_SHA:.claude-plugin/plugin.json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')"
+          head_version="$(python3 -c 'import json; print(json.load(open(".claude-plugin/plugin.json"))["version"])')"
+
+          if [ "$base_version" = "$head_version" ]; then
+            echo "Shipped plugin files changed but plugin version did not change ($head_version)."
+            echo "Run: bun run bump:plugin-version"
+            exit 1
+          fi
+
+          echo "Plugin version changed: $base_version -> $head_version"
