@@ -419,6 +419,9 @@ function groupTriggerReason(message: TelegramMessage): string | null {
     }
   }
 
+  const { telegram } = getSettings();
+  if (telegram.listenChats?.includes(message.chat.id)) return "listen_chat";
+
   return null;
 }
 
