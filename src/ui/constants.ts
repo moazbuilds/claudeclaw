@@ -1,5 +1,4 @@
 import { join } from "path";
-import { getJobsDir } from "../config";
 
 export const HEARTBEAT_DIR = join(process.cwd(), ".claude", "claudeclaw");
 export const LOGS_DIR = join(HEARTBEAT_DIR, "logs");
