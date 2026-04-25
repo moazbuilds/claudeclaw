@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import { transcribeAudioToText } from "../whisper";
 import { resolveSkillPrompt } from "../skills";
 import { mkdir } from "node:fs/promises";
-import { extname, join } from "node:path";
+import { extname, join, basename } from "node:path";
 
 // --- Discord API constants ---
 
@@ -235,6 +235,53 @@ function extractReactionDirective(text: string): { cleanedText: string; reaction
   return { cleanedText, reactionEmoji };
 }
 
+// Matches absolute image file paths embedded in reply text so they can be
+// sent as Discord file attachments instead of appearing as raw paths.
+const IMAGE_PATH_RE = /(?<![^\s])(\/[^\s]+\.(?:png|jpe?g|gif|webp))(?=\s|$)/gi;
+
+function extractImagePaths(text: string): { paths: string[]; cleanedText: string } {
+  const paths: string[] = [];
+  const cleanedText = text
+    .replace(IMAGE_PATH_RE, (match, p1) => {
+      if (existsSync(p1)) {
+        paths.push(p1);
+        return "";
+      }
+      return match;
+    })
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return { paths, cleanedText };
+}
+
+async function sendMessageWithImages(
+  token: string,
+  channelId: string,
+  text: string,
+  imagePaths: string[],
+): Promise<void> {
+  const form = new FormData();
+  form.append("payload_json", JSON.stringify({ content: text || "​" }));
+  for (let i = 0; i < imagePaths.length; i++) {
+    const file = Bun.file(imagePaths[i]);
+    form.append(`files[${i}]`, file, basename(imagePaths[i]));
+  }
+  const res = await fetch(`${DISCORD_API}/channels/${channelId}/messages`, {
+    method: "POST",
+    headers: { Authorization: `Bot ${token}` },
+    body: form,
+  });
+  if (res.status === 429) {
+    const data = (await res.json()) as { retry_after: number };
+    await Bun.sleep(Math.ceil(data.retry_after * 1000));
+    return sendMessageWithImages(token, channelId, text, imagePaths);
+  }
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    throw new Error(`Discord image upload ${channelId}: ${res.status} ${errText}`);
+  }
+}
+
 // --- Thread rejoin helper ---
 async function rejoinThreads(token: string): Promise<void> {
   const threadSessions = await listThreadSessions();
@@ -338,6 +385,12 @@ function isVoiceAttachment(a: DiscordAttachment): boolean {
   // IS_VOICE_MESSAGE flag
   if ((a.flags ?? 0) & (1 << 13)) return true;
   return Boolean(a.content_type?.startsWith("audio/"));
+}
+
+function isTextAttachment(a: DiscordAttachment): boolean {
+  if (a.content_type?.startsWith("text/")) return true;
+  const ext = extname(a.filename).toLowerCase();
+  return ext === ".txt" || ext === ".md";
 }
 
 async function downloadDiscordAttachment(
@@ -475,10 +528,12 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
   // Detect attachments
   const imageAttachments = message.attachments.filter(isImageAttachment);
   const voiceAttachments = message.attachments.filter(isVoiceAttachment);
+  const textAttachments = message.attachments.filter(isTextAttachment);
   const hasImage = imageAttachments.length > 0;
   const hasVoice = voiceAttachments.length > 0;
+  const hasText = textAttachments.length > 0;
 
-  if (!content.trim() && !hasImage && !hasVoice) return;
+  if (!content.trim() && !hasImage && !hasVoice && !hasText) return;
 
   // Strip bot mention from content for cleaner prompt
   let cleanContent = content;
@@ -487,7 +542,7 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
   }
 
   const label = message.author.username;
-  const mediaParts = [hasImage ? "image" : "", hasVoice ? "voice" : ""].filter(Boolean);
+  const mediaParts = [hasImage ? "image" : "", hasVoice ? "voice" : "", hasText ? "text" : ""].filter(Boolean);
   const mediaSuffix = mediaParts.length > 0 ? ` [${mediaParts.join("+")}]` : "";
   console.log(
     `[${new Date().toLocaleTimeString()}] Discord ${label}${mediaSuffix}: "${cleanContent.slice(0, 60)}${cleanContent.length > 60 ? "..." : ""}"`,
@@ -502,6 +557,7 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
     let imagePath: string | null = null;
     let voicePath: string | null = null;
     let voiceTranscript: string | null = null;
+    let textContent: string | null = null;
 
     if (hasImage) {
       try {
@@ -528,6 +584,18 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
         } catch (err) {
           console.error(`[Discord] Failed to transcribe voice for ${label}: ${err instanceof Error ? err.message : err}`);
         }
+      }
+    }
+
+    if (hasText) {
+      try {
+        const resp = await fetch(textAttachments[0].url);
+        if (resp.ok) {
+          const raw = await resp.text();
+          textContent = raw.length > 51200 ? raw.slice(0, 51200) + "\n...[truncated]" : raw;
+        }
+      } catch (err) {
+        console.error(`[Discord] Failed to fetch text attachment for ${label}: ${err instanceof Error ? err.message : err}`);
       }
     }
 
@@ -634,6 +702,11 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
         "The user attached voice audio, but it could not be transcribed. Respond and ask them to resend a clearer clip.",
       );
     }
+    if (textContent) {
+      promptParts.push(`Attached text file (${textAttachments[0].filename}):\n${textContent}`);
+    } else if (hasText) {
+      promptParts.push("The user attached a text file, but downloading it failed. Ask them to resend.");
+    }
 
     const prefixedPrompt = promptParts.join("\n");
     // Use thread-specific session if message is in a known thread
@@ -649,7 +722,12 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
           console.error(`[Discord] Failed to send reaction for ${label}: ${err instanceof Error ? err.message : err}`);
         });
       }
-      await sendMessage(config.token, channelId, cleanedText || "(empty response)");
+      const { paths: imagePaths, cleanedText: finalText } = extractImagePaths(cleanedText || "");
+      if (imagePaths.length > 0) {
+        await sendMessageWithImages(config.token, channelId, finalText || "(empty response)", imagePaths);
+      } else {
+        await sendMessage(config.token, channelId, finalText || "(empty response)");
+      }
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
