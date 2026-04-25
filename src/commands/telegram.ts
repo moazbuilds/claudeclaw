@@ -8,6 +8,7 @@ import { transcribeAudioToText } from "../whisper";
 import { resolveSkillPrompt, listSkills } from "../skills";
 import { mkdir } from "node:fs/promises";
 import { extname, join } from "node:path";
+import { extractErrorDetail } from "../messaging";
 
 // --- Markdown → Telegram HTML conversion (ported from nanobot) ---
 
@@ -835,7 +836,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     const result = await runUserMessage("telegram", prefixedPrompt);
 
     if (result.exitCode !== 0) {
-      await sendMessage(config.token, chatId, `Error (exit ${result.exitCode}): ${result.stderr || "Unknown error"}`, threadId);
+      await sendMessage(config.token, chatId, `Error (exit ${result.exitCode}): ${extractErrorDetail(result) || "Unknown error"}`, threadId);
     } else {
       const { cleanedText: afterReact, reactionEmoji } = extractReactionDirective(result.stdout || "");
       const { cleanedText, filePaths } = extractSendFileDirectives(afterReact);
