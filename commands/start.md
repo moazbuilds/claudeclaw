@@ -95,9 +95,19 @@ Start the heartbeat daemon for this project. Follow these steps exactly:
      - Discord bot token (hint: create a bot at https://discord.com/developers/applications → Bot → Token. Enable **Message Content Intent** under Privileged Gateway Intents.)
      - Allowed Discord user IDs (hint: enable Developer Mode in Discord settings → right-click your profile → Copy User ID). These are large numbers — they will be stored as strings.
      - Set `discord.token` and `discord.allowedUserIds` (as array of strings) accordingly.
-     - Listen channel IDs (optional — hint: right-click a channel in Discord with Developer Mode enabled → Copy Channel ID). Channels where the bot responds to all messages without requiring an @mention.
+     - Listen channel IDs (optional — hint: right-click a Discord channel with Developer Mode enabled → Copy Channel ID). Discord channels listed here share the global session and the bot responds without requiring an @mention. All other Discord channels and threads get their own dedicated session with isolated memory.
      - Set `discord.listenChannels` (as array of strings) accordingly.
      - Note: Discord bot connects via WebSocket gateway in-process with the daemon. It supports DMs, guild mentions/replies, slash commands (/start, /reset), voice messages, and image attachments. `discord.allowedUserIds` is an allowlist that applies to messages, slash commands, and button interactions.
+
+     Then use AskUserQuestion to ask two follow-up questions:
+
+     - "Should the bot respond to all Discord channels without requiring an @mention? Channels not in listenChannels will each get their own dedicated session." (header: "All channels", options: "Yes — respond everywhere (Recommended)", "No — only listenChannels and @mentions")
+       - If "Yes": The bot already responds to all guild messages via the `guild_message` catch-all in `guildTriggerReason()`. No config change needed — just inform the user that Discord channels in `listenChannels` share the global session, and all other Discord channels and threads get their own dedicated session.
+       - If "No": Tell the user they can customize `guildTriggerReason()` in `discord.ts` to remove the catch-all. For now, the bot will still respond everywhere.
+
+     - "Should each Discord channel and thread have its own separate memory? Each gets its own CLAUDE.md, conversation history, and working directory." (header: "Session isolation", options: "Yes — separate session per channel/thread (Recommended)", "No — shared session across all channels")
+       - If "Yes": This is the default behavior — Discord channels and threads not in `listenChannels` each run in their own working directory (`.claude/claudeclaw/sessions/<discord-id>/`) with isolated CLAUDE.md and memory.
+       - If "No": Tell the user they can add all Discord channels to `listenChannels` to share the global session, or modify `getSessionCwd()` in `runner.ts`.
 
    - **Security level mapping** — set `security.level` in settings based on their choice:
      - "Locked" → `"locked"`
@@ -109,21 +119,103 @@ Start the heartbeat daemon for this project. Follow these steps exactly:
      - "Allow any specific tools on top of the security level? (e.g. Bash(git:*) to allow only git commands)" (header: "Allow tools", options: "None — use level defaults (Recommended)", "Bash(git:*) — git only", "Bash(git:*) Bash(npm:*) — git + npm")
      - If they pick an option with tools or type custom ones, set `security.allowedTools` to the list.
 
+   - **Systemd service** (ask after all other setup): Use AskUserQuestion:
+     - "Generate a systemd user service so ClaudeClaw auto-starts on boot and survives logout?" (header: "Systemd", options: "Yes — generate service file", "No — I'll manage it myself")
+     - If "Yes":
+       1. Detect the system's paths by running:
+          ```bash
+          which bun
+          which claude
+          test -s "$HOME/.nvm/nvm.sh" && echo "nvm:yes" || echo "nvm:no"
+          ```
+       2. Resolve the three configurable constants:
+          - `PROJECT_DIR` — current working directory (from `pwd`)
+          - `PLUGIN_ROOT` — the ClaudeClaw plugin directory. Use `${CLAUDE_PLUGIN_ROOT}` if set, otherwise `$HOME/.claude/plugins/cache/claudeclaw/claudeclaw/1.0.0`
+          - `BREW_BIN` — parent directory of `which bun` (e.g. `/home/linuxbrew/.linuxbrew/bin`). If bun is not under linuxbrew/homebrew, set to empty string.
+       3. Generate `~/.config/systemd/user/claudeclaw.service` using this template structure:
+          ```ini
+          [Unit]
+          Description=ClaudeClaw daemon
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+
+          # ── Configure these ──────────────────────────────────────────────
+          Environment=PROJECT_DIR=<detected project dir>
+          Environment=PLUGIN_ROOT=<detected plugin root>
+          Environment=BREW_BIN=<detected brew bin, or empty>
+          # ─────────────────────────────────────────────────────────────────
+
+          WorkingDirectory=<PROJECT_DIR>
+          ExecStart=/bin/bash -c '\
+            export NVM_DIR="$HOME/.nvm" && \
+            [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && \
+            nvm use default && \
+            export PATH="$HOME/.local/bin:${BREW_BIN}:$PATH" && \
+            exec bun run "${PLUGIN_ROOT}/src/index.ts" start --web'
+          Restart=on-failure
+          RestartSec=10
+          StandardOutput=append:<PROJECT_DIR>/.claude/claudeclaw/logs/daemon.log
+          StandardError=append:<PROJECT_DIR>/.claude/claudeclaw/logs/daemon.log
+
+          Environment=HOME=%h
+
+          # Resource limits
+          MemoryMax=2G
+          CPUQuota=80%
+          TasksMax=128
+
+          [Install]
+          WantedBy=default.target
+          ```
+          - If nvm is NOT detected: remove the nvm lines from `ExecStart` and instead set `Environment=PATH=<direct bun path>:<direct node path>:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin`
+          - The three `Environment=` constants at the top are the only lines users need to edit when moving projects or updating paths.
+       4. Run `mkdir -p ~/.config/systemd/user && systemctl --user daemon-reload && systemctl --user enable claudeclaw.service`.
+       5. Run `loginctl enable-linger $(whoami)` to ensure the service survives logout.
+       6. Tell the user the service is installed. Show the configurable constants and management commands:
+          ```
+          # Edit these if you move your project or update ClaudeClaw:
+          #   Environment=PROJECT_DIR=...
+          #   Environment=PLUGIN_ROOT=...
+          #   Environment=BREW_BIN=...
+
+          systemctl --user start claudeclaw
+          systemctl --user stop claudeclaw
+          systemctl --user restart claudeclaw
+          systemctl --user status claudeclaw
+          journalctl --user -u claudeclaw -f
+          ```
+       7. Ask: "Start the daemon via systemd now instead of nohup?" (header: "Start method", options: "Yes — use systemd", "No — use nohup as usual")
+          - If systemd: run `systemctl --user start claudeclaw.service` instead of the nohup command in step 6.
+     - If "No": proceed with the normal nohup launch in step 6.
+
    Update `.claude/claudeclaw/settings.json` with their answers.
 
 6. **Launch/start action**:
+
+   **If the user chose systemd in step 5**, start via systemd:
+   ```bash
+   systemctl --user start claudeclaw.service
+   ```
+   Wait 2 seconds, then check status with `systemctl --user status claudeclaw.service --no-pager`. If it's not `active (running)`, check `journalctl --user -u claudeclaw --no-pager -n 20` for errors and report to the user.
+
+   **Otherwise (default — nohup)**, start via nohup:
    ```bash
    mkdir -p .claude/claudeclaw/logs && nohup bun run ${CLAUDE_PLUGIN_ROOT}/src/index.ts start --web > .claude/claudeclaw/logs/daemon.log 2>&1 & echo $!
    ```
    Use the description "Starting ClaudeClaw server" for this command.
-   Wait 1 second, then check `cat .claude/claudeclaw/logs/daemon.log`. If it contains "Aborted: daemon already running", tell the user and exit.
+   Note: nohup keeps the daemon running after the terminal closes, but it will NOT survive a reboot. Recommend systemd for persistent setups.
+
+   **For both methods**: Wait 1 second, then check `cat .claude/claudeclaw/logs/daemon.log`. If it contains "Aborted: daemon already running", tell the user and exit.
    - Read `.claude/claudeclaw/settings.json` for `web.port` (default `4632` if missing) and `web.host` (default `127.0.0.1`).
    - Then try to open the dashboard directly:
      - Linux: `xdg-open http://<HOST>:<PORT>`
      - macOS: `open http://<HOST>:<PORT>`
      - If open command fails, print the URL clearly so user can open it manually.
 
-7. **Capture session ID**: Read `.claude/claudeclaw/session.json` and extract the `sessionId` field. This is the shared Claude session used by the daemon for heartbeat, jobs, Telegram, and Discord.
+7. **Capture session ID**: Read `.claude/claudeclaw/session.json` and extract the `sessionId` field. This is the global session used by the daemon for heartbeat, jobs, Telegram, and Discord `listenChannels`. Other Discord channels and threads each get their own dedicated session automatically.
 
 8. **Report**: Print the ASCII art below then show the PID, session, status info, Telegram bot next step, and the Web UI URL.
 
@@ -233,7 +325,7 @@ Defaults: `WEB_HOST=127.0.0.1`, `WEB_PORT=4632` unless changed via settings or `
 - `telegram.allowedUserIds` — array of numeric Telegram user IDs allowed to interact
 - `discord.token` — Discord bot token from the Developer Portal
 - `discord.allowedUserIds` — array of string Discord user IDs (snowflakes) allowed to interact
-- `discord.listenChannels` — array of string channel IDs where the bot responds to all messages without requiring an @mention
+- `discord.listenChannels` — array of Discord channel IDs that share the global session (bot responds without @mention). All other Discord channels and threads get their own dedicated session with isolated memory.
 - `security.level` — one of: `locked`, `strict`, `moderate`, `unrestricted`
 - `security.allowedTools` — extra tools to allow on top of the level (e.g. `["Bash(git:*)"]`)
 - `security.disallowedTools` — tools to block on top of the level
