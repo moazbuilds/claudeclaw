@@ -1,7 +1,7 @@
 import { join } from "path";
 import { readdir, readFile } from "fs/promises";
 import { homedir } from "os";
-import { getJobsDir } from "../config";
+import { getJobsDir, loadSettings } from "../config";
 
 const CLAUDE_DIR = join(process.cwd(), ".claude");
 const HEARTBEAT_DIR = join(CLAUDE_DIR, "claudeclaw");
@@ -133,6 +133,11 @@ async function showStatus(): Promise<boolean> {
 }
 
 export async function status(args: string[]) {
+  // Populate the settings cache so that runtime-resolved helpers (e.g. getJobsDir())
+  // return the configured values rather than their compile-time defaults. Any future
+  // setting that is resolved via getSettings() will benefit from this automatically.
+  try { await loadSettings(); } catch {}
+
   if (args.includes("--all")) {
     await showAll();
   } else {
