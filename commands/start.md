@@ -37,6 +37,7 @@ Start the heartbeat daemon for this project. Follow these steps exactly:
    - **Heartbeat configured** = `heartbeat.enabled` is `true` AND `heartbeat.prompt` is non-empty
    - **Telegram configured** = `telegram.token` is non-empty
    - **Discord configured** = `discord.token` is non-empty
+   - **Slack configured** = `slack.botToken` is non-empty
    - **Security configured** = `security.level` exists and is not `"moderate"` (the default), OR `security.allowedTools`/`security.disallowedTools` are non-empty
 
 4. **Interactive setup — smart mode** (BEFORE launching the daemon):
@@ -61,6 +62,7 @@ Start the heartbeat daemon for this project. Follow these steps exactly:
    - **If heartbeat is NOT configured**: "Enable heartbeat? Example: I can remind you to drink water every 30 minutes, or you can fully customize what runs." (header: "Heartbeat", options: "Yes" / "No")
    - **If Telegram is NOT configured**: "Configure Telegram? Recommended if you want it 24/7 live." (header: "Telegram", options: "Yes" / "No")
    - **If Discord is NOT configured**: "Configure Discord? Connect your bot to Discord servers." (header: "Discord", options: "Yes" / "No")
+   - **If Slack is NOT configured**: "Configure Slack? Connect your bot to a Slack workspace." (header: "Slack", options: "Yes" / "No")
    - **If security is NOT configured**: "What security level for Claude?" (header: "Security", options:
      - "Moderate (Recommended)" (description: "Full access scoped to project directory")
      - "Locked" (description: "Read-only — can only search and read files, no edits, bash, or web")
@@ -98,6 +100,17 @@ Start the heartbeat daemon for this project. Follow these steps exactly:
      - Listen channel IDs (optional — hint: right-click a channel in Discord with Developer Mode enabled → Copy Channel ID). Channels where the bot responds to all messages without requiring an @mention.
      - Set `discord.listenChannels` (as array of strings) accordingly.
      - Note: Discord bot connects via WebSocket gateway in-process with the daemon. It supports DMs, guild mentions/replies, slash commands (/start, /reset), voice messages, and image attachments. `discord.allowedUserIds` is an allowlist that applies to messages, slash commands, and button interactions.
+
+   - **If yes to Slack**: Do NOT use AskUserQuestion for Slack fields. Ask in normal free-form text for these values (all optional, user can skip):
+     - Slack Bot Token (hint: create a Slack App at https://api.slack.com/apps → OAuth & Permissions → Bot User OAuth Token, starts with `xoxb-`)
+     - Slack App Token (hint: Settings → Basic Information → App-Level Tokens, create one with `connections:write` scope, starts with `xapp-`)
+     - Allowed Slack user IDs (optional — hint: click a user's profile → More → Copy member ID). Empty means all workspace members can interact.
+     - Listen channel IDs (optional — channels where the bot responds to all messages without requiring an @mention)
+     - Set `slack.botToken`, `slack.appToken`, `slack.allowedUserIds` (as array of strings), and `slack.listenChannels` (as array of strings) accordingly.
+     - Required Bot Token Scopes: `app_mentions:read`, `assistant:write`, `channels:history`, `channels:read`, `chat:write`, `commands`, `files:read`, `files:write`, `groups:history`, `im:history`, `im:read`, `im:write`, `reactions:read`, `reactions:write`, `users:read`
+     - Required Event Subscriptions: `app_mention`, `assistant_thread_started`, `message.channels`, `message.groups`, `message.im`
+     - Socket Mode must be enabled in the Slack App settings.
+     - Note: Slack bot connects via Socket Mode WebSocket in-process with the daemon. It supports DMs, channel mentions, thread sessions, file upload/download, Block Kit buttons, and message edit/delete.
 
    - **Security level mapping** — set `security.level` in settings based on their choice:
      - "Locked" → `"locked"`
@@ -153,6 +166,10 @@ Go to your bot, send `/start`, and start talking.
 DM your bot directly — no server invite needed: `https://discord.com/users/<DISCORD_BOT_ID>`
 Or mention it in any server it's in. Use `/start` and `/reset` slash commands.
 To get `<DISCORD_BOT_ID>`: read the daemon log for the bot's user ID (shown in the "Ready as <name> (<ID>)" line).
+
+**To start chatting on Slack**
+DM your bot directly in Slack, or @mention it in any channel it's been added to.
+The bot supports file upload/download, Block Kit buttons, message editing/deleting, and thread sessions.
 
 **To talk to your agent directly on Claude Code**
 `cd <WORKING_DIR> && claude --resume <SESSION_ID>`
@@ -210,6 +227,12 @@ Defaults: `WEB_HOST=127.0.0.1`, `WEB_PORT=4632` unless changed via settings or `
     "allowedUserIds": ["123456789012345678"],
     "listenChannels": ["987654321098765432"]
   },
+  "slack": {
+    "botToken": "xoxb-...",
+    "appToken": "xapp-...",
+    "allowedUserIds": ["U0123ABC"],
+    "listenChannels": ["C0123ABC"]
+  },
   "security": {
     "level": "moderate",
     "allowedTools": [],
@@ -234,6 +257,10 @@ Defaults: `WEB_HOST=127.0.0.1`, `WEB_PORT=4632` unless changed via settings or `
 - `discord.token` — Discord bot token from the Developer Portal
 - `discord.allowedUserIds` — array of string Discord user IDs (snowflakes) allowed to interact
 - `discord.listenChannels` — array of string channel IDs where the bot responds to all messages without requiring an @mention
+- `slack.botToken` — Slack Bot OAuth token (starts with `xoxb-`)
+- `slack.appToken` — Slack App-level token for Socket Mode (starts with `xapp-`)
+- `slack.allowedUserIds` — array of string Slack user IDs allowed to interact (empty = all)
+- `slack.listenChannels` — array of string channel IDs where the bot responds without @mention
 - `security.level` — one of: `locked`, `strict`, `moderate`, `unrestricted`
 - `security.allowedTools` — extra tools to allow on top of the level (e.g. `["Bash(git:*)"]`)
 - `security.disallowedTools` — tools to block on top of the level

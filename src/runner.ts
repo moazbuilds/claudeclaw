@@ -549,11 +549,15 @@ async function streamClaude(
   name: string,
   prompt: string,
   onChunk: (text: string) => void,
-  onUnblock: () => void
+  onUnblock: () => void,
+  threadId?: string,
+  onResult?: (text: string) => void,
 ): Promise<void> {
   await mkdir(LOGS_DIR, { recursive: true });
 
-  const existing = await getSession();
+  const existing = threadId
+    ? await getThreadSession(threadId)
+    : await getSession();
   const { security, model, api } = getSettings();
   const securityArgs = buildSecurityArgs(security);
 
@@ -622,12 +626,25 @@ async function streamClaude(
       try {
         const event = JSON.parse(trimmed) as Record<string, unknown>;
 
+        // Debug: log every event type
+        const eventSummary = event.type === "assistant"
+          ? `assistant (content: ${JSON.stringify((event.message as any)?.content?.map((b: any) => ({ type: b.type, textLen: b.text?.length })))?.slice(0, 200)})`
+          : event.type === "result"
+            ? `result (len: ${(event.result as string)?.length ?? 0})`
+            : `${event.type}${event.subtype ? `.${event.subtype}` : ""}`;
+        console.log(`[stream-json] event: ${eventSummary}`);
+
         if (event.type === "system" && (event.subtype === "init" || event.session_id)) {
           // Capture session ID for new sessions
           const sid = event.session_id as string | undefined;
           if (sid && !existing) {
-            await createSession(sid);
-            console.log(`[${new Date().toLocaleTimeString()}] Session created (stream-json): ${sid}`);
+            if (threadId) {
+              await createThreadSession(threadId, sid);
+              console.log(`[${new Date().toLocaleTimeString()}] Thread session created (stream-json): ${sid} (thread ${threadId.slice(0, 8)})`);
+            } else {
+              await createSession(sid);
+              console.log(`[${new Date().toLocaleTimeString()}] Session created (stream-json): ${sid}`);
+            }
           }
         } else if (event.type === "assistant") {
           // Text and tool_use blocks from the assistant
@@ -649,10 +666,15 @@ async function streamClaude(
           // Top-level tool_use event (some stream-json versions) — unblock the UI
           maybeUnblock();
         } else if (event.type === "result") {
-          // Final result event — emit text as fallback if no assistant text was seen
+          // Final result event — always emit as the authoritative response
           const resultText = (event as Record<string, unknown>).result as string | undefined;
-          if (resultText && !textEmitted) {
-            onChunk(resultText);
+          if (resultText) {
+            if (onResult) {
+              // Use onResult to replace accumulated text with the final result
+              onResult(resultText);
+            } else if (!textEmitted) {
+              onChunk(resultText);
+            }
           }
           maybeUnblock();
         }
@@ -671,9 +693,11 @@ export async function streamUserMessage(
   name: string,
   prompt: string,
   onChunk: (text: string) => void,
-  onUnblock: () => void
+  onUnblock: () => void,
+  threadId?: string,
+  onResult?: (text: string) => void,
 ): Promise<void> {
-  return enqueue(() => streamClaude(name, prefixUserMessageWithClock(prompt), onChunk, onUnblock));
+  return enqueue(() => streamClaude(name, prefixUserMessageWithClock(prompt), onChunk, onUnblock, threadId, onResult), threadId);
 }
 
 function prefixUserMessageWithClock(prompt: string): string {
