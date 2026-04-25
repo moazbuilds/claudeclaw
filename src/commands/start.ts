@@ -7,7 +7,7 @@ import { cronMatches, nextCronMatch } from "../cron";
 import { clearJobSchedule, loadJobs } from "../jobs";
 import { writePidFile, cleanupPidFile, checkExistingDaemon } from "../pid";
 import { initConfig, loadSettings, reloadSettings, resolvePrompt, type HeartbeatConfig, type Settings } from "../config";
-import { getDayAndMinuteAtOffset } from "../timezone";
+import { getDayAndMinuteAtOffset, buildClockPromptPrefix } from "../timezone";
 import { startWebUi, type WebServerHandle } from "../web";
 import type { Job } from "../jobs";
 
@@ -563,7 +563,8 @@ export async function start(args: string[] = []) {
             .filter((part) => part.length > 0)
             .join("\n\n");
           if (!mergedPrompt) return null;
-          return run("heartbeat", mergedPrompt);
+          const clock = buildClockPromptPrefix(new Date(), currentSettings.timezoneOffsetMinutes);
+          return run("heartbeat", `${clock}\n${mergedPrompt}`);
         })
         .then((r) => {
           if (!r) return;
@@ -699,7 +700,10 @@ export async function start(args: string[] = []) {
     for (const job of currentJobs) {
       if (cronMatches(job.schedule, now, currentSettings.timezoneOffsetMinutes)) {
         resolvePrompt(job.prompt)
-          .then((prompt) => run(job.name, prompt))
+          .then((prompt) => {
+            const clock = buildClockPromptPrefix(new Date(), currentSettings.timezoneOffsetMinutes);
+            return run(job.name, `${clock}\n${prompt}`);
+          })
           .then((r) => {
             if (job.notify === false) return;
             if (job.notify === "error" && r.exitCode === 0) return;
