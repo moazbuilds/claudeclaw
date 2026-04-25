@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import { transcribeAudioToText } from "../whisper";
 import { resolveSkillPrompt } from "../skills";
 import { mkdir } from "node:fs/promises";
-import { extname, join } from "node:path";
+import { extname, join, basename } from "node:path";
 
 // --- Discord API constants ---
 
@@ -233,6 +233,53 @@ function extractReactionDirective(text: string): { cleanedText: string; reaction
     .replace(/\n{3,}/g, "\n\n")
     .trim();
   return { cleanedText, reactionEmoji };
+}
+
+// Matches absolute image file paths embedded in reply text so they can be
+// sent as Discord file attachments instead of appearing as raw paths.
+const IMAGE_PATH_RE = /(?<![^\s])(\/[^\s]+\.(?:png|jpe?g|gif|webp))(?=\s|$)/gi;
+
+function extractImagePaths(text: string): { paths: string[]; cleanedText: string } {
+  const paths: string[] = [];
+  const cleanedText = text
+    .replace(IMAGE_PATH_RE, (match, p1) => {
+      if (existsSync(p1)) {
+        paths.push(p1);
+        return "";
+      }
+      return match;
+    })
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return { paths, cleanedText };
+}
+
+async function sendMessageWithImages(
+  token: string,
+  channelId: string,
+  text: string,
+  imagePaths: string[],
+): Promise<void> {
+  const form = new FormData();
+  form.append("payload_json", JSON.stringify({ content: text || "​" }));
+  for (let i = 0; i < imagePaths.length; i++) {
+    const file = Bun.file(imagePaths[i]);
+    form.append(`files[${i}]`, file, basename(imagePaths[i]));
+  }
+  const res = await fetch(`${DISCORD_API}/channels/${channelId}/messages`, {
+    method: "POST",
+    headers: { Authorization: `Bot ${token}` },
+    body: form,
+  });
+  if (res.status === 429) {
+    const data = (await res.json()) as { retry_after: number };
+    await Bun.sleep(Math.ceil(data.retry_after * 1000));
+    return sendMessageWithImages(token, channelId, text, imagePaths);
+  }
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    throw new Error(`Discord image upload ${channelId}: ${res.status} ${errText}`);
+  }
 }
 
 // --- Thread rejoin helper ---
@@ -649,7 +696,12 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
           console.error(`[Discord] Failed to send reaction for ${label}: ${err instanceof Error ? err.message : err}`);
         });
       }
-      await sendMessage(config.token, channelId, cleanedText || "(empty response)");
+      const { paths: imagePaths, cleanedText: finalText } = extractImagePaths(cleanedText || "");
+      if (imagePaths.length > 0) {
+        await sendMessageWithImages(config.token, channelId, finalText || "(empty response)", imagePaths);
+      } else {
+        await sendMessage(config.token, channelId, finalText || "(empty response)");
+      }
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
