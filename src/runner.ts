@@ -54,13 +54,17 @@ const COMPACT_TIMEOUT_ENABLED = true;
  * resolves credentials using its own per-platform code path.
  */
 function cleanSpawnEnv(): Record<string, string> {
-  const {
-    CLAUDECODE: _cc,
-    CLAUDE_CODE_OAUTH_TOKEN: _tok,
-    CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: _mgr,
-    ...rest
-  } = process.env;
-  return rest as Record<string, string>;
+  const stripped = new Set([
+    "CLAUDECODE",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
+  ]);
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (stripped.has(key)) continue;
+    if (typeof value === "string") out[key] = value;
+  }
+  return out;
 }
 
 export type CompactEvent =
