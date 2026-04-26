@@ -16,6 +16,7 @@ Parse `$ARGUMENTS` to identify the sub-command. If no arguments are given, list 
 2. For each file, read it and display:
    - **Job name** (filename without `.md`)
    - **Schedule** (cron expression from frontmatter)
+   - **Notify** (`true`, `false`, or `error` — from frontmatter, default `true`)
    - **Prompt** (body text, truncated to 100 chars if long)
 3. If no jobs exist, tell the user and show how to create one.
 
@@ -29,14 +30,17 @@ Create a new cron job interactively.
 
 2. Then ask:
    - "What prompt should Claude execute?" (header: "Prompt", options: suggest 2-3 prompts relevant to the project context)
+   - "Should this job notify you on Telegram?" (header: "Notify", options: "Always (default)", "Errors only", "Never")
 
 3. Create the job file at `.claude/claudeclaw/jobs/<name>.md` with this exact format:
    ```markdown
    ---
    schedule: "<cron expression>"
+   notify: <true|error|false>
    ---
    <prompt>
    ```
+   Map the notify answer: "Always" → `true`, "Errors only" → `error`, "Never" → `false`. Omit the `notify` line if the user chose "Always" (it's the default).
 
 4. Confirm creation. Remind the user the daemon hot-reloads jobs every 30 seconds — no restart needed.
 
@@ -47,11 +51,12 @@ Edit an existing cron job.
 1. Read `.claude/claudeclaw/jobs/<job-name>.md`. If it doesn't exist, list available jobs and ask the user which one to edit.
 2. Show the current schedule and prompt.
 3. Use **AskUserQuestion** to ask:
-   - "What do you want to change?" (header: "Edit", options: "Schedule", "Prompt", "Both")
+   - "What do you want to change?" (header: "Edit", options: "Schedule", "Prompt", "Notify", "All")
 4. Based on the answer:
    - **Schedule**: Ask for a new cron expression with preset options (same as create).
    - **Prompt**: Ask for a new prompt with the current prompt shown for reference.
-   - **Both**: Ask both questions.
+   - **Notify**: Ask "Should this job notify you on Telegram?" (header: "Notify", options: "Always", "Errors only", "Never"). Map: "Always" → `true`, "Errors only" → `error`, "Never" → `false`.
+   - **All**: Ask all three questions.
 5. Write the updated file and confirm.
 
 ### `delete` or `remove <job-name>`
@@ -96,6 +101,16 @@ Your prompt here. Claude will run this at the scheduled time.
 
 **`recurring`**: If `true`, the job repeats on schedule. If omitted or `false`, the job is **one-shot** — the schedule is removed from the file after it runs.
 Legacy compatibility: `daily` is still accepted in existing job files.
+
+**`notify`**: Controls whether job output is forwarded to Telegram. Accepts three values:
+
+| Value   | Behavior                                           |
+|---------|----------------------------------------------------|
+| `true`  | Always forward output to Telegram **(default)**    |
+| `error` | Only forward if the job fails (non-zero exit code) |
+| `false` | Never forward to Telegram (silent job)             |
+
+Logs are always written to `.claude/claudeclaw/logs/` regardless of the `notify` setting.
 
 | Expression       | Meaning                  |
 |------------------|--------------------------|
