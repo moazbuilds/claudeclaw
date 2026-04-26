@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from "fs/promises";
-import { join } from "path";
+import { join, dirname } from "path";
 import { existsSync } from "fs";
+import { execSync } from "child_process";
 import { getSession, createSession, incrementTurn, markCompactWarned } from "./sessions";
 import {
   getThreadSession,
@@ -22,6 +23,37 @@ const PROJECT_CLAUDE_MD = join(process.cwd(), "CLAUDE.md");
 const LEGACY_PROJECT_CLAUDE_MD = join(process.cwd(), ".claude", "CLAUDE.md");
 const CLAUDECLAW_BLOCK_START = "<!-- claudeclaw:managed:start -->";
 const CLAUDECLAW_BLOCK_END = "<!-- claudeclaw:managed:end -->";
+
+/**
+ * On Windows, `claude` resolves to `claude.cmd`, a batch wrapper that must
+ * be run through cmd.exe (8191-char command-line limit). Resolving the
+ * underlying `claude.exe` lets us call it directly via CreateProcessW
+ * (32767-char limit). This is required because --append-system-prompt +
+ * prompt files + CLAUDE.md can easily exceed 8K.
+ */
+function resolveClaudeExecutable(): string {
+  if (process.platform !== "win32") return "claude";
+  try {
+    const out = execSync("where claude", { encoding: "utf8" });
+    const cmdPath = out
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .find((s) => s.toLowerCase().endsWith(".cmd"));
+    if (!cmdPath) return "claude";
+    const exePath = join(
+      dirname(cmdPath),
+      "node_modules",
+      "@anthropic-ai",
+      "claude-code",
+      "bin",
+      "claude.exe"
+    );
+    return existsSync(exePath) ? exePath : "claude";
+  } catch {
+    return "claude";
+  }
+}
+const CLAUDE_EXECUTABLE = resolveClaudeExecutable();
 
 /**
  * Compact configuration.
@@ -339,7 +371,7 @@ export async function runCompact(
   timeoutMs: number
 ): Promise<boolean> {
   const compactArgs = [
-    "claude", "-p", "/compact",
+    CLAUDE_EXECUTABLE, "-p", "/compact",
     "--output-format", "text",
     "--resume", sessionId,
     ...securityArgs,
@@ -425,7 +457,7 @@ async function execClaude(name: string, prompt: string, threadId?: string, model
   // New session: use json output to capture Claude's session_id
   // Resumed session: use text output with --resume
   const outputFormat = isNew ? "json" : "text";
-  const args = ["claude", "-p", prompt, "--output-format", outputFormat, ...securityArgs];
+  const args = [CLAUDE_EXECUTABLE, "-p", prompt, "--output-format", outputFormat, ...securityArgs];
 
   if (!isNew) {
     args.push("--resume", existing.sessionId);
@@ -596,7 +628,7 @@ async function streamClaude(
   // stream-json gives us events as they happen — text before tool calls,
   // so we can unblock the UI as soon as Claude acknowledges, not after sub-agents finish.
   // --verbose is required for stream-json to produce output in -p (print) mode.
-  const args = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose", ...securityArgs];
+  const args = [CLAUDE_EXECUTABLE, "-p", prompt, "--output-format", "stream-json", "--verbose", ...securityArgs];
 
   if (existing) args.push("--resume", existing.sessionId);
 
