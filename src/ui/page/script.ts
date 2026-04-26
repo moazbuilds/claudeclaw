@@ -1,5 +1,29 @@
 export const pageScript = String.raw`    const $ = (id) => document.getElementById(id);
 
+    // --- CSRF token management for mutating requests ---
+    let _csrfToken = null;
+    async function getCsrfToken() {
+      if (!_csrfToken) {
+        const res = await fetch("/api/csrf-token");
+        const data = await res.json();
+        _csrfToken = data.token;
+      }
+      return _csrfToken;
+    }
+
+    async function mutatingFetch(url, opts = {}) {
+      const token = await getCsrfToken();
+      opts.headers = { ...opts.headers, "X-CSRF-Token": token };
+      const res = await fetch(url, opts);
+      if (res.status === 403) {
+        _csrfToken = null;
+        const freshToken = await getCsrfToken();
+        opts.headers["X-CSRF-Token"] = freshToken;
+        return fetch(url, opts);
+      }
+      return res;
+    }
+
     const clockEl = $("clock");
     const dateEl = $("date");
     const msgEl = $("message");
@@ -664,7 +688,7 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
         hbToggle.disabled = true;
         setHeartbeatUi(next, next ? "Enabled" : "Disabled", intervalMinutes, currentPrompt);
         try {
-          const res = await fetch("/api/settings/heartbeat", {
+          const res = await mutatingFetch("/api/settings/heartbeat", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ enabled: next }),
@@ -705,7 +729,7 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
         hbCancelBtn.disabled = true;
         hbModalStatus.textContent = "Saving...";
         try {
-          const res = await fetch("/api/settings/heartbeat", {
+          const res = await mutatingFetch("/api/settings/heartbeat", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -856,7 +880,7 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
       button.disabled = true;
       if (quickJobsStatus) quickJobsStatus.textContent = "Deleting job...";
       try {
-        const res = await fetch("/api/jobs/" + encodeURIComponent(name), { method: "DELETE" });
+        const res = await mutatingFetch("/api/jobs/" + encodeURIComponent(name), { method: "DELETE" });
         const out = await res.json();
         if (!out.ok) throw new Error(out.error || "delete failed");
         if (quickJobsStatus) quickJobsStatus.textContent = "Deleted " + name;
@@ -889,7 +913,7 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
         quickJobSubmit.disabled = true;
         quickJobStatus.textContent = "Saving job...";
         try {
-          const res = await fetch("/api/jobs/quick", {
+          const res = await mutatingFetch("/api/jobs/quick", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -1133,7 +1157,7 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
       chatAbortController = new AbortController();
 
       try {
-        var res = await fetch("/api/chat", {
+        var res = await mutatingFetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ message: message }),
