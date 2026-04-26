@@ -10,6 +10,8 @@ export interface Job {
   notify: true | false | "error";
   /** When set, overrides the global model for this job. Useful for routing cheap tasks to haiku. */
   model?: string;
+  /** When set, overrides the global session timeout for this job (in seconds). */
+  timeoutSeconds?: number;
 }
 
 function parseFrontmatterValue(raw: string): string {
@@ -55,7 +57,11 @@ function parseJobFile(name: string, content: string): Job | null {
   const modelLine = lines.find((l) => l.startsWith("model:"));
   const model = modelLine ? parseFrontmatterValue(modelLine.replace("model:", "")) || undefined : undefined;
 
-  return { name, schedule, prompt, recurring, notify, model };
+  const timeoutLine = lines.find((l) => l.startsWith("timeout:"));
+  const timeoutRaw = timeoutLine ? parseFrontmatterValue(timeoutLine.replace("timeout:", "")) : "";
+  const timeoutSeconds = timeoutRaw ? parseInt(timeoutRaw, 10) || undefined : undefined;
+
+  return { name, schedule, prompt, recurring, notify, model, timeoutSeconds };
 }
 
 export async function loadJobs(): Promise<Job[]> {
