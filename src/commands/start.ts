@@ -514,7 +514,7 @@ export async function start(args: string[] = []) {
     if (!telegramSend || currentSettings.telegram.allowedUserIds.length === 0) return;
     const text = result.exitCode === 0
       ? `${label ? `[${label}]\n` : ""}${result.stdout || "(empty)"}`
-      : `${label ? `[${label}] ` : ""}error (exit ${result.exitCode}): ${result.stderr || "Unknown"}`;
+      : `${label ? `[${label}] ` : ""}error (exit ${result.exitCode}): ${result.stderr || result.stdout || "Unknown"}`;
     for (const userId of currentSettings.telegram.allowedUserIds) {
       telegramSend(userId, text).catch((err) =>
         console.error(`[Telegram] Failed to forward to ${userId}: ${err}`)
@@ -526,7 +526,7 @@ export async function start(args: string[] = []) {
     if (!discordSendToUser || currentSettings.discord.allowedUserIds.length === 0) return;
     const text = result.exitCode === 0
       ? `${label ? `[${label}]\n` : ""}${result.stdout || "(empty)"}`
-      : `${label ? `[${label}] ` : ""}error (exit ${result.exitCode}): ${result.stderr || "Unknown"}`;
+      : `${label ? `[${label}] ` : ""}error (exit ${result.exitCode}): ${result.stderr || result.stdout || "Unknown"}`;
     for (const userId of currentSettings.discord.allowedUserIds) {
       discordSendToUser(userId, text).catch((err) =>
         console.error(`[Discord] Failed to forward to ${userId}: ${err}`)
