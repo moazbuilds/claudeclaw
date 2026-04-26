@@ -31,6 +31,42 @@ const CLAUDECLAW_BLOCK_END = "<!-- claudeclaw:managed:end -->";
 const COMPACT_WARN_THRESHOLD = 25;
 const COMPACT_TIMEOUT_ENABLED = true;
 
+/**
+ * Build a sanitized env for spawning the `claude` CLI as a long-running daemon
+ * subprocess. Drops env vars injected by a parent Claude Code / Claude Desktop
+ * session that break detached child auth:
+ *
+ * - `CLAUDECODE`: marks "we're nested inside Claude Code" — confuses the CLI's
+ *   reentry detection and triggers transcript-aware behaviour we don't want.
+ * - `CLAUDE_CODE_OAUTH_TOKEN`: the parent's frozen OAuth access token. Without
+ *   the matching refresh token (which lives in the platform-native credential
+ *   store, not the env), it expires after ~8h and the daemon's spawned `claude`
+ *   processes start returning HTTP 401 silently. Stripping it lets the CLI
+ *   fall back to the credential store on each platform — Keychain on macOS,
+ *   `~/.claude/.credentials.json` on Linux/WSL2, Credential Manager on Windows
+ *   — which handles refresh automatically.
+ * - `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST`: tells the CLI "the host process
+ *   manages provider auth — don't read local credentials." In a detached
+ *   daemon there is no host to consult; the CLI errors with `Not logged in`.
+ *
+ * Cross-platform note: the helper just deletes keys from the inherited env
+ * object — no shell, no OS-specific calls. The `claude` CLI it spawns then
+ * resolves credentials using its own per-platform code path.
+ */
+function cleanSpawnEnv(): Record<string, string> {
+  const stripped = new Set([
+    "CLAUDECODE",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
+  ]);
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (stripped.has(key)) continue;
+    if (typeof value === "string") out[key] = value;
+  }
+  return out;
+}
+
 export type CompactEvent =
   | { type: "warn"; turnCount: number }
   | { type: "auto-compact-start" }
@@ -325,8 +361,7 @@ export async function compactCurrentSession(): Promise<{ success: boolean; messa
 
   const settings = getSettings();
   const securityArgs = buildSecurityArgs(settings.security);
-  const { CLAUDECODE: _, ...cleanEnv } = process.env;
-  const baseEnv = { ...cleanEnv } as Record<string, string>;
+  const baseEnv = cleanSpawnEnv();
   const timeoutMs = (settings as any).sessionTimeoutMs || CLAUDE_TIMEOUT_MS;
 
   const ok = await runCompact(
@@ -417,9 +452,7 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
     args.push("--append-system-prompt", appendParts.join("\n\n"));
   }
 
-  // Strip CLAUDECODE env var so child claude processes don't think they're nested
-  const { CLAUDECODE: _, ...cleanEnv } = process.env;
-  const baseEnv = { ...cleanEnv } as Record<string, string>;
+  const baseEnv = cleanSpawnEnv();
 
   let exec = await runClaudeOnce(args, primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs);
   const primaryRateLimit = extractRateLimitMessage(exec.rawStdout, exec.stderr);
@@ -583,8 +616,7 @@ async function streamClaude(
   const normalizedModel = model.trim().toLowerCase();
   if (model.trim() && normalizedModel !== "glm") args.push("--model", model.trim());
 
-  const { CLAUDECODE: _, ...cleanEnv } = process.env;
-  const childEnv = buildChildEnv(cleanEnv as Record<string, string>, model, api);
+  const childEnv = buildChildEnv(cleanSpawnEnv(), model, api);
 
   console.log(`[${new Date().toLocaleTimeString()}] Running: ${name} (stream-json, session: ${existing?.sessionId?.slice(0, 8) ?? "new"})`);
 
