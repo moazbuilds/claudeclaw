@@ -362,11 +362,16 @@ const ENV_VAR_PATTERN = /\$(?:\$|\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}|([A-
  * string field — telegram.token, discord.token, api, fallback.api, future
  * additions — with zero per-field plumbing.
  */
-export function substituteEnvVars(
-  value: unknown,
-  env: Record<string, string | undefined> = process.env,
-  warned: Set<string> = new Set()
-): any {
+const warnedEnvVars = new Set<string>();
+
+export function substituteEnvVars<T>(
+  value: T,
+  env: Record<string, string | undefined> = process.env
+): T {
+  return substitute(value, env) as T;
+}
+
+function substitute(value: unknown, env: Record<string, string | undefined>): unknown {
   if (typeof value === "string") {
     return value.replace(ENV_VAR_PATTERN, (match, braceName, braceDefault, bareName) => {
       if (match === "$$") return "$";
@@ -374,18 +379,18 @@ export function substituteEnvVars(
       const resolved = env[name];
       if (resolved !== undefined) return resolved;
       if (braceDefault !== undefined) return braceDefault;
-      if (!warned.has(name)) {
+      if (!warnedEnvVars.has(name)) {
         console.warn(`[config] Env var "$${name}" not set — leaving placeholder in settings`);
-        warned.add(name);
+        warnedEnvVars.add(name);
       }
       return match;
     });
   }
-  if (Array.isArray(value)) return value.map((v) => substituteEnvVars(v, env, warned));
+  if (Array.isArray(value)) return value.map((v) => substitute(v, env));
   if (value && typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = substituteEnvVars(v, env, warned);
+      out[k] = substitute(v, env);
     }
     return out;
   }
