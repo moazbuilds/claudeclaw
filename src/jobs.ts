@@ -8,6 +8,8 @@ export interface Job {
   prompt: string;
   recurring: boolean;
   notify: true | false | "error";
+  /** When set, overrides the global model for this job. Useful for routing cheap tasks to haiku. */
+  model?: string;
 }
 
 function parseFrontmatterValue(raw: string): string {
@@ -50,7 +52,10 @@ function parseJobFile(name: string, content: string): Job | null {
     : notifyRaw === "error" ? "error"
     : true;
 
-  return { name, schedule, prompt, recurring, notify };
+  const modelLine = lines.find((l) => l.startsWith("model:"));
+  const model = modelLine ? parseFrontmatterValue(modelLine.replace("model:", "")) || undefined : undefined;
+
+  return { name, schedule, prompt, recurring, notify, model };
 }
 
 export async function loadJobs(): Promise<Job[]> {
