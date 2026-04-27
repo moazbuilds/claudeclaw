@@ -59,7 +59,8 @@ function parseJobFile(name: string, content: string): Job | null {
 
   const timeoutLine = lines.find((l) => l.startsWith("timeout:"));
   const timeoutRaw = timeoutLine ? parseFrontmatterValue(timeoutLine.replace("timeout:", "")) : "";
-  const timeoutSeconds = timeoutRaw ? parseInt(timeoutRaw, 10) || undefined : undefined;
+  const timeoutParsed = timeoutRaw ? parseInt(timeoutRaw, 10) : NaN;
+  const timeoutSeconds = Number.isFinite(timeoutParsed) && timeoutParsed > 0 ? timeoutParsed : undefined;
 
   return { name, schedule, prompt, recurring, notify, model, timeoutSeconds };
 }

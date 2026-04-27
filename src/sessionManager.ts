@@ -55,13 +55,8 @@ export async function getThreadSession(
   };
 }
 
-function isSnowflake(id: string): boolean {
-  return /^\d{17,19}$/.test(id);
-}
-
 /** Create a new thread session after Claude outputs a session_id. */
 export async function createThreadSession(threadId: string, sessionId: string): Promise<void> {
-  if (!isSnowflake(threadId)) return; // skip job-named sessions (e.g. "podcast-curator")
   const data = await loadSessions();
   data.threads[threadId] = {
     sessionId,

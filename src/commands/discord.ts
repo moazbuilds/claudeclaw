@@ -239,6 +239,8 @@ function extractReactionDirective(text: string): { cleanedText: string; reaction
 async function rejoinThreads(token: string): Promise<void> {
   const threadSessions = await listThreadSessions();
   for (const ts of threadSessions) {
+    // Skip non-snowflake keys (e.g. job names) — they are not Discord thread IDs
+    if (!/^\d{17,19}$/.test(ts.threadId)) continue;
     try {
       await discordApi(token, "DELETE", `/channels/${ts.threadId}/thread-members/@me`).catch(() => {});
       await discordApi(token, "PUT", `/channels/${ts.threadId}/thread-members/@me`);
