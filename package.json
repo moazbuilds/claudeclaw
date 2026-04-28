@@ -7,7 +7,9 @@
     "dev:web": "bun --watch src/index.ts start --web --replace-existing",
     "telegram": "bun run src/index.ts telegram",
     "discord": "bun run src/index.ts discord",
-    "status": "bun run src/index.ts status"
+    "status": "bun run src/index.ts status",
+    "bump:plugin-version": "bun run scripts/bump-plugin-version.ts",
+    "bump:marketplace-version": "bun run scripts/bump-marketplace-version.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.3.9"

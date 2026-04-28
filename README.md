@@ -11,7 +11,7 @@
     <img src="https://img.shields.io/github/stars/moazbuilds/ClaudeClaw?style=flat-square&color=f59e0b" alt="GitHub Stars" />
   </a>
   <a href="https://github.com/moazbuilds/ClaudeClaw">
-    <img src="https://img.shields.io/badge/downloads-~10k-2da44e?style=flat-square" alt="Downloads ~10k" />
+    <img src="https://img.shields.io/static/v1?label=downloads&message=~15k%20every%2014%20days&color=2da44e&style=flat-square" alt="Downloads ~15k every 14 days" />
   </a>
   <a href="https://github.com/moazbuilds/ClaudeClaw/commits/master">
     <img src="https://img.shields.io/github/last-commit/moazbuilds/ClaudeClaw?style=flat-square&color=0ea5e9" alt="Last Commit" />
@@ -56,6 +56,19 @@ Then open a Claude Code session and run:
 /claudeclaw:start
 ```
 The setup wizard walks you through model, heartbeat, Telegram, Discord, and security, then your daemon is live with a web dashboard.
+
+### Contributor Note: Plugin Version Metadata
+
+If you change shipped plugin files under `src/`, `commands/`, `prompts/`, or `.claude-plugin/`, the plugin metadata version may also need to be bumped so Claude Code and marketplace consumers detect the update correctly.
+
+Helpers:
+
+```bash
+bun run bump:plugin-version
+bun run bump:marketplace-version
+```
+
+Docs-only and other non-shipped changes do not require these bumps.
 
 ## What Would Be Built Next?
 

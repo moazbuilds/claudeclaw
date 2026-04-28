@@ -1,13 +1,13 @@
 import { join } from "path";
 import { readdir, readFile } from "fs/promises";
 import { homedir } from "os";
+import { getJobsDir, loadSettings } from "../config";
 
 const CLAUDE_DIR = join(process.cwd(), ".claude");
 const HEARTBEAT_DIR = join(CLAUDE_DIR, "claudeclaw");
 const PID_FILE = join(HEARTBEAT_DIR, "daemon.pid");
 const STATE_FILE = join(HEARTBEAT_DIR, "state.json");
 const SETTINGS_FILE = join(HEARTBEAT_DIR, "settings.json");
-const JOBS_DIR = join(HEARTBEAT_DIR, "jobs");
 
 function formatCountdown(ms: number): string {
   if (ms <= 0) return "now!";
@@ -100,12 +100,12 @@ async function showStatus(): Promise<boolean> {
   } catch {}
 
   try {
-    const files = await readdir(JOBS_DIR);
+    const files = await readdir(getJobsDir());
     const mdFiles = files.filter((f) => f.endsWith(".md"));
     if (mdFiles.length > 0) {
       console.log(`  Jobs: ${mdFiles.length}`);
       for (const f of mdFiles) {
-        const content = await Bun.file(join(JOBS_DIR, f)).text();
+        const content = await Bun.file(join(getJobsDir(), f)).text();
         const match = content.match(/schedule:\s*["']?([^"'\n]+)/);
         const schedule = match ? match[1].trim() : "unknown";
         console.log(`    - ${f.replace(/\.md$/, "")} [${schedule}]`);
@@ -133,6 +133,10 @@ async function showStatus(): Promise<boolean> {
 }
 
 export async function status(args: string[]) {
+  // Populate the settings cache so runtime-resolved helpers (e.g. getJobsDir())
+  // return configured values rather than compile-time defaults.
+  try { await loadSettings(); } catch {}
+
   if (args.includes("--all")) {
     await showAll();
   } else {

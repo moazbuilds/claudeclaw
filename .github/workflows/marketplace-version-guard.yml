@@ -1,0 +1,67 @@
+name: Marketplace Version Guard
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  marketplace-version-guard:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require marketplace version bump for shipped plugin changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          changed_files="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+
+          echo "Changed files:"
+          printf '%s\n' "$changed_files"
+
+          if [ -z "$changed_files" ]; then
+            echo "No changed files detected."
+            exit 0
+          fi
+
+          shipped_pattern='^(src/|commands/|prompts/|\.claude-plugin/)'
+
+          if ! printf '%s\n' "$changed_files" | grep -Eq "$shipped_pattern"; then
+            echo "Docs-only or non-shipped changes detected; marketplace version bump not required."
+            exit 0
+          fi
+
+          if ! printf '%s\n' "$changed_files" | grep -Fxq ".claude-plugin/marketplace.json"; then
+            echo "Shipped plugin files changed but .claude-plugin/marketplace.json was not updated."
+            echo "Run: bun run bump:marketplace-version"
+            echo "If your PR also changes the plugin manifest, you may also need:"
+            echo "  bun run bump:plugin-version"
+            exit 1
+          fi
+
+          base_version="$(
+            git show "$BASE_SHA:.claude-plugin/marketplace.json" | \
+            python3 -c 'import json,sys; data=json.load(sys.stdin); plugin=next((p for p in data.get("plugins", []) if p.get("name")=="claudeclaw"), (data.get("plugins") or [{}])[0]); print(plugin["version"])'
+          )"
+          head_version="$(
+            python3 -c 'import json; data=json.load(open(".claude-plugin/marketplace.json")); plugin=next((p for p in data.get("plugins", []) if p.get("name")=="claudeclaw"), (data.get("plugins") or [{}])[0]); print(plugin["version"])'
+          )"
+
+          if [ "$base_version" = "$head_version" ]; then
+            echo "Shipped plugin files changed but marketplace version did not change ($head_version)."
+            echo "Run: bun run bump:marketplace-version"
+            echo "If your PR also changes the plugin manifest, you may also need:"
+            echo "  bun run bump:plugin-version"
+            exit 1
+          fi
+
+          echo "Marketplace version changed: $base_version -> $head_version"
