@@ -1,0 +1,104 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: '0 7 * * *'  # 7am UTC daily
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run — check for new commits without merging'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    name: Check and merge upstream changes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+
+      - name: Add upstream remote
+        run: git remote add upstream https://github.com/moazbuilds/claudeclaw.git
+
+      - name: Fetch upstream
+        run: git fetch upstream master
+
+      - name: Check for new commits
+        id: check
+        run: |
+          NEW=$(git log HEAD..upstream/master --oneline | wc -l | tr -d ' ')
+          echo "new_commits=$NEW" >> "$GITHUB_OUTPUT"
+          if [ "$NEW" -gt 0 ]; then
+            echo "Found $NEW new upstream commits:"
+            git log HEAD..upstream/master --oneline
+          else
+            echo "Already up to date with upstream."
+          fi
+
+      - name: Skip if dry run or no new commits
+        if: steps.check.outputs.new_commits == '0' || inputs.dry_run == true
+        run: |
+          echo "Nothing to do (new_commits=${{ steps.check.outputs.new_commits }}, dry_run=${{ inputs.dry_run }})"
+
+      - name: Create sync branch
+        if: steps.check.outputs.new_commits != '0' && inputs.dry_run != true
+        id: branch
+        run: |
+          BRANCH="sync/upstream-$(date +%Y-%m-%d)"
+          git checkout -b "$BRANCH"
+          echo "name=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Attempt merge
+        if: steps.check.outputs.new_commits != '0' && inputs.dry_run != true
+        id: merge
+        run: |
+          if git merge upstream/master --no-edit 2>&1; then
+            echo "status=clean" >> "$GITHUB_OUTPUT"
+            echo "Merge succeeded with no conflicts."
+          else
+            echo "status=conflicts" >> "$GITHUB_OUTPUT"
+            echo "Merge has conflicts — committing for manual review."
+            git add -A
+            git commit -m "sync: upstream merge with conflicts (manual resolution needed)
+
+Auto-merge from moazbuilds/claudeclaw:master failed.
+Resolve conflicts in this branch then merge to main."
+          fi
+
+      - name: Push sync branch
+        if: steps.check.outputs.new_commits != '0' && inputs.dry_run != true
+        run: git push origin "${{ steps.branch.outputs.name }}" --force
+
+      - name: Open PR (clean merge)
+        if: steps.check.outputs.new_commits != '0' && inputs.dry_run != true && steps.merge.outputs.status == 'clean'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create \
+            --title "chore: sync upstream (${{ steps.check.outputs.new_commits }} new commits)" \
+            --body "$(printf 'Automated sync from [moazbuilds/claudeclaw:master](https://github.com/moazbuilds/claudeclaw).\n\nAuto-merge was **clean** — ready to merge.\n\n**New upstream commits:**\n\`\`\`\n%s\n\`\`\`' "$(git log origin/main..upstream/master --oneline)")" \
+            --head "${{ steps.branch.outputs.name }}" \
+            --base main
+
+      - name: Open PR (needs review)
+        if: steps.check.outputs.new_commits != '0' && inputs.dry_run != true && steps.merge.outputs.status == 'conflicts'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create \
+            --title "⚠️ chore: sync upstream — CONFLICTS need manual review" \
+            --body "$(printf 'Automated sync from [moazbuilds/claudeclaw:master](https://github.com/moazbuilds/claudeclaw).\n\n**Merge has conflicts** — manual resolution required before merging.\n\nTypical conflict files: `src/config.ts`, `src/runner.ts`\n\nStrategy: keep combined-branch structure, take upstream bug fixes.')" \
+            --head "${{ steps.branch.outputs.name }}" \
+            --base main

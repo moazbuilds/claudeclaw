@@ -162,6 +162,10 @@ function buildChildEnv(baseEnv: Record<string, string>, model: string, api: stri
   if (normalizedModel === "glm") {
     childEnv.ANTHROPIC_BASE_URL = "https://api.z.ai/api/anthropic";
     childEnv.API_TIMEOUT_MS = "3000000";
+  } else if (normalizedModel === "kimi-k2p6") {
+    childEnv.ANTHROPIC_BASE_URL = "https://api.kimi.com/coding/";
+    if (process.env.KIMI_API_KEY) childEnv.ANTHROPIC_AUTH_TOKEN = process.env.KIMI_API_KEY;
+    childEnv.API_TIMEOUT_MS = "3000000";
   }
 
   return childEnv;
@@ -183,7 +187,7 @@ export async function runClaudeOnce(
 ): Promise<{ rawStdout: string; stderr: string; exitCode: number }> {
   const args = [...baseArgs];
   const normalizedModel = model.trim().toLowerCase();
-  if (model.trim() && normalizedModel !== "glm") args.push("--model", model.trim());
+  if (model.trim() && normalizedModel !== "glm" && normalizedModel !== "kimi-k2p6") args.push("--model", model.trim());
 
   const proc = Bun.spawn(args, {
     stdout: "pipe",
@@ -890,7 +894,7 @@ async function streamClaude(
   }
 
   const normalizedModel = model.trim().toLowerCase();
-  if (model.trim() && normalizedModel !== "glm") args.push("--model", model.trim());
+  if (model.trim() && normalizedModel !== "glm" && normalizedModel !== "kimi-k2p6") args.push("--model", model.trim());
 
   const childEnv = buildChildEnv(cleanSpawnEnv(), model, api);
 

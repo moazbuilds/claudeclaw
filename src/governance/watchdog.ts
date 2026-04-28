@@ -80,7 +80,7 @@ let watchdogConfig: WatchdogConfig = {
   limits: {
     maxToolCalls: 100,
     maxTurns: 50,
-    maxRuntimeSeconds: 600, // 10 minutes
+    maxRuntimeSeconds: 7200, // 2 hours (configurable via settings)
     maxRepeatedTools: 5,
     repeatedToolThreshold: 3, // 3+ repeated patterns triggers warning
   },

@@ -1,0 +1,48 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Run tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun test src/__tests__/watchdog.test.ts
+
+  deploy:
+    name: Deploy to server
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -e
+
+            echo "==> Fetching latest code"
+            sudo git -C /opt/claudeclaw fetch povai
+
+            echo "==> Updating to latest main"
+            sudo git -C /opt/claudeclaw reset --hard povai/main
+
+            echo "==> Restarting service"
+            sudo systemctl restart claudeclaw
+
+            echo "==> Waiting for startup"
+            sleep 5
+            sudo systemctl is-active claudeclaw && echo "Claw is running" || (echo "Claw failed to start" && sudo journalctl -u claudeclaw --no-pager -n 20 && exit 1)
