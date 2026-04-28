@@ -51,13 +51,15 @@ Edit an existing cron job.
 1. Read `.claude/claudeclaw/jobs/<job-name>.md`. If it doesn't exist, list available jobs and ask the user which one to edit.
 2. Show the current schedule and prompt.
 3. Use **AskUserQuestion** to ask:
-   - "What do you want to change?" (header: "Edit", options: "Schedule", "Prompt", "Notify", "All")
+   - "What do you want to change?" (header: "Edit", options: "Schedule", "Prompt", "Notify")
 4. Based on the answer:
    - **Schedule**: Ask for a new cron expression with preset options (same as create).
    - **Prompt**: Ask for a new prompt with the current prompt shown for reference.
    - **Notify**: Ask "Should this job notify you on Telegram?" (header: "Notify", options: "Always", "Errors only", "Never"). Map: "Always" → `true`, "Errors only" → `error`, "Never" → `false`.
-   - **All**: Ask all three questions.
-5. Write the updated file and confirm.
+5. Use **AskUserQuestion** to ask:
+   - "Anything else to change?" (header: "Continue", options: "Yes", "No")
+   - If **Yes**, go back to step 3.
+   - If **No**, write the updated file and confirm.
 
 ### `delete` or `remove <job-name>`
 
