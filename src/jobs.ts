@@ -12,6 +12,10 @@ export interface Job {
   model?: string;
   /** When set, overrides the global session timeout for this job (in seconds). */
   timeoutSeconds?: number;
+  /** Max number of retry attempts on failure before giving up until next scheduled run. */
+  retry?: number;
+  /** Seconds to wait between retry attempts. Defaults to 300 (5 min). */
+  retryDelay?: number;
 }
 
 function parseFrontmatterValue(raw: string): string {
@@ -62,7 +66,13 @@ function parseJobFile(name: string, content: string): Job | null {
   const timeoutParsed = timeoutRaw ? parseInt(timeoutRaw, 10) : NaN;
   const timeoutSeconds = Number.isFinite(timeoutParsed) && timeoutParsed > 0 ? timeoutParsed : undefined;
 
-  return { name, schedule, prompt, recurring, notify, model, timeoutSeconds };
+  const retryLine = lines.find((l) => l.startsWith("retry:"));
+  const retry = retryLine ? parseInt(parseFrontmatterValue(retryLine.replace("retry:", "")), 10) || undefined : undefined;
+
+  const retryDelayLine = lines.find((l) => l.startsWith("retry_delay:"));
+  const retryDelay = retryDelayLine ? parseInt(parseFrontmatterValue(retryDelayLine.replace("retry_delay:", "")), 10) || undefined : undefined;
+
+  return { name, schedule, prompt, recurring, notify, model, timeoutSeconds, retry, retryDelay };
 }
 
 export async function loadJobs(): Promise<Job[]> {

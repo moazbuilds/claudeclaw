@@ -706,27 +706,62 @@ export async function start(args: string[] = []) {
 
   updateState();
 
+  // Track per-job retry state (in-memory, resets on daemon restart)
+  const jobRetryState = new Map<string, { failCount: number; retryAt: number }>();
+
+  function runJob(job: (typeof currentJobs)[0]) {
+    const timeoutMs = job.timeoutSeconds ? job.timeoutSeconds * 1000 : undefined;
+    resolvePrompt(job.prompt)
+      .then((prompt) => run(job.name, prompt, job.name, job.model, timeoutMs))
+      .then((r) => {
+        // Reset retry state on success
+        if (r.exitCode === 0) {
+          jobRetryState.delete(job.name);
+        } else if (job.retry && job.retry > 0) {
+          // Schedule a retry if under the limit
+          const state = jobRetryState.get(job.name) ?? { failCount: 0, retryAt: 0 };
+          state.failCount += 1;
+          if (state.failCount <= job.retry) {
+            const delayMs = (job.retryDelay ?? 300) * 1000;
+            state.retryAt = Date.now() + delayMs;
+            jobRetryState.set(job.name, state);
+            console.log(`[${ts()}] Job ${job.name} failed (attempt ${state.failCount}/${job.retry}), retrying in ${job.retryDelay ?? 300}s`);
+          } else {
+            jobRetryState.delete(job.name);
+            console.log(`[${ts()}] Job ${job.name} exhausted ${job.retry} retries`);
+          }
+        }
+        if (job.notify === false) return;
+        if (job.notify === "error" && r.exitCode === 0) return;
+        forwardToTelegram(job.name, r);
+        forwardToDiscord(job.name, r);
+      })
+      .finally(async () => {
+        if (job.recurring) return;
+        // Only clear schedule for one-shot jobs when no retry is pending
+        if (jobRetryState.has(job.name)) return;
+        try {
+          await clearJobSchedule(job.name);
+          console.log(`[${ts()}] Cleared schedule for one-time job: ${job.name}`);
+        } catch (err) {
+          console.error(`[${ts()}] Failed to clear schedule for ${job.name}:`, err);
+        }
+      });
+  }
+
   setInterval(() => {
     const now = new Date();
     for (const job of currentJobs) {
+      // Check if a retry is due before the next scheduled run
+      const retryState = jobRetryState.get(job.name);
+      if (retryState && retryState.retryAt <= Date.now()) {
+        jobRetryState.delete(job.name); // clear so it doesn't re-trigger next tick
+        console.log(`[${ts()}] Retrying job: ${job.name} (attempt ${retryState.failCount + 1})`);
+        runJob(job);
+        continue;
+      }
       if (cronMatches(job.schedule, now, currentSettings.timezoneOffsetMinutes)) {
-        resolvePrompt(job.prompt)
-          .then((prompt) => run(job.name, prompt, job.name, job.model, job.timeoutSeconds ? job.timeoutSeconds * 1000 : undefined))
-          .then((r) => {
-            if (job.notify === false) return;
-            if (job.notify === "error" && r.exitCode === 0) return;
-            forwardToTelegram(job.name, r);
-            forwardToDiscord(job.name, r);
-          })
-          .finally(async () => {
-            if (job.recurring) return;
-            try {
-              await clearJobSchedule(job.name);
-              console.log(`[${ts()}] Cleared schedule for one-time job: ${job.name}`);
-            } catch (err) {
-              console.error(`[${ts()}] Failed to clear schedule for ${job.name}:`, err);
-            }
-          });
+        runJob(job);
       }
     }
     updateState();
