@@ -11,6 +11,7 @@ import {
 import { getSettings, type ModelConfig, type SecurityConfig } from "./config";
 import { buildClockPromptPrefix } from "./timezone";
 import { selectModel } from "./model-router";
+import { recordResult, abortReason, clearSession, startSession } from "./watchdog";
 
 const LOGS_DIR = join(process.cwd(), ".claude/claudeclaw/logs");
 // Resolve prompts relative to the claudeclaw installation, not the project dir
@@ -385,11 +386,13 @@ async function execClaude(name: string, prompt: string, threadId?: string, model
     ? await getThreadSession(threadId)
     : await getSession();
   const isNew = !existing;
+  // Start the watchdog clock for resumed sessions (we know the ID immediately).
+  if (existing) startSession(existing.sessionId);
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const logFile = join(LOGS_DIR, `${name}-${timestamp}.log`);
 
   const settings = getSettings();
-  const { security, model, api, fallback, agentic } = settings;
+  const { security, model, api, fallback, agentic, watchdog } = settings;
 
   // Determine which model to use based on agentic routing
   let primaryConfig: ModelConfig;
@@ -494,6 +497,7 @@ async function execClaude(name: string, prompt: string, threadId?: string, model
         await createSession(sessionId);
         console.log(`[${new Date().toLocaleTimeString()}] Session created: ${sessionId}`);
       }
+      startSession(sessionId);
     } catch (e) {
       console.error(`[${new Date().toLocaleTimeString()}] Failed to parse session from Claude output:`, e);
     }
@@ -521,6 +525,26 @@ async function execClaude(name: string, prompt: string, threadId?: string, model
 
   await Bun.write(logFile, output);
   console.log(`[${new Date().toLocaleTimeString()}] Done: ${name} → ${logFile}`);
+
+  // --- Watchdog: track consecutive timeouts ---
+  // Skip tracking for unresolved session IDs ("unknown") to avoid cross-session
+  // state collisions when a new session fails before its real ID is known.
+  const trackingId = sessionId !== "unknown" ? sessionId : null;
+  if (trackingId) {
+    if (exitCode === 0) {
+      clearSession(trackingId);
+    } else {
+      recordResult(trackingId, exitCode);
+      const reason = abortReason(trackingId, watchdog);
+      if (reason) {
+        console.warn(`[${new Date().toLocaleTimeString()}] ${reason}`);
+        clearSession(trackingId);
+        return result;
+      }
+      // Non-timeout failures reset the counter but leave nothing to track.
+      if (exitCode !== 124) clearSession(trackingId);
+    }
+  }
 
   // --- Auto-compact on timeout (exit 124) ---
   if (COMPACT_TIMEOUT_ENABLED && exitCode === 124 && !isNew && existing) {
