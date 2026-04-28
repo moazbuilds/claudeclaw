@@ -1,7 +1,6 @@
 import { readdir } from "fs/promises";
 import { join } from "path";
-
-const JOBS_DIR = join(process.cwd(), ".claude", "claudeclaw", "jobs");
+import { getJobsDir } from "./config";
 
 export interface Job {
   name: string;
@@ -9,6 +8,8 @@ export interface Job {
   prompt: string;
   recurring: boolean;
   notify: true | false | "error";
+  /** When set, overrides the global model for this job. Useful for routing cheap tasks to haiku. */
+  model?: string;
 }
 
 function parseFrontmatterValue(raw: string): string {
@@ -51,21 +52,24 @@ function parseJobFile(name: string, content: string): Job | null {
     : notifyRaw === "error" ? "error"
     : true;
 
-  return { name, schedule, prompt, recurring, notify };
+  const modelLine = lines.find((l) => l.startsWith("model:"));
+  const model = modelLine ? parseFrontmatterValue(modelLine.replace("model:", "")) || undefined : undefined;
+
+  return { name, schedule, prompt, recurring, notify, model };
 }
 
 export async function loadJobs(): Promise<Job[]> {
   const jobs: Job[] = [];
   let files: string[];
   try {
-    files = await readdir(JOBS_DIR);
+    files = await readdir(getJobsDir());
   } catch {
     return jobs;
   }
 
   for (const file of files) {
     if (!file.endsWith(".md")) continue;
-    const content = await Bun.file(join(JOBS_DIR, file)).text();
+    const content = await Bun.file(join(getJobsDir(), file)).text();
     const job = parseJobFile(file.replace(/\.md$/, ""), content);
     if (job) jobs.push(job);
   }
@@ -73,7 +77,7 @@ export async function loadJobs(): Promise<Job[]> {
 }
 
 export async function clearJobSchedule(jobName: string): Promise<void> {
-  const path = join(JOBS_DIR, `${jobName}.md`);
+  const path = join(getJobsDir(), `${jobName}.md`);
   const content = await Bun.file(path).text();
   const match = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/);
   if (!match) return;

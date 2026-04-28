@@ -240,6 +240,7 @@ async function rejoinThreads(token: string): Promise<void> {
   const threadSessions = await listThreadSessions();
   for (const ts of threadSessions) {
     try {
+      await discordApi(token, "DELETE", `/channels/${ts.threadId}/thread-members/@me`).catch(() => {});
       await discordApi(token, "PUT", `/channels/${ts.threadId}/thread-members/@me`);
       if (!knownThreads.has(ts.threadId)) {
         const ch = await discordApi<{ parent_id?: string }>(token, "GET", `/channels/${ts.threadId}`);
@@ -340,6 +341,12 @@ function isVoiceAttachment(a: DiscordAttachment): boolean {
   return Boolean(a.content_type?.startsWith("audio/"));
 }
 
+function isTextAttachment(a: DiscordAttachment): boolean {
+  if (a.content_type?.startsWith("text/")) return true;
+  const ext = extname(a.filename).toLowerCase();
+  return ext === ".txt" || ext === ".md";
+}
+
 async function downloadDiscordAttachment(
   attachment: DiscordAttachment,
   type: "image" | "voice",
@@ -433,7 +440,7 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
   const channelId = message.channel_id;
   const isDM = !message.guild_id;
   const isGuild = !!message.guild_id;
-  const content = message.content;
+  const content = message.content.replace(/\0/g, "");
 
   // Recover lost thread from sessions.json (fallback for knownThreads volatility)
   if (isGuild && !knownThreads.has(channelId)) {
@@ -475,10 +482,12 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
   // Detect attachments
   const imageAttachments = message.attachments.filter(isImageAttachment);
   const voiceAttachments = message.attachments.filter(isVoiceAttachment);
+  const textAttachments = message.attachments.filter(isTextAttachment);
   const hasImage = imageAttachments.length > 0;
   const hasVoice = voiceAttachments.length > 0;
+  const hasText = textAttachments.length > 0;
 
-  if (!content.trim() && !hasImage && !hasVoice) return;
+  if (!content.trim() && !hasImage && !hasVoice && !hasText) return;
 
   // Strip bot mention from content for cleaner prompt
   let cleanContent = content;
@@ -487,7 +496,7 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
   }
 
   const label = message.author.username;
-  const mediaParts = [hasImage ? "image" : "", hasVoice ? "voice" : ""].filter(Boolean);
+  const mediaParts = [hasImage ? "image" : "", hasVoice ? "voice" : "", hasText ? "text" : ""].filter(Boolean);
   const mediaSuffix = mediaParts.length > 0 ? ` [${mediaParts.join("+")}]` : "";
   console.log(
     `[${new Date().toLocaleTimeString()}] Discord ${label}${mediaSuffix}: "${cleanContent.slice(0, 60)}${cleanContent.length > 60 ? "..." : ""}"`,
@@ -502,6 +511,7 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
     let imagePath: string | null = null;
     let voicePath: string | null = null;
     let voiceTranscript: string | null = null;
+    let textContent: string | null = null;
 
     if (hasImage) {
       try {
@@ -528,6 +538,18 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
         } catch (err) {
           console.error(`[Discord] Failed to transcribe voice for ${label}: ${err instanceof Error ? err.message : err}`);
         }
+      }
+    }
+
+    if (hasText) {
+      try {
+        const resp = await fetch(textAttachments[0].url);
+        if (resp.ok) {
+          const raw = await resp.text();
+          textContent = raw.length > 51200 ? raw.slice(0, 51200) + "\n...[truncated]" : raw;
+        }
+      } catch (err) {
+        console.error(`[Discord] Failed to fetch text attachment for ${label}: ${err instanceof Error ? err.message : err}`);
       }
     }
 
@@ -633,6 +655,11 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
       promptParts.push(
         "The user attached voice audio, but it could not be transcribed. Respond and ask them to resend a clearer clip.",
       );
+    }
+    if (textContent) {
+      promptParts.push(`Attached text file (${textAttachments[0].filename}):\n${textContent}`);
+    } else if (hasText) {
+      promptParts.push("The user attached a text file, but downloading it failed. Ask them to resend.");
     }
 
     const prefixedPrompt = promptParts.join("\n");
@@ -1008,6 +1035,11 @@ function handleDispatch(token: string, eventName: string, data: any): void {
       if (data.id && data.parent_id) {
         knownThreads.set(data.id, { parentId: data.parent_id });
         debugLog(`Thread tracked: ${data.id} (parent: ${data.parent_id})`);
+        if (getSettings().discord.listenChannels.includes(data.parent_id)) {
+          discordApi(token, "PUT", `/channels/${data.id}/thread-members/@me`).catch((err) =>
+            console.error(`[Discord] Failed to join thread ${data.id}: ${err}`),
+          );
+        }
       }
       break;
 
