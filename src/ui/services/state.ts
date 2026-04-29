@@ -53,7 +53,7 @@ export async function buildState(snapshot: WebSnapshot) {
     },
     session: session
       ? {
-          sessionIdShort: session.sessionId.slice(0, 8),
+          sessionIdShort: session.sessionId?.slice(0, 8) ?? "no-session",
           createdAt: session.createdAt,
           lastUsedAt: session.lastUsedAt,
         }
