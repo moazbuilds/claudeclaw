@@ -8,7 +8,7 @@ import {
   incrementThreadTurn,
   markThreadCompactWarned,
 } from "./sessionManager";
-import { getSettings, type ModelConfig, type SecurityConfig } from "./config";
+import { getSettings, DEFAULT_SESSION_TIMEOUT_MS, type ModelConfig, type SecurityConfig } from "./config";
 import { buildClockPromptPrefix } from "./timezone";
 import { selectModel } from "./model-router";
 
@@ -152,15 +152,12 @@ function buildChildEnv(baseEnv: Record<string, string>, model: string, api: stri
   return childEnv;
 }
 
-/** Default timeout for a single Claude Code invocation (5 minutes). */
-const CLAUDE_TIMEOUT_MS = 5 * 60 * 1000;
-
 async function runClaudeOnce(
   baseArgs: string[],
   model: string,
   api: string,
   baseEnv: Record<string, string>,
-  timeoutMs: number = CLAUDE_TIMEOUT_MS
+  timeoutMs: number = DEFAULT_SESSION_TIMEOUT_MS
 ): Promise<{ rawStdout: string; stderr: string; exitCode: number }> {
   const args = [...baseArgs];
   const normalizedModel = model.trim().toLowerCase();
@@ -362,7 +359,7 @@ export async function compactCurrentSession(): Promise<{ success: boolean; messa
   const settings = getSettings();
   const securityArgs = buildSecurityArgs(settings.security);
   const baseEnv = cleanSpawnEnv();
-  const timeoutMs = (settings as any).sessionTimeoutMs || CLAUDE_TIMEOUT_MS;
+  const timeoutMs = settings.sessionTimeoutMs;
 
   const ok = await runCompact(
     existing.sessionId,
@@ -378,7 +375,7 @@ export async function compactCurrentSession(): Promise<{ success: boolean; messa
     : { success: false, message: `❌ Compact failed (${existing.sessionId.slice(0, 8)})` };
 }
 
-async function execClaude(name: string, prompt: string, threadId?: string, modelOverride?: string): Promise<RunResult> {
+async function execClaude(name: string, prompt: string, threadId?: string, modelOverride?: string, timeoutMsOverride?: number): Promise<RunResult> {
   await mkdir(LOGS_DIR, { recursive: true });
 
   const existing = threadId
@@ -416,7 +413,7 @@ async function execClaude(name: string, prompt: string, threadId?: string, model
     api: fallback?.api ?? "",
   };
   const securityArgs = buildSecurityArgs(security);
-  const timeoutMs = (settings as any).sessionTimeoutMs || CLAUDE_TIMEOUT_MS;
+  const timeoutMs = timeoutMsOverride ?? settings.sessionTimeoutMs;
 
   console.log(
     `[${new Date().toLocaleTimeString()}] Running: ${name} (${isNew ? "new session" : `resume ${existing.sessionId.slice(0, 8)}`}, security: ${security.level})`
@@ -577,8 +574,8 @@ async function execClaude(name: string, prompt: string, threadId?: string, model
   return result;
 }
 
-export async function run(name: string, prompt: string, threadId?: string, modelOverride?: string): Promise<RunResult> {
-  return enqueue(() => execClaude(name, prompt, threadId, modelOverride), threadId);
+export async function run(name: string, prompt: string, threadId?: string, modelOverride?: string, timeoutMs?: number): Promise<RunResult> {
+  return enqueue(() => execClaude(name, prompt, threadId, modelOverride, timeoutMs), threadId);
 }
 
 async function streamClaude(
