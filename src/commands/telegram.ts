@@ -421,6 +421,16 @@ function extractButtonsDirective(text: string): { cleanedText: string; buttonRow
   return { cleanedText, buttonRows };
 }
 
+// Map short button IDs to labels for callback routing (in-memory, per-process)
+const buttonLabelMap = new Map<string, string>();
+
+function makeButtonId(label: string): string {
+  // Generate a short stable ID (max 32 bytes) to stay well under Telegram's 64-byte limit
+  const id = Buffer.from(label).toString("base64url").slice(0, 24);
+  buttonLabelMap.set(id, label);
+  return `btn:${id}`;
+}
+
 async function sendMessageWithButtons(
   token: string,
   chatId: number,
@@ -431,7 +441,7 @@ async function sendMessageWithButtons(
   const normalized = normalizeTelegramText(text).replace(/\[react:[^\]\r\n]+\]/gi, "");
   const html = markdownToTelegramHtml(normalized);
   const inline_keyboard = buttonRows.map((row) =>
-    row.map((label) => ({ text: label, callback_data: `btn:${label}` }))
+    row.map((label) => ({ text: label, callback_data: makeButtonId(label) }))
   );
   try {
     await callApi(token, "sendMessage", {
@@ -936,6 +946,16 @@ async function handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> 
   const config = getSettings().telegram;
   const data = query.data ?? "";
 
+  // Enforce allowlist on callback queries (same policy as regular messages)
+  const callbackUserId = query.from.id;
+  if (config.allowedUserIds.length > 0 && !config.allowedUserIds.includes(callbackUserId)) {
+    await callApi(config.token, "answerCallbackQuery", {
+      callback_query_id: query.id,
+      text: "Unauthorized.",
+    }).catch(() => {});
+    return;
+  }
+
   // Secretary pattern: "sec_yes_<8hex>" or "sec_no_<8hex>"
   const secMatch = data.match(/^sec_(yes|no)_([0-9a-f]{8})$/);
   if (secMatch) {
@@ -965,9 +985,10 @@ async function handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> 
     return;
   }
 
-  // Generic inline button press (btn:<label> pattern from [buttons: ...] directive)
+  // Generic inline button press (btn:<id> pattern from [buttons: ...] directive)
   if (data.startsWith("btn:")) {
-    const label = data.slice(4);
+    const btnId = data.slice(4);
+    const label = buttonLabelMap.get(btnId) ?? btnId;
     // Ack immediately so Telegram stops showing the loading spinner
     await callApi(config.token, "answerCallbackQuery", {
       callback_query_id: query.id,
