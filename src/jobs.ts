@@ -19,6 +19,10 @@ export interface Job {
   label?: string;
   /** When false, the job is loaded but not scheduled. Defaults to true. */
   enabled?: boolean;
+  /** Max number of retry attempts on failure before giving up until next scheduled run. */
+  retry?: number;
+  /** Seconds to wait between retry attempts. Defaults to 300 (5 min). */
+  retryDelay?: number;
 }
 
 function parseFrontmatterValue(raw: string): string {
@@ -86,7 +90,13 @@ function parseJobFile(name: string, content: string): Job | null {
       ? false
       : undefined;
 
-  return { name, schedule, prompt, recurring, notify, model, timeoutSeconds, agent, label, enabled };
+  const retryLine = lines.find((l) => l.startsWith("retry:"));
+  const retry = retryLine ? parseInt(parseFrontmatterValue(retryLine.replace("retry:", "")), 10) || undefined : undefined;
+
+  const retryDelayLine = lines.find((l) => l.startsWith("retry_delay:"));
+  const retryDelay = retryDelayLine ? parseInt(parseFrontmatterValue(retryDelayLine.replace("retry_delay:", "")), 10) || undefined : undefined;
+
+  return { name, schedule, prompt, recurring, notify, model, timeoutSeconds, agent, label, enabled, retry, retryDelay };
 }
 
 export async function loadJobs(): Promise<Job[]> {
