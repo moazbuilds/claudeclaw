@@ -423,10 +423,12 @@ function extractButtonsDirective(text: string): { cleanedText: string; buttonRow
 
 // Map short button IDs to labels for callback routing (in-memory, per-process)
 const buttonLabelMap = new Map<string, string>();
+let _buttonCounter = 0;
 
 function makeButtonId(label: string): string {
-  // Generate a short stable ID (max 32 bytes) to stay well under Telegram's 64-byte limit
-  const id = Buffer.from(label).toString("base64url").slice(0, 24);
+  // Use a per-button counter to guarantee uniqueness — avoids collisions when
+  // two labels share the same first ~18 bytes (base64 truncation bug).
+  const id = `b${_buttonCounter++}`;
   buttonLabelMap.set(id, label);
   return `btn:${id}`;
 }
@@ -443,22 +445,28 @@ async function sendMessageWithButtons(
   const inline_keyboard = buttonRows.map((row) =>
     row.map((label) => ({ text: label, callback_data: makeButtonId(label) }))
   );
-  try {
-    await callApi(token, "sendMessage", {
-      chat_id: chatId,
-      text: html,
-      parse_mode: "HTML",
-      reply_markup: { inline_keyboard },
-      ...(threadId ? { message_thread_id: threadId } : {}),
-    });
-  } catch {
-    // Fallback to plain text with buttons
-    await callApi(token, "sendMessage", {
-      chat_id: chatId,
-      text: normalized,
-      reply_markup: { inline_keyboard },
-      ...(threadId ? { message_thread_id: threadId } : {}),
-    });
+  const MAX_LEN = 4096;
+  // Send all chunks except the last without buttons, then attach buttons to the final chunk.
+  for (let i = 0; i < html.length; i += MAX_LEN) {
+    const isLast = i + MAX_LEN >= html.length;
+    const replyMarkup = isLast ? { inline_keyboard } : undefined;
+    try {
+      await callApi(token, "sendMessage", {
+        chat_id: chatId,
+        text: html.slice(i, i + MAX_LEN),
+        parse_mode: "HTML",
+        ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+        ...(threadId ? { message_thread_id: threadId } : {}),
+      });
+    } catch {
+      // Fallback to plain text
+      await callApi(token, "sendMessage", {
+        chat_id: chatId,
+        text: normalized.slice(i, i + MAX_LEN),
+        ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+        ...(threadId ? { message_thread_id: threadId } : {}),
+      });
+    }
   }
 }
 
