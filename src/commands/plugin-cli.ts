@@ -54,9 +54,9 @@ function buildArgs(action: PluginAction): string[] {
   }
 }
 
-export async function runPluginCli(action: PluginAction): Promise<CliResult> {
+export async function runPluginCli(action: PluginAction, cwd?: string): Promise<CliResult> {
   const args = buildArgs(action);
-  const proc = Bun.spawn(args, { stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawn(args, { stdout: "pipe", stderr: "pipe", ...(cwd ? { cwd } : {}) });
 
   let killed = false;
   const timer = setTimeout(() => {

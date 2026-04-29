@@ -158,7 +158,8 @@ async function runClaudeOnce(
   model: string,
   api: string,
   baseEnv: Record<string, string>,
-  timeoutMs: number = DEFAULT_SESSION_TIMEOUT_MS
+  timeoutMs: number = DEFAULT_SESSION_TIMEOUT_MS,
+  cwd?: string
 ): Promise<{ rawStdout: string; stderr: string; exitCode: number }> {
   const args = [...baseArgs];
   const normalizedModel = model.trim().toLowerCase();
@@ -168,6 +169,7 @@ async function runClaudeOnce(
     stdout: "pipe",
     stderr: "pipe",
     env: buildChildEnv(baseEnv, model, api),
+    ...(cwd ? { cwd } : {}),
   });
 
   const timeoutPromise = new Promise<never>((_, reject) => {
@@ -206,6 +208,14 @@ async function runClaudeOnce(
 }
 
 const PROJECT_DIR = process.cwd();
+
+// Returns the working directory for a named agent's Claude spawn.
+// The agent directory is created on first use so the spawn never fails on a missing cwd.
+export async function ensureAgentDir(agentName: string): Promise<string> {
+  const dir = join(PROJECT_DIR, "agents", agentName);
+  await mkdir(dir, { recursive: true });
+  return dir;
+}
 
 const DIR_SCOPE_PROMPT = [
   `CRITICAL SECURITY CONSTRAINT: You are scoped to the project directory: ${PROJECT_DIR}`,
@@ -463,8 +473,9 @@ async function execClaude(
   }
 
   const baseEnv = cleanSpawnEnv();
+  const spawnCwd = agentName ? await ensureAgentDir(agentName) : undefined;
 
-  let exec = await runClaudeOnce(args, primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs);
+  let exec = await runClaudeOnce(args, primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs, spawnCwd);
   const primaryRateLimit = extractRateLimitMessage(exec.rawStdout, exec.stderr);
   let usedFallback = false;
 
@@ -472,7 +483,7 @@ async function execClaude(
     console.warn(
       `[${new Date().toLocaleTimeString()}] Claude limit reached; retrying with fallback${fallbackConfig.model ? ` (${fallbackConfig.model})` : ""}...`
     );
-    exec = await runClaudeOnce(args, fallbackConfig.model, fallbackConfig.api, baseEnv, timeoutMs);
+    exec = await runClaudeOnce(args, fallbackConfig.model, fallbackConfig.api, baseEnv, timeoutMs, spawnCwd);
     usedFallback = true;
   }
 

@@ -1,4 +1,5 @@
 import { runPluginCli, readPluginManifest, type PluginManifest } from "./plugin-cli";
+import { ensureAgentDir } from "../runner";
 
 const WIZARD_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -88,12 +89,12 @@ const MENU = `Plugin marketplace — what would you like to do?
 Reply with a number. Send 'cancel' at any time to exit and return to normal chat.
 (While this wizard is open all messages are routed here, not to Claude.)`;
 
-const SCOPE_PROMPT = `Install scope (reply 'cancel' to exit):
-
-1) user — ~/.claude/plugins/ (available across all projects)
-2) project — .claude/plugins/ (this deployment only)
-
-Note: per-agent isolation is not yet enforced; both options are instance-wide in this release.`;
+function buildScopePrompt(agentName?: string): string {
+  const projectNote = agentName
+    ? `2) project — agents/${agentName}/.claude/plugins/ (this agent only)`
+    : "2) project — .claude/plugins/ (this deployment only)";
+  return `Install scope (reply 'cancel' to exit):\n\n1) user — ~/.claude/plugins/ (available to all agents)\n${projectNote}\n`;
+}
 
 function formatManifest(plugin: string, manifest: PluginManifest | null, scope: "user" | "project"): string {
   const scopeLabel = scope === "user" ? "user (~/.claude/plugins/)" : "project (.claude/plugins/)";
@@ -189,12 +190,12 @@ export async function handleWizardInput(ctx: WizardContext, rawText: string): Pr
 
     case "install-plugin-ref": {
       entry.state = { step: "install-scope", plugin: text };
-      return SCOPE_PROMPT;
+      return buildScopePrompt(ctx.agentName);
     }
 
     case "install-scope": {
       const scope = text === "1" ? "user" : text === "2" ? "project" : null;
-      if (!scope) return `Reply '1' for user or '2' for project scope:\n\n${SCOPE_PROMPT}`;
+      if (!scope) return `Reply '1' for user or '2' for project scope:\n\n${buildScopePrompt(ctx.agentName)}`;
       const manifest = await readPluginManifest(state.plugin);
       entry.state = { step: "install-confirm", plugin: state.plugin, scope, manifest };
       return formatManifest(state.plugin, manifest, scope);
@@ -203,10 +204,16 @@ export async function handleWizardInput(ctx: WizardContext, rawText: string): Pr
     case "install-confirm": {
       if (lower !== "yes") return `Reply 'yes' to install or 'cancel' to exit.`;
       sessions.delete(k);
-      const r = await runPluginCli({ kind: "install", plugin: state.plugin, scope: state.scope });
+      const cwd = state.scope === "project" && ctx.agentName
+        ? await ensureAgentDir(ctx.agentName)
+        : undefined;
+      const r = await runPluginCli({ kind: "install", plugin: state.plugin, scope: state.scope }, cwd);
       const msg = formatResult(r.ok, r.stdout, r.stderr);
       if (r.ok) {
-        return `${msg}\n\nThe plugin is now installed. Skills it provides will be available as /<plugin>:<skill-name> commands.`;
+        const location = state.scope === "project" && ctx.agentName
+          ? `agents/${ctx.agentName}/.claude/plugins/`
+          : "~/.claude/plugins/";
+        return `${msg}\n\nInstalled to ${location}. Skills it provides will be available as /<plugin>:<skill-name> commands.`;
       }
       return msg;
     }

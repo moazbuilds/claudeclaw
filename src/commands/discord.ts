@@ -118,7 +118,7 @@ let applicationId: string | null = null;
 let readyGuildIds: Set<string> | null = null;
 
 // Track known thread channel IDs and their parent channel IDs for multi-session support
-const knownThreads = new Map<string, { parentId: string }>();
+const knownThreads = new Map<string, { parentId: string; agentName?: string }>();
 
 // --- Debug ---
 
@@ -508,7 +508,8 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
   // Plugin wizard: intercept /plugin and /claudeclaw:plugin before thread management and Claude routing.
   // Must run here — after auth + non-empty checks but before AI thread intent classification,
   // so an active wizard cannot be bypassed by messages that classify as "hire" / "fire".
-  const wizardCtx = { iface: "discord" as const, scopeId: channelId };
+  const threadInfo = knownThreads.get(channelId);
+  const wizardCtx = { iface: "discord" as const, scopeId: channelId, agentName: threadInfo?.agentName };
   if ((cleanContent.trim().startsWith("/") && isWizardTrigger(cleanContent.trim().split(/\s+/, 1)[0].toLowerCase())) || hasActiveWizard(wizardCtx)) {
     const reply = await handleWizardInput(wizardCtx, cleanContent.trim());
     await sendMessage(config.token, channelId, reply);
@@ -583,7 +584,7 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
                 auto_archive_duration: 4320, // 3 days
               },
             );
-            knownThreads.set(thread.id, { parentId: channelId });
+            knownThreads.set(thread.id, { parentId: channelId, agentName: threadName });
             // Don't pre-create session — let Claude CLI create it on first message
             // The real UUID will be captured and saved by runner.ts
             await sendMessage(config.token, thread.id, `🧵 Thread **${threadName}** created with independent session. Start chatting!`);
@@ -1047,8 +1048,8 @@ function handleDispatch(token: string, eventName: string, data: any): void {
 
     case "THREAD_CREATE":
       if (data.id && data.parent_id) {
-        knownThreads.set(data.id, { parentId: data.parent_id });
-        debugLog(`Thread tracked: ${data.id} (parent: ${data.parent_id})`);
+        knownThreads.set(data.id, { parentId: data.parent_id, agentName: data.name ?? undefined });
+        debugLog(`Thread tracked: ${data.id} (parent: ${data.parent_id} name: ${data.name ?? "unknown"})`);
         if (getSettings().discord.listenChannels.includes(data.parent_id)) {
           discordApi(token, "PUT", `/channels/${data.id}/thread-members/@me`).catch((err) =>
             console.error(`[Discord] Failed to join thread ${data.id}: ${err}`),
@@ -1076,7 +1077,8 @@ function handleDispatch(token: string, eventName: string, data: any): void {
           );
           debugLog(`Thread archived and cleaned up: ${data.id}`);
         } else {
-          knownThreads.set(data.id, { parentId: data.parent_id });
+          const existing = knownThreads.get(data.id);
+          knownThreads.set(data.id, { parentId: data.parent_id, agentName: data.name ?? existing?.agentName });
         }
       }
       break;
@@ -1084,7 +1086,7 @@ function handleDispatch(token: string, eventName: string, data: any): void {
     case "THREAD_LIST_SYNC":
       if (data.threads) {
         for (const thread of data.threads) {
-          knownThreads.set(thread.id, { parentId: thread.parent_id });
+          knownThreads.set(thread.id, { parentId: thread.parent_id, agentName: thread.name ?? undefined });
         }
       }
       break;
