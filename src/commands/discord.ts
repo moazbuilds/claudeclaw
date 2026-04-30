@@ -281,7 +281,7 @@ function guildTriggerReason(message: DiscordMessage): string | null {
   if (botUserId && message.referenced_message?.author?.id === botUserId) return "reply_to_bot";
 
   // Mention via mentions array
-  if (botUserId && message.mentions.some((m) => m.id === botUserId)) return "mention";
+  if (botUserId && message.mentions?.some((m) => m.id === botUserId)) return "mention";
 
   // Mention in content (fallback)
   if (botUserId && message.content.includes(`<@${botUserId}>`)) return "mention_in_content";
