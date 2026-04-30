@@ -102,6 +102,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           gh pr create \
+            --repo TerrysPOV/ClaudeClaw-Plus \
             --title "chore: sync upstream (${{ steps.check.outputs.new_commits }} new commits)" \
             --body "Automated sync from moazbuilds/claudeclaw:master. Auto-merge was clean - ready to merge." \
             --head "${{ steps.branch.outputs.name }}" \
@@ -113,6 +114,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           gh pr create \
+            --repo TerrysPOV/ClaudeClaw-Plus \
             --title "chore: sync upstream - CONFLICTS need manual review" \
             --body "Automated sync from moazbuilds/claudeclaw:master has merge conflicts. Resolve before merging." \
             --head "${{ steps.branch.outputs.name }}" \
