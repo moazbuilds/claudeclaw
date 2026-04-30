@@ -1085,7 +1085,7 @@ async function handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> 
     if (!label) {
       await callApi(config.token, "answerCallbackQuery", {
         callback_query_id: query.id,
-        text: "Ce bouton a expiré — relance la conversation.",
+        text: "This button has expired. Please continue the conversation.",
         show_alert: true,
       }).catch(() => {});
       return;
