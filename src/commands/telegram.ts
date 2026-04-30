@@ -289,10 +289,14 @@ function extractTelegramCommand(text: string): string | null {
 }
 
 async function callApi<T>(token: string, method: string, body?: Record<string, unknown>): Promise<T> {
+  // Add 15s buffer on top of Telegram's own long-poll timeout (default 30s)
+  const telegramTimeout = (body?.timeout as number | undefined) ?? 0;
+  const httpTimeout = Math.max(30_000, (telegramTimeout + 15) * 1000);
   const res = await fetch(`${API_BASE}${token}/${method}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(httpTimeout),
   });
   if (!res.ok) {
     throw new Error(`Telegram API ${method}: ${res.status} ${res.statusText}`);
@@ -430,6 +434,81 @@ async function sendReaction(token: string, chatId: number, messageId: number, em
     message_id: messageId,
     reaction: [{ type: "emoji", emoji }],
   });
+}
+
+// --- Inline buttons support ---
+
+/**
+ * Parse [buttons: Label A | Label B \n Label C | Label D] directives from Claude output.
+ * Each line of the directive becomes a row; pipes split buttons within a row.
+ * Returns button rows and the cleaned text with the directive removed.
+ */
+function extractButtonsDirective(text: string): { cleanedText: string; buttonRows: string[][] | null } {
+  let buttonRows: string[][] | null = null;
+  const cleanedText = text
+    .replace(/\[buttons:([^\]]+)\]/gi, (_match, raw) => {
+      const rows = String(raw)
+        .trim()
+        .split(/\r?\n/)
+        .map((row) => row.split("|").map((label) => label.trim()).filter(Boolean))
+        .filter((row) => row.length > 0);
+      if (rows.length > 0) buttonRows = rows;
+      return "";
+    })
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return { cleanedText, buttonRows };
+}
+
+// Map short button IDs to labels for callback routing (in-memory, per-process).
+// IDs are never recycled within a process lifetime — the counter is strictly monotonic.
+const buttonLabelMap = new Map<string, string>();
+let _buttonCounter = 0;
+
+function makeButtonId(label: string): string {
+  // Per-button counter guarantees uniqueness within a process lifetime.
+  const id = `b${_buttonCounter++}`;
+  buttonLabelMap.set(id, label);
+  return `btn:${id}`;
+}
+
+async function sendMessageWithButtons(
+  token: string,
+  chatId: number,
+  text: string,
+  buttonRows: string[][],
+  threadId?: number
+): Promise<void> {
+  const body = text.trim() || "\u200B"; // zero-width space when text is empty (buttons-only)
+  const normalized = normalizeTelegramText(body).replace(/\[react:[^\]\r\n]+\]/gi, "");
+  const html = markdownToTelegramHtml(normalized);
+  const inline_keyboard = buttonRows.map((row) =>
+    row.map((label) => ({ text: label, callback_data: makeButtonId(label) }))
+  );
+  const MAX_LEN = 4096;
+  // Send all chunks except the last without buttons; attach buttons only to the final chunk.
+  for (let i = 0; i < html.length; i += MAX_LEN) {
+    const isLast = i + MAX_LEN >= html.length;
+    const replyMarkup = isLast ? { inline_keyboard } : undefined;
+    try {
+      await callApi(token, "sendMessage", {
+        chat_id: chatId,
+        text: html.slice(i, i + MAX_LEN),
+        parse_mode: "HTML",
+        ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+        ...(threadId ? { message_thread_id: threadId } : {}),
+      });
+    } catch {
+      // Fallback to plain text if HTML parse fails
+      await callApi(token, "sendMessage", {
+        chat_id: chatId,
+        text: normalized.slice(i, i + MAX_LEN),
+        ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+        ...(threadId ? { message_thread_id: threadId } : {}),
+      });
+    }
+  }
 }
 
 let botUsername: string | null = null;
@@ -909,7 +988,8 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
       const { cleanedText: afterReact, reactionEmoji } = extractReactionDirective(result.stdout || "");
       const hadVoiceDirective = /\[voice:\/[^\]\r\n]+\]/i.test(afterReact);
       const { cleanedText: afterVoice, voicePaths } = extractVoiceDirectives(afterReact);
-      const { cleanedText, filePaths } = extractSendFileDirectives(afterVoice);
+      const { cleanedText: afterFile, filePaths } = extractSendFileDirectives(afterVoice);
+      const { cleanedText, buttonRows } = extractButtonsDirective(afterFile);
       if (reactionEmoji) {
         await sendReaction(config.token, chatId, message.message_id, reactionEmoji).catch((err) => {
           console.error(`[Telegram] Failed to send reaction for ${label}: ${err instanceof Error ? err.message : err}`);
@@ -923,7 +1003,10 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
           console.error(`[Telegram] Failed to send voice ${vp} for ${label}: ${err instanceof Error ? err.message : err}`);
         }
       }
-      if (cleanedText) {
+      if (buttonRows) {
+        // Route on buttonRows regardless of whether cleanedText is empty
+        await sendMessageWithButtons(config.token, chatId, cleanedText, buttonRows, threadId);
+      } else if (cleanedText) {
         await sendMessage(config.token, chatId, cleanedText, threadId);
       }
       for (const fp of filePaths) {
@@ -934,7 +1017,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
           await sendMessage(config.token, chatId, `Failed to send file: ${fp.split("/").pop()}`, threadId);
         }
       }
-      if (!cleanedText && filePaths.length === 0 && voicePaths.length === 0 && !hadVoiceDirective) {
+      if (!cleanedText && !buttonRows && filePaths.length === 0 && voicePaths.length === 0 && !hadVoiceDirective) {
         await sendMessage(config.token, chatId, "(empty response)", threadId);
       }
     }
@@ -952,6 +1035,16 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
 async function handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> {
   const config = getSettings().telegram;
   const data = query.data ?? "";
+
+  // Enforce allowlist on callback queries (same policy as regular messages)
+  const callbackUserId = query.from.id;
+  if (config.allowedUserIds.length > 0 && !config.allowedUserIds.includes(callbackUserId)) {
+    await callApi(config.token, "answerCallbackQuery", {
+      callback_query_id: query.id,
+      text: "Unauthorized.",
+    }).catch(() => {});
+    return;
+  }
 
   // Secretary pattern: "sec_yes_<8hex>" or "sec_no_<8hex>"
   const secMatch = data.match(/^sec_(yes|no)_([0-9a-f]{8})$/);
@@ -979,6 +1072,68 @@ async function handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> 
       callback_query_id: query.id,
       text: answerText,
     }).catch(() => {});
+    return;
+  }
+
+  // Generic inline button press (btn:<id> pattern from [buttons: ...] directive)
+  if (data.startsWith("btn:")) {
+    const btnId = data.slice(4);
+    const label = buttonLabelMap.get(btnId);
+
+    // Reject unknown/expired IDs — don't fall back to treating the raw ID as a label.
+    // IDs are process-local; after a daemon restart old buttons are always expired.
+    if (!label) {
+      await callApi(config.token, "answerCallbackQuery", {
+        callback_query_id: query.id,
+        text: "Ce bouton a expiré — relance la conversation.",
+        show_alert: true,
+      }).catch(() => {});
+      return;
+    }
+
+    // Ack immediately so Telegram stops showing the loading spinner
+    await callApi(config.token, "answerCallbackQuery", {
+      callback_query_id: query.id,
+      text: label,
+    }).catch(() => {});
+
+    // Edit original message to mark the selected button visually
+    if (query.message) {
+      const originalText = query.message.text ?? "";
+      await callApi(config.token, "editMessageText", {
+        chat_id: query.message.chat.id,
+        message_id: query.message.message_id,
+        text: `${originalText}\n\n› ${label}`,
+      }).catch(() => {});
+    }
+
+    // Inject button press as a new user message to the running Claude session
+    const chatId = query.message?.chat.id ?? query.from.id;
+    const threadId = query.message?.message_thread_id;
+    try {
+      const result = await runUserMessage("telegram", `[Button pressed: ${label}]`);
+      if (result.exitCode === 0 && result.stdout) {
+        const { cleanedText: afterReact, reactionEmoji } = extractReactionDirective(result.stdout);
+        const { cleanedText: afterFile, filePaths } = extractSendFileDirectives(afterReact);
+        const { cleanedText, buttonRows } = extractButtonsDirective(afterFile);
+        if (reactionEmoji && query.message) {
+          await sendReaction(config.token, chatId, query.message.message_id, reactionEmoji).catch(() => {});
+        }
+        if (buttonRows) {
+          await sendMessageWithButtons(config.token, chatId, cleanedText, buttonRows, threadId);
+        } else if (cleanedText) {
+          await sendMessage(config.token, chatId, cleanedText, threadId);
+        }
+        for (const fp of filePaths) {
+          await sendDocumentToChat(config.token, chatId, fp, threadId).catch(() => {});
+        }
+      } else if (result.exitCode !== 0) {
+        await sendMessage(config.token, chatId, `Error (exit ${result.exitCode}): ${result.stderr || "Unknown error"}`, threadId);
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      await sendMessage(config.token, chatId, `Error: ${errMsg}`, threadId);
+    }
     return;
   }
 
