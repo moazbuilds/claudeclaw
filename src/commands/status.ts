@@ -1,7 +1,7 @@
 import { join } from "path";
 import { readdir, readFile } from "fs/promises";
 import { homedir } from "os";
-import { getJobsDir, loadSettings } from "../config";
+import { getJobsDir, getAgentsDir, loadSettings } from "../config";
 
 const CLAUDE_DIR = join(process.cwd(), ".claude");
 const HEARTBEAT_DIR = join(CLAUDE_DIR, "claudeclaw");
@@ -100,16 +100,36 @@ async function showStatus(): Promise<boolean> {
   } catch {}
 
   try {
-    const files = await readdir(getJobsDir());
-    const mdFiles = files.filter((f) => f.endsWith(".md"));
-    if (mdFiles.length > 0) {
-      console.log(`  Jobs: ${mdFiles.length}`);
-      for (const f of mdFiles) {
+    const jobLines: string[] = [];
+    // Standalone jobs
+    try {
+      const files = await readdir(getJobsDir());
+      for (const f of files.filter((f) => f.endsWith(".md"))) {
         const content = await Bun.file(join(getJobsDir(), f)).text();
         const match = content.match(/schedule:\s*["']?([^"'\n]+)/);
         const schedule = match ? match[1].trim() : "unknown";
-        console.log(`    - ${f.replace(/\.md$/, "")} [${schedule}]`);
+        jobLines.push(`    - ${f.replace(/\.md$/, "")} [${schedule}]`);
       }
+    } catch {}
+    // Agent-scoped jobs: agents/<name>/jobs/*.md
+    try {
+      const agentDirs = await readdir(getAgentsDir());
+      for (const agentName of agentDirs) {
+        try {
+          const agentJobsDir = join(getAgentsDir(), agentName, "jobs");
+          const files = await readdir(agentJobsDir);
+          for (const f of files.filter((f) => f.endsWith(".md"))) {
+            const content = await Bun.file(join(agentJobsDir, f)).text();
+            const match = content.match(/schedule:\s*["']?([^"'\n]+)/);
+            const schedule = match ? match[1].trim() : "unknown";
+            jobLines.push(`    - ${agentName}/${f.replace(/\.md$/, "")} [${schedule}]`);
+          }
+        } catch {}
+      }
+    } catch {}
+    if (jobLines.length > 0) {
+      console.log(`  Jobs: ${jobLines.length}`);
+      for (const line of jobLines) console.log(line);
     }
   } catch {}
 
