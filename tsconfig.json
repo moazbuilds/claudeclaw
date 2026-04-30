@@ -1,6 +1,6 @@
 {
   "compilerOptions": {
-    "types": ["bun-types"],
+    "types": ["bun"],
     "module": "esnext",
     "target": "esnext",
     "moduleResolution": "bundler"
