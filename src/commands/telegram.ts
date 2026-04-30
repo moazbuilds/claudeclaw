@@ -287,10 +287,14 @@ function extractTelegramCommand(text: string): string | null {
 }
 
 async function callApi<T>(token: string, method: string, body?: Record<string, unknown>): Promise<T> {
+  // Add 15s buffer on top of Telegram's own long-poll timeout (default 30s)
+  const telegramTimeout = (body?.timeout as number | undefined) ?? 0;
+  const httpTimeout = Math.max(30_000, (telegramTimeout + 15) * 1000);
   const res = await fetch(`${API_BASE}${token}/${method}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(httpTimeout),
   });
   if (!res.ok) {
     throw new Error(`Telegram API ${method}: ${res.status} ${res.statusText}`);

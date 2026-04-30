@@ -21,7 +21,7 @@ export async function checkExistingDaemon(): Promise<number | null> {
   }
 
   const pid = Number(raw);
-  if (!pid || isNaN(pid)) {
+  if (!pid || isNaN(pid) || pid <= 0) {
     await cleanupPidFile();
     return null;
   }
