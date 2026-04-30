@@ -98,6 +98,7 @@ jobs:
 
       - name: Open PR (clean merge)
         if: steps.check.outputs.new_commits != '0' && inputs.dry_run != true && steps.merge.outputs.status == 'clean'
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -105,15 +106,18 @@ jobs:
             --title "chore: sync upstream (${{ steps.check.outputs.new_commits }} new commits)" \
             --body "Automated sync from moazbuilds/claudeclaw:master. Auto-merge was clean - ready to merge." \
             --head "${{ steps.branch.outputs.name }}" \
-            --base main
+            --base main \
+          || echo "::notice::PR creation failed. Open manually: https://github.com/TerrysPOV/moazbuilds-claudeclaw/compare/main...${{ steps.branch.outputs.name }}?expand=1"
 
       - name: Open PR (needs review)
         if: steps.check.outputs.new_commits != '0' && inputs.dry_run != true && steps.merge.outputs.status == 'conflicts'
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh pr create \
             --title "chore: sync upstream - CONFLICTS need manual review" \
-            --body "Automated sync from moazbuilds/claudeclaw:master has merge conflicts. Resolve before merging. Typical files: src/config.ts, src/runner.ts" \
+            --body "Automated sync from moazbuilds/claudeclaw:master has merge conflicts. Resolve before merging." \
             --head "${{ steps.branch.outputs.name }}" \
-            --base main
+            --base main \
+          || echo "::notice::PR creation failed. Open manually: https://github.com/TerrysPOV/moazbuilds-claudeclaw/compare/main...${{ steps.branch.outputs.name }}?expand=1"
