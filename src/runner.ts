@@ -1,7 +1,15 @@
 import { mkdir, readFile, writeFile, realpath } from "fs/promises";
 import { join, resolve, sep } from "path";
 import { existsSync } from "fs";
-import { getSession, createSession, incrementTurn, markCompactWarned } from "./sessions";
+import {
+  getSession,
+  createSession,
+  incrementTurn,
+  markCompactWarned,
+  getFallbackSession,
+  createFallbackSession,
+  incrementFallbackTurn,
+} from "./sessions";
 import {
   getThreadSession,
   createThreadSession,
@@ -691,8 +699,26 @@ async function execClaude(
     console.warn(
       `[${new Date().toLocaleTimeString()}] Claude limit reached; retrying with fallback${fallbackConfig.model ? ` (${fallbackConfig.model})` : ""}...`
     );
-    exec = await runClaudeStream(args, fallbackConfig.model, fallbackConfig.api, baseEnv, timeoutMs, spawnCwd);
+    const fallbackSession = await getFallbackSession(agentName);
+    const fallbackArgs = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose", ...securityArgs];
+    if (fallbackSession) {
+      fallbackArgs.push("--resume", fallbackSession.sessionId);
+    }
+    if (appendParts.length > 0) {
+      fallbackArgs.push("--append-system-prompt", appendParts.join("\n\n"));
+    }
+    exec = await runClaudeStream(fallbackArgs, fallbackConfig.model, fallbackConfig.api, baseEnv, timeoutMs, spawnCwd);
     usedFallback = true;
+    const fallbackRateLimit = extractRateLimitMessage(exec.rawStdout, exec.stderr);
+    if (!fallbackRateLimit) {
+      if (!fallbackSession && exec.sessionId) {
+        await createFallbackSession(exec.sessionId, agentName);
+        const label = agentName ? ` (agent ${agentName})` : "";
+        console.log(`[${new Date().toLocaleTimeString()}] Fallback session created: ${exec.sessionId}${label}`);
+      } else if (fallbackSession) {
+        await incrementFallbackTurn(agentName);
+      }
+    }
   }
 
   const rawStdout = exec.rawStdout;

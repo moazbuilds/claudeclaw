@@ -103,6 +103,69 @@ export async function resetSession(agentName?: string): Promise<void> {
   }
 }
 
+// --- Fallback session management ---
+// Fallback sessions are stored alongside primary sessions but keyed separately.
+// They persist across rate-limit events so the fallback provider accumulates context.
+
+const FALLBACK_SESSION_FILE = join(HEARTBEAT_DIR, "session_fallback.json");
+
+function fallbackSessionPathFor(agentName?: string): string {
+  if (agentName) return join(getAgentsDir(), agentName, "session_fallback.json");
+  return FALLBACK_SESSION_FILE;
+}
+
+async function loadFallbackSession(agentName?: string): Promise<GlobalSession | null> {
+  try {
+    return await Bun.file(fallbackSessionPathFor(agentName)).json();
+  } catch {
+    return null;
+  }
+}
+
+async function saveFallbackSession(session: GlobalSession, agentName?: string): Promise<void> {
+  await Bun.write(fallbackSessionPathFor(agentName), JSON.stringify(session, null, 2) + "\n");
+}
+
+export async function getFallbackSession(
+  agentName?: string
+): Promise<{ sessionId: string; turnCount: number } | null> {
+  const existing = await loadFallbackSession(agentName);
+  if (existing) {
+    if (typeof existing.turnCount !== "number") existing.turnCount = 0;
+    existing.lastUsedAt = new Date().toISOString();
+    await saveFallbackSession(existing, agentName);
+    return { sessionId: existing.sessionId, turnCount: existing.turnCount };
+  }
+  return null;
+}
+
+export async function createFallbackSession(sessionId: string, agentName?: string): Promise<void> {
+  await saveFallbackSession({
+    sessionId,
+    createdAt: new Date().toISOString(),
+    lastUsedAt: new Date().toISOString(),
+    turnCount: 0,
+    compactWarned: false,
+  }, agentName);
+}
+
+export async function incrementFallbackTurn(agentName?: string): Promise<number> {
+  const existing = await loadFallbackSession(agentName);
+  if (!existing) return 0;
+  if (typeof existing.turnCount !== "number") existing.turnCount = 0;
+  existing.turnCount += 1;
+  await saveFallbackSession(existing, agentName);
+  return existing.turnCount;
+}
+
+export async function resetFallbackSession(agentName?: string): Promise<void> {
+  try {
+    await unlink(fallbackSessionPathFor(agentName));
+  } catch {
+    // already gone
+  }
+}
+
 export async function backupSession(): Promise<string | null> {
   const existing = await loadSession();
   if (!existing) return null;
