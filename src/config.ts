@@ -76,7 +76,7 @@ const DEFAULT_SETTINGS: Settings = {
     excludeWindows: [],
     forwardToTelegram: true,
   },
-  telegram: { token: "", allowedUserIds: [], listenChats: [] },
+  telegram: { token: "", allowedUserIds: [], listenChats: [], receiveEnabled: true },
   discord: { token: "", allowedUserIds: [], listenChannels: [], listenGuilds: [] },
   slack: { botToken: "", appToken: "", allowedUserIds: [], listenChannels: [] },
   security: { level: "moderate", allowedTools: [], disallowedTools: [] },
@@ -106,6 +106,8 @@ export interface TelegramConfig {
   token: string;
   allowedUserIds: number[];
   listenChats: number[];
+  /** When false, skip Telegram polling (incoming messages). Useful for send-only instances. Default: true */
+  receiveEnabled: boolean;
 }
 
 export interface DiscordConfig {
@@ -148,6 +150,7 @@ export interface Settings {
   security: SecurityConfig;
   web: WebConfig;
   stt: SttConfig;
+  apiToken?: string;
   sessionTimeoutMs: number;
   watchdog: WatchdogSettings;
   plugins: Record<string, PluginEntry>;
@@ -302,6 +305,7 @@ function parseSettings(
       token: process.env.TELEGRAM_TOKEN?.trim() || (typeof raw.telegram?.token === "string" ? raw.telegram.token.trim() : ""),
       allowedUserIds: raw.telegram?.allowedUserIds ?? [],
       listenChats: Array.isArray(raw.telegram?.listenChats) ? raw.telegram.listenChats.map(Number) : [],
+      receiveEnabled: raw.telegram?.receiveEnabled !== false,
     },
     discord: {
       token: process.env.DISCORD_TOKEN?.trim() || (typeof raw.discord?.token === "string" ? raw.discord.token.trim() : ""),
@@ -352,6 +356,7 @@ function parseSettings(
       maxAgeHours: Number.isFinite(raw.session?.maxAgeHours) ? Number(raw.session.maxAgeHours) : 24,
       summaryPath: typeof raw.session?.summaryPath === "string" ? raw.session.summaryPath.trim() : "",
     },
+    apiToken: typeof raw.apiToken === "string" && raw.apiToken.trim() ? raw.apiToken.trim() : undefined,
     ...(typeof raw.jobsDir === "string" && raw.jobsDir.trim() ? { jobsDir: raw.jobsDir.trim() } : {}),
   };
 }

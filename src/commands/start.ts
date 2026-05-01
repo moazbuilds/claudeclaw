@@ -377,13 +377,13 @@ export async function start(args: string[] = []) {
   let telegramSend: ((chatId: number, text: string) => Promise<void>) | null = null;
   let telegramToken = "";
 
-  async function initTelegram(token: string) {
+  async function initTelegram(token: string, receiveEnabled = true) {
     if (token && token !== telegramToken) {
       const { startPolling, sendMessage } = await import("./telegram");
-      startPolling(debugFlag);
+      if (receiveEnabled) startPolling(debugFlag);
       telegramSend = (chatId, text) => sendMessage(token, chatId, text);
       telegramToken = token;
-      console.log(`[${ts()}] Telegram: enabled`);
+      console.log(`[${ts()}] Telegram: enabled${receiveEnabled ? "" : " (send-only)"}`);
     } else if (!token && telegramToken) {
       telegramSend = null;
       telegramToken = "";
@@ -391,7 +391,7 @@ export async function start(args: string[] = []) {
     }
   }
 
-  await initTelegram(currentSettings.telegram.token);
+  await initTelegram(currentSettings.telegram.token, currentSettings.telegram.receiveEnabled);
   if (!telegramToken) console.log("  Telegram: not configured");
 
   // --- Discord ---
@@ -707,7 +707,7 @@ export async function start(args: string[] = []) {
       currentJobs = newJobs;
 
       // Telegram changes
-      await initTelegram(newSettings.telegram.token);
+      await initTelegram(newSettings.telegram.token, newSettings.telegram.receiveEnabled);
 
       // Discord changes
       await initDiscord(newSettings.discord.token);
