@@ -973,7 +973,150 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
     }
 
     if (tabDashboardBtn) tabDashboardBtn.addEventListener("click", () => setActiveTab("dashboard"));
-    if (tabChatBtn) tabChatBtn.addEventListener("click", () => setActiveTab("chat"));
+    if (tabChatBtn) tabChatBtn.addEventListener("click", function() { setActiveTab("chat"); loadSessions(); });
+
+    // --- Session browser ---
+
+    var activeBrowseSessionId = null;
+    var browseOffset = 0;
+    var browseTotalCount = 0;
+    var BROWSE_PAGE = 10;
+
+    function escapeHtml(text) {
+      var d = document.createElement("div");
+      d.textContent = text;
+      return d.innerHTML;
+    }
+
+    function formatSessionTime(isoStr) {
+      if (!isoStr) return "";
+      try {
+        var d = new Date(isoStr);
+        var now = new Date();
+        if (d.toDateString() === now.toDateString()) {
+          return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        }
+        return d.toLocaleDateString([], { month: "short", day: "numeric" });
+      } catch { return ""; }
+    }
+
+    async function loadSessions() {
+      var listEl = document.getElementById("session-list");
+      if (!listEl) return;
+      try {
+        var res = await fetch("/api/sessions");
+        var sessions = await res.json();
+        if (!Array.isArray(sessions) || sessions.length === 0) {
+          listEl.innerHTML = '<div class="session-loading">No sessions yet</div>';
+          return;
+        }
+        listEl.innerHTML = "";
+        sessions.forEach(function(s) {
+          var item = document.createElement("div");
+          item.className = "session-item" + (s.id === activeBrowseSessionId ? " active" : "");
+          var preview = escapeHtml(s.lastMessage || s.firstMessage || "(empty)");
+          var channel = s.channel && s.channel !== "web" ? s.channel : "";
+          item.innerHTML =
+            '<div class="session-item-header">'
+            + '<span class="session-agent">' + escapeHtml(s.agent || "global") + "</span>"
+            + (channel ? '<span class="session-channel">' + escapeHtml(channel) + "</span>" : "")
+            + "</div>"
+            + '<div class="session-preview">' + preview + "</div>"
+            + '<div class="session-time">' + formatSessionTime(s.lastUsedAt) + " · " + (s.turnCount || 0) + " turns</div>";
+          item.addEventListener("click", function() { browseSession(s.id); });
+          listEl.appendChild(item);
+        });
+      } catch (e) {
+        listEl.innerHTML = '<div class="session-loading">Failed to load</div>';
+      }
+    }
+
+    async function browseSession(sessionId) {
+      activeBrowseSessionId = sessionId;
+      browseOffset = 0;
+      browseTotalCount = 0;
+
+      // Update sidebar highlight
+      document.querySelectorAll(".session-item").forEach(function(el) {
+        el.classList.toggle("active", el.dataset && el.dataset.sid === sessionId);
+      });
+      // Re-render sidebar to apply active class correctly
+      loadSessions();
+
+      // Show history banner
+      var banner = document.getElementById("chat-history-banner");
+      if (banner) banner.hidden = false;
+
+      // Load messages
+      chatHistory = [];
+      renderChatHistory();
+      await loadBrowseMessages(sessionId, false);
+    }
+
+    async function loadBrowseMessages(sessionId, loadMore) {
+      var loadMoreContainer = document.getElementById("load-more-container");
+      var loadMoreBtn = document.getElementById("load-more-btn");
+      if (!loadMore) {
+        try {
+          // Fetch last N messages
+          var res = await fetch("/api/sessions/" + sessionId + "/messages?limit=" + BROWSE_PAGE + "&offset=-1");
+          var msgs = await res.json();
+          if (!Array.isArray(msgs)) return;
+          chatHistory = msgs.map(function(m) { return { role: m.role, text: m.text }; });
+          renderChatHistory();
+
+          // Fetch total count for "load older" button
+          var countRes = await fetch("/api/sessions/" + sessionId + "/messages?limit=1000000&offset=0");
+          var allMsgs = await countRes.json();
+          browseTotalCount = Array.isArray(allMsgs) ? allMsgs.length : 0;
+          browseOffset = Math.max(0, browseTotalCount - BROWSE_PAGE);
+          if (loadMoreContainer) loadMoreContainer.hidden = browseOffset <= 0;
+          if (loadMoreBtn && browseOffset > 0) loadMoreBtn.textContent = "Load older (" + browseOffset + " more)";
+        } catch (e) {}
+      } else {
+        var newOffset = Math.max(0, browseOffset - BROWSE_PAGE);
+        var limit = browseOffset - newOffset;
+        if (limit <= 0) return;
+        try {
+          var res2 = await fetch("/api/sessions/" + sessionId + "/messages?limit=" + limit + "&offset=" + newOffset);
+          var older = await res2.json();
+          if (!Array.isArray(older)) return;
+          var chatMsgsEl = document.getElementById("chat-messages");
+          var scrollHeightBefore = chatMsgsEl ? chatMsgsEl.scrollHeight : 0;
+          chatHistory = older.map(function(m) { return { role: m.role, text: m.text }; }).concat(chatHistory);
+          browseOffset = newOffset;
+          renderChatHistory();
+          if (chatMsgsEl) chatMsgsEl.scrollTop = chatMsgsEl.scrollHeight - scrollHeightBefore;
+          if (loadMoreContainer) loadMoreContainer.hidden = browseOffset <= 0;
+          if (loadMoreBtn && browseOffset > 0) loadMoreBtn.textContent = "Load older (" + browseOffset + " more)";
+        } catch (e) {}
+      }
+    }
+
+    var newSessionBtn = document.getElementById("new-session-btn");
+    if (newSessionBtn) {
+      newSessionBtn.addEventListener("click", function() {
+        activeBrowseSessionId = null;
+        chatHistory = [];
+        renderChatHistory();
+        var banner = document.getElementById("chat-history-banner");
+        if (banner) banner.hidden = true;
+        var loadMoreContainer = document.getElementById("load-more-container");
+        if (loadMoreContainer) loadMoreContainer.hidden = true;
+        document.querySelectorAll(".session-item").forEach(function(el) { el.classList.remove("active"); });
+        if (chatInput) chatInput.focus();
+      });
+    }
+
+    var loadMoreBtn = document.getElementById("load-more-btn");
+    if (loadMoreBtn) {
+      loadMoreBtn.addEventListener("click", function() {
+        if (activeBrowseSessionId) loadBrowseMessages(activeBrowseSessionId, true);
+      });
+    }
+
+    // Load sessions on initial render
+    loadSessions();
 
     renderChatHistory();
 

@@ -185,20 +185,39 @@ ${pageStyles}
     </section>
     </div>
     <div id="chat-panel" class="chat-panel" hidden>
-      <div id="chat-messages" class="chat-messages"></div>
-      <div class="chat-input-area">
-        <form id="chat-form" class="chat-form">
-          <textarea
-            id="chat-input"
-            class="chat-input"
-            placeholder="Message Claude..."
-            rows="1"
-            autocomplete="off"
-          ></textarea>
-          <button id="chat-cancel" class="chat-cancel" type="button" hidden>Cancel</button>
-          <button id="chat-send" class="chat-send" type="submit">Send</button>
-        </form>
-      </div>
+      <div class="chat-layout">
+        <div class="chat-sidebar" id="chat-sidebar">
+          <div class="chat-sidebar-header">
+            <h3>Sessions</h3>
+            <button id="new-session-btn" class="new-session-btn" type="button">+ New</button>
+          </div>
+          <div id="session-list" class="session-list">
+            <div class="session-loading">Loading…</div>
+          </div>
+        </div>
+        <div class="chat-main">
+          <div id="chat-history-banner" class="chat-history-banner" hidden>
+            Viewing history — new messages go to current session
+          </div>
+          <div id="load-more-container" class="load-more-container" hidden>
+            <button id="load-more-btn" class="load-more-btn" type="button">Load older messages</button>
+          </div>
+          <div id="chat-messages" class="chat-messages"></div>
+          <div class="chat-input-area">
+            <form id="chat-form" class="chat-form">
+              <textarea
+                id="chat-input"
+                class="chat-input"
+                placeholder="Message Claude..."
+                rows="1"
+                autocomplete="off"
+              ></textarea>
+              <button id="chat-cancel" class="chat-cancel" type="button" hidden>Cancel</button>
+              <button id="chat-send" class="chat-send" type="submit">Send</button>
+            </form>
+          </div>
+        </div><!-- chat-main -->
+      </div><!-- chat-layout -->
     </div>
   </main>
 

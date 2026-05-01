@@ -5,6 +5,7 @@ import { buildState, buildTechnicalInfo, sanitizeSettings } from "./services/sta
 import { readHeartbeatSettings, updateHeartbeatSettings } from "./services/settings";
 import { createQuickJob, deleteJob } from "./services/jobs";
 import { readLogs } from "./services/logs";
+import { listSessions, readSessionMessages, listAgents } from "./services/sessions";
 
 export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
   const server = Bun.serve({
@@ -147,6 +148,34 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
       if (url.pathname === "/api/logs") {
         const tail = clampInt(url.searchParams.get("tail"), 200, 20, 2000);
         return json(await readLogs(tail));
+      }
+
+      if (url.pathname === "/api/sessions" && req.method === "GET") {
+        try {
+          return json(await listSessions());
+        } catch (err) {
+          return json({ ok: false, error: String(err) });
+        }
+      }
+
+      if (url.pathname === "/api/agents" && req.method === "GET") {
+        try {
+          return json(await listAgents());
+        } catch (err) {
+          return json({ ok: false, error: String(err) });
+        }
+      }
+
+      if (url.pathname.startsWith("/api/sessions/") && url.pathname.endsWith("/messages") && req.method === "GET") {
+        const sessionId = url.pathname.slice("/api/sessions/".length, -"/messages".length);
+        const limit = clampInt(url.searchParams.get("limit"), 10, 1, 200);
+        const rawOffset = url.searchParams.get("offset");
+        const offset = rawOffset === "-1" ? -1 : clampInt(rawOffset, 0, 0, 100_000);
+        try {
+          return json(await readSessionMessages(sessionId, limit, offset));
+        } catch (err) {
+          return json({ ok: false, error: String(err) });
+        }
       }
 
       if (url.pathname === "/api/chat" && req.method === "POST") {
