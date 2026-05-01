@@ -1271,37 +1271,40 @@ async function handleBlockAction(payload: any): Promise<void> {
   const agentName = sessionThreadId
     ? (() => { try { return agentDirKey(`slack-${channelId}`, threadTs!); } catch { return undefined; } })()
     : undefined;
-  let result;
   try {
-    result = await runUserMessage("slack", prompt, sessionThreadId, agentName);
+    const result = await runUserMessage("slack", prompt, sessionThreadId, agentName);
+
+    if (result.exitCode === 0 && result.stdout) {
+      const { cleanedText } = extractReactionDirective(result.stdout);
+      const { cleanedText: finalText, buttons, select } = extractBlockKitDirectives(cleanedText);
+
+      if (finalText) {
+        const msgKey = botMessageKey(channelId, replyThreadTs);
+        let sentTs: string | null = null;
+        if (buttons || select) {
+          sentTs = await sendBlockKitMessage(config.botToken, channelId, finalText, buttons, select, replyThreadTs);
+        } else {
+          sentTs = await postMessage(config.botToken, channelId, finalText, replyThreadTs);
+        }
+        if (sentTs) lastBotMessageTs.set(msgKey, sentTs);
+      }
+    } else if (result.exitCode !== 0) {
+      await sendMessage(config.botToken, channelId, `Error: ${extractErrorDetail(result) || "Unknown"}`, replyThreadTs);
+    }
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    await sendMessage(config.botToken, channelId, `Error: ${errMsg}`, replyThreadTs).catch((sendErr) => {
+      debugLog(`Failed to send interactive error: ${sendErr instanceof Error ? sendErr.message : sendErr}`);
+    });
   } finally {
     if (statusRefreshInterval) clearInterval(statusRefreshInterval);
-  }
-
-  if (result.exitCode === 0 && result.stdout) {
-    const { cleanedText } = extractReactionDirective(result.stdout);
-    const { cleanedText: finalText, buttons, select } = extractBlockKitDirectives(cleanedText);
-
-    if (finalText) {
-      const msgKey = botMessageKey(channelId, replyThreadTs);
-      let sentTs: string | null = null;
-      if (buttons || select) {
-        sentTs = await sendBlockKitMessage(config.botToken, channelId, finalText, buttons, select, replyThreadTs);
-      } else {
-        sentTs = await postMessage(config.botToken, channelId, finalText, replyThreadTs);
-      }
-      if (sentTs) lastBotMessageTs.set(msgKey, sentTs);
+    // Remove thinking reaction and status after reply/error handling, including thrown runs.
+    if (messageTs) {
+      await removeReaction(config.botToken, channelId, messageTs, "hourglass_flowing_sand");
     }
-  } else if (result.exitCode !== 0) {
-    await sendMessage(config.botToken, channelId, `Error: ${extractErrorDetail(result) || "Unknown"}`, replyThreadTs);
-  }
-
-  // Remove thinking reaction and status AFTER reply is sent
-  if (messageTs) {
-    await removeReaction(config.botToken, channelId, messageTs, "hourglass_flowing_sand");
-  }
-  if (replyThreadTs) {
-    await clearAssistantStatus(config.botToken, channelId, replyThreadTs);
+    if (replyThreadTs) {
+      await clearAssistantStatus(config.botToken, channelId, replyThreadTs);
+    }
   }
 }
 
