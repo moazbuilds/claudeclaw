@@ -187,6 +187,10 @@ export interface SttConfig {
   baseUrl: string;
   /** Model name passed to the API (default: "Systran/faster-whisper-large-v3") */
   model: string;
+  /** MCP tool name or CLI command to delegate transcription to (e.g. "mcp__whisper__transcribe"
+   *  or "whisper"). When set, whisper is skipped and Claude is asked to call this tool directly
+   *  with the audio file path. When unset (default), whisper handles transcription. */
+  delegateTool?: string;
 }
 
 export interface SessionConfig {
@@ -340,6 +344,9 @@ function parseSettings(
     stt: {
       baseUrl: typeof raw.stt?.baseUrl === "string" ? raw.stt.baseUrl.trim() : "",
       model: typeof raw.stt?.model === "string" ? raw.stt.model.trim() : "",
+      ...(typeof raw.stt?.delegateTool === "string" && raw.stt.delegateTool.trim()
+        ? { delegateTool: raw.stt.delegateTool.trim() }
+        : {}),
     },
     sessionTimeoutMs: typeof raw.sessionTimeoutMs === "number" && raw.sessionTimeoutMs > 0
       ? raw.sessionTimeoutMs

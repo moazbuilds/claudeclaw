@@ -1,11 +1,11 @@
 import { ensureProjectClaudeMd, run, runUserMessage, compactCurrentSession } from "../runner";
 import { extractErrorDetail } from "../messaging";
 import { getSettings, loadSettings } from "../config";
+import { transcribeAudioToText } from "../whisper";
 import { resetSession, resetFallbackSession, peekSession } from "../sessions";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { transcribeAudioToText } from "../whisper";
 import { resolveSkillPrompt, listSkills } from "../skills";
 import { mkdir } from "node:fs/promises";
 import { extname, join } from "node:path";
@@ -765,14 +765,14 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
       }
 
       if (voicePath) {
-        try {
-          debugLog(`Voice file saved: path=${voicePath}`);
-          voiceTranscript = await transcribeAudioToText(voicePath, {
-            debug: telegramDebug,
-            log: (message) => debugLog(message),
-          });
-        } catch (err) {
-          console.error(`[Telegram] Failed to transcribe voice for ${label}: ${err instanceof Error ? err.message : err}`);
+        debugLog(`Voice file saved: path=${voicePath}`);
+        const { delegateTool } = getSettings().stt;
+        if (!delegateTool) {
+          try {
+            voiceTranscript = await transcribeAudioToText(voicePath);
+          } catch (err) {
+            console.error(`[Telegram] Failed to transcribe voice for ${label}: ${err instanceof Error ? err.message : err}`);
+          }
         }
       }
     }
@@ -828,10 +828,19 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     }
     if (voiceTranscript) {
       promptParts.push(`Voice transcript: ${voiceTranscript}`);
-      promptParts.push("The user attached voice audio. Use the transcript as their spoken message.");
+    } else if (voicePath) {
+      const { delegateTool } = getSettings().stt;
+      if (delegateTool) {
+        promptParts.push(`Voice file path: ${voicePath}`);
+        promptParts.push(`The user sent a voice message. Transcribe it by calling \`${delegateTool}\` with the file path above, then respond to the transcribed text as their spoken message.`);
+      } else {
+        promptParts.push(
+          "The user attached voice audio, but it could not be transcribed. Respond and ask them to resend a clearer clip."
+        );
+      }
     } else if (hasVoice) {
       promptParts.push(
-        "The user attached voice audio, but it could not be transcribed. Respond and ask them to resend a clearer clip."
+        "The user attached voice audio, but downloading it failed. Respond and ask them to resend."
       );
     }
     if (documentInfo) {
