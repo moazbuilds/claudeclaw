@@ -1,5 +1,6 @@
 import type { Settings } from "../config";
 import type { Job } from "../jobs";
+export type { AgentStreamEvent } from "../runner";
 
 export interface WebSnapshot {
   pid: number;
@@ -30,6 +31,7 @@ export interface StartWebUiOptions {
   onChat?: (
     message: string,
     onChunk: (text: string) => void,
-    onUnblock: () => void
+    onUnblock: () => void,
+    onAgentEvent: (ev: import("../runner").AgentStreamEvent) => void
   ) => Promise<void>;
 }

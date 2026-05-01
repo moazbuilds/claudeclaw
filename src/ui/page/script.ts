@@ -1120,7 +1120,7 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
 
     function saveChatHistory() {
       try {
-        var toSave = chatHistory.filter(function(m) { return !m.streaming; });
+        var toSave = chatHistory.filter(function(m) { return !m.streaming && m.agentStatus !== "running"; });
         localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(toSave));
       } catch (_) {}
     }
@@ -1171,6 +1171,15 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
     }
 
     function syncChatMessageEl(msgEl, msg, elapsedMs) {
+      // Agent bubbles: simple centered pill, no role/text structure
+      if (msg.role === "agent") {
+        var agentCls = "chat-msg chat-msg-agent" + (msg.agentStatus === "running" ? " chat-msg-agent-running" : " chat-msg-agent-done");
+        if (msgEl.className !== agentCls) msgEl.className = agentCls;
+        var agentText = (msg.text || "") + (msg.agentStatus === "running" ? ' <span class="chat-agent-spinner">…</span>' : "");
+        if (msgEl.innerHTML !== agentText) msgEl.innerHTML = agentText;
+        return;
+      }
+
       var roleEl = msgEl.querySelector(".chat-msg-role");
       var textEl = msgEl.querySelector(".chat-msg-text");
       if (!roleEl || !textEl) {
@@ -1307,6 +1316,25 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
                 setChatBusy(false);
                 chatHistory[assistantIdx].background = true;
                 renderChatHistory();
+              } else if (ev.type === "agent_spawn") {
+                chatHistory.push({ role: "agent", agentId: ev.id, text: "🤖 Sub-agent started: " + ev.description, agentStatus: "running" });
+                renderChatHistory();
+              } else if (ev.type === "agent_done") {
+                var agentBubble = null;
+                for (var k = chatHistory.length - 1; k >= 0; k--) {
+                  if (chatHistory[k].role === "agent" && chatHistory[k].agentId === ev.id) {
+                    agentBubble = chatHistory[k];
+                    break;
+                  }
+                }
+                if (agentBubble) {
+                  agentBubble.agentStatus = "done";
+                  agentBubble.text = "✅ Sub-agent done: " + ev.description;
+                } else {
+                  chatHistory.push({ role: "agent", agentId: ev.id, text: "✅ Sub-agent done: " + ev.description, agentStatus: "done" });
+                }
+                renderChatHistory();
+                saveChatHistory();
               } else if (ev.type === "done") {
                 chatHistory[assistantIdx].streaming = false;
                 chatHistory[assistantIdx].background = false;

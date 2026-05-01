@@ -116,6 +116,13 @@ export interface RunResult {
   exitCode: number;
 }
 
+export interface AgentStreamEvent {
+  type: "spawn" | "done";
+  id: string;
+  description: string;
+  result?: string;
+}
+
 const RATE_LIMIT_PATTERN = /you.ve hit your limit|out of extra usage/i;
 
 // Serial queue — prevents concurrent --resume on the same session
@@ -917,7 +924,8 @@ async function streamClaude(
   name: string,
   prompt: string,
   onChunk: (text: string) => void,
-  onUnblock: () => void
+  onUnblock: () => void,
+  onAgentEvent?: (ev: AgentStreamEvent) => void
 ): Promise<void> {
   await mkdir(LOGS_DIR, { recursive: true });
 
@@ -985,6 +993,8 @@ async function streamClaude(
   let buf = "";
   let unblocked = false;
   let textEmitted = false;
+  // Track pending Agent tool calls: tool_use_id → description
+  const pendingAgents = new Map<string, string>();
 
   const maybeUnblock = () => {
     if (!unblocked) {
@@ -1026,6 +1036,13 @@ async function streamClaude(
               onChunk(block.text);
               textEmitted = true;
               hasActivity = true;
+            }
+            // Detect Agent tool spawns
+            if (block.type === "tool_use" && block.name === "Agent" && block.id && onAgentEvent) {
+              const description = String(block.input?.description ?? block.input?.prompt ?? "Running background task...");
+              pendingAgents.set(block.id, description);
+              onAgentEvent({ type: "spawn", id: block.id, description });
+              hasActivity = true;
             } else if (block.type === "tool_use") {
               hasActivity = true;
               if (streamPm && block.name) {
@@ -1038,6 +1055,21 @@ async function streamClaude(
             }
           }
           if (hasActivity) maybeUnblock();
+        } else if (event.type === "user") {
+          // Tool results come back as user messages — match Agent completions
+          type ToolResultBlock = { type: string; tool_use_id?: string; content?: unknown };
+          const msg = event.message as { content?: ToolResultBlock[] } | undefined;
+          const blocks = msg?.content ?? [];
+          for (const block of blocks) {
+            if (block.type === "tool_result" && block.tool_use_id && pendingAgents.has(block.tool_use_id)) {
+              const description = pendingAgents.get(block.tool_use_id)!;
+              pendingAgents.delete(block.tool_use_id);
+              const result = typeof block.content === "string"
+                ? block.content
+                : JSON.stringify(block.content ?? "");
+              if (onAgentEvent) onAgentEvent({ type: "done", id: block.tool_use_id, description, result });
+            }
+          }
         } else if (event.type === "tool_use") {
           // Top-level tool_use event (some stream-json versions) — unblock the UI
           maybeUnblock();
@@ -1070,9 +1102,10 @@ export async function streamUserMessage(
   name: string,
   prompt: string,
   onChunk: (text: string) => void,
-  onUnblock: () => void
+  onUnblock: () => void,
+  onAgentEvent?: (ev: AgentStreamEvent) => void
 ): Promise<void> {
-  return enqueue(() => streamClaude(name, prefixUserMessageWithClock(prompt), onChunk, onUnblock));
+  return enqueue(() => streamClaude(name, prefixUserMessageWithClock(prompt), onChunk, onUnblock, onAgentEvent));
 }
 
 function prefixUserMessageWithClock(prompt: string): string {
