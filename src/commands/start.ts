@@ -756,7 +756,8 @@ export async function start(args: string[] = []) {
           job.agent ? `agent:${job.agent}` : job.name,
           job.model,
           timeoutMs,
-          job.agent
+          job.agent,
+          "job"
         );
       })
       .then((r) => {
