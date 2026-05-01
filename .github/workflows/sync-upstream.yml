@@ -96,8 +96,23 @@ jobs:
         if: steps.check.outputs.new_commits != '0' && inputs.dry_run != true
         run: git push origin "${{ steps.branch.outputs.name }}" --force
 
+      - name: Check for existing PR
+        if: steps.check.outputs.new_commits != '0' && inputs.dry_run != true
+        id: existing_pr
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          EXISTING=$(gh pr list \
+            --repo TerrysPOV/ClaudeClaw-Plus \
+            --head "${{ steps.branch.outputs.name }}" \
+            --state open \
+            --json number \
+            --jq 'length')
+          echo "count=$EXISTING" >> "$GITHUB_OUTPUT"
+          echo "Existing open PRs for this branch: $EXISTING"
+
       - name: Open PR (clean merge)
-        if: steps.check.outputs.new_commits != '0' && inputs.dry_run != true && steps.merge.outputs.status == 'clean'
+        if: steps.check.outputs.new_commits != '0' && inputs.dry_run != true && steps.merge.outputs.status == 'clean' && steps.existing_pr.outputs.count == '0'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
@@ -109,7 +124,7 @@ jobs:
             --base main
 
       - name: Open PR (needs review)
-        if: steps.check.outputs.new_commits != '0' && inputs.dry_run != true && steps.merge.outputs.status == 'conflicts'
+        if: steps.check.outputs.new_commits != '0' && inputs.dry_run != true && steps.merge.outputs.status == 'conflicts' && steps.existing_pr.outputs.count == '0'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |

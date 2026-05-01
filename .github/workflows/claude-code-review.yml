@@ -12,11 +12,8 @@ on:
 
 jobs:
   claude-review:
-    # Optional: Filter by PR author
-    # if: |
-    #   github.event.pull_request.user.login == 'external-contributor' ||
-    #   github.event.pull_request.user.login == 'new-developer' ||
-    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
+    # Skip automated sync PRs — they're opened by github-actions[bot] and need no auto-review
+    if: github.event.pull_request.user.login != 'github-actions[bot]' && !startsWith(github.head_ref, 'sync/')
 
     runs-on: ubuntu-latest
     permissions:
@@ -26,7 +23,20 @@ jobs:
       id-token: write
 
     steps:
+      - name: Check token configured
+        id: token-check
+        env:
+          TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::warning::CLAUDE_CODE_OAUTH_TOKEN secret is not configured — skipping auto-review. Add the secret to enable it."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout repository
+        if: steps.token-check.outputs.configured == 'true'
         uses: actions/checkout@v4
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name }}
@@ -34,6 +44,7 @@ jobs:
           fetch-depth: 1
 
       - name: Run Claude Code Review
+        if: steps.token-check.outputs.configured == 'true'
         id: claude-review
         uses: anthropics/claude-code-action@v1
         with:
