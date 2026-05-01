@@ -849,7 +849,11 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     const result = await runUserMessage("telegram", prefixedPrompt);
 
     if (result.exitCode !== 0) {
-      await sendMessage(config.token, chatId, `Error (exit ${result.exitCode}): ${extractErrorDetail(result) || "Unknown error"}`, threadId);
+      const isTimedOut = result.exitCode === 124;
+      const errorMsg = isTimedOut
+        ? `⏱ Request timed out — the subprocess took too long and was killed. Try again or split into smaller steps.`
+        : `Error (exit ${result.exitCode}): ${extractErrorDetail(result) || "Unknown error"}`;
+      await sendMessage(config.token, chatId, errorMsg, threadId);
     } else {
       const { cleanedText: afterReact, reactionEmoji } = extractReactionDirective(result.stdout || "");
       const { cleanedText, filePaths } = extractSendFileDirectives(afterReact);
