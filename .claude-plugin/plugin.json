@@ -1,5 +1,5 @@
 {
   "name": "claudeclaw-plus",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "ClaudeClaw+ — governance, orchestration, persistent memory, and hardened web UI for Claude Code daemons. Sister project to moazbuilds/claudeclaw."
 }

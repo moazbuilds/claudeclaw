@@ -67,7 +67,7 @@ function alive() {
 }
 
 var B = DIM + "\\u2502" + R;
-var TITLE = " \\ud83e\\udd9e ClaudeClaw \\ud83e\\udd9e ";
+var TITLE = " \\ud83e\\udd9e ClaudeClaw+ \\ud83e\\udd9e ";
 var PAD = 6;
 var INNER_W = PAD + visibleLen(TITLE) + PAD;
 
@@ -379,7 +379,7 @@ export async function start(args: string[] = []) {
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
 
-  console.log("ClaudeClaw daemon started");
+  console.log("ClaudeClaw+ daemon started");
   console.log(`  PID: ${process.pid}`);
   console.log(`  Security: ${settings.security.level}`);
   if (settings.security.allowedTools.length > 0)

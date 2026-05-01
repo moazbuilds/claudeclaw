@@ -50,10 +50,10 @@ jobs:
 
           base_version="$(
             git show "$BASE_SHA:.claude-plugin/marketplace.json" | \
-            python3 -c 'import json,sys; data=json.load(sys.stdin); plugin=next((p for p in data.get("plugins", []) if p.get("name")=="claudeclaw"), (data.get("plugins") or [{}])[0]); print(plugin["version"])'
+            python3 -c 'import json,sys; data=json.load(sys.stdin); plugin=next((p for p in data.get("plugins", []) if p.get("name")=="claudeclaw-plus"), (data.get("plugins") or [{}])[0]); print(plugin["version"])'
           )"
           head_version="$(
-            python3 -c 'import json; data=json.load(open(".claude-plugin/marketplace.json")); plugin=next((p for p in data.get("plugins", []) if p.get("name")=="claudeclaw"), (data.get("plugins") or [{}])[0]); print(plugin["version"])'
+            python3 -c 'import json; data=json.load(open(".claude-plugin/marketplace.json")); plugin=next((p for p in data.get("plugins", []) if p.get("name")=="claudeclaw-plus"), (data.get("plugins") or [{}])[0]); print(plugin["version"])'
           )"
 
           if [ "$base_version" = "$head_version" ]; then

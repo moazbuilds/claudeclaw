@@ -19,7 +19,7 @@ export function htmlPage(): string {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>ClaudeClaw</title>
+  <title>ClaudeClaw+</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,500&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -31,12 +31,12 @@ ${pageStyles}
   <div class="grain" aria-hidden="true"></div>
   <a
     class="repo-cta"
-    href="https://github.com/moazbuilds/claudeclaw"
+    href="https://github.com/TerrysPOV/ClaudeClaw-Plus"
     target="_blank"
     rel="noopener noreferrer"
-    aria-label="Star claudeclaw on GitHub"
+    aria-label="Star ClaudeClaw+ on GitHub"
   >
-    <span class="repo-text">Like ClaudeClaw? Star it on GitHub</span>
+    <span class="repo-text">Like ClaudeClaw+? Star it on GitHub</span>
     <span class="repo-star">★</span>
   </a>
   <button class="settings-btn" id="settings-btn" type="button">Settings</button>

@@ -48,7 +48,7 @@ async function main(): Promise<void> {
     throw new Error(`${MARKETPLACE_JSON} does not contain any plugins.`);
   }
 
-  const plugin = marketplace.plugins.find((entry) => entry.name === "claudeclaw") ?? marketplace.plugins[0];
+  const plugin = marketplace.plugins.find((entry) => entry.name === "claudeclaw-plus") ?? marketplace.plugins[0];
   if (!plugin || typeof plugin.version !== "string" || plugin.version.trim() === "") {
     throw new Error(`${MARKETPLACE_JSON} is missing a valid plugin version string.`);
   }
