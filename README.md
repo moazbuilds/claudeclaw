@@ -2,7 +2,7 @@
   <img src="images/claudeclaw-banner.svg" alt="ClaudeClaw+ Banner" />
 </p>
 <p align="center">
-  <img src="images/claudeclaw-wordmark.png" alt="ClaudeClaw+ Wordmark" />
+  <img src="images/claudeclaw-plus-wordmark.svg" alt="ClaudeClaw+ Wordmark" />
 </p>
 
 <p align="center">
