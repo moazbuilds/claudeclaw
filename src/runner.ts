@@ -11,6 +11,7 @@ import {
   incrementFallbackTurn,
   peekSession,
   incrementMessageCount,
+  backupSession,
 } from "./sessions";
 import { needsRotation, rotateSession, loadLatestSummary } from "./rotation";
 import {
@@ -117,6 +118,7 @@ export interface RunResult {
 }
 
 const RATE_LIMIT_PATTERN = /you.ve hit your limit|out of extra usage/i;
+const SIGNATURE_ERROR = /Invalid.*signature.*thinking block/i;
 
 // Serial queue — prevents concurrent --resume on the same session
 // Global queue for non-thread messages (backward compatible)
@@ -760,11 +762,29 @@ async function execClaude(
     }
   }
 
-  const rawStdout = exec.rawStdout;
-  const stderr = exec.stderr;
-  const exitCode = exec.exitCode;
+  let rawStdout = exec.rawStdout;
+  let stderr = exec.stderr;
+  let exitCode = exec.exitCode;
   let stdout = rawStdout;
   let sessionId = existing?.sessionId ?? "unknown";
+
+  // Auto-detect corrupted session from thinking block signature mismatch.
+  // Back up the broken session and retry with a fresh one.
+  if (exitCode !== 0 && !isNew && SIGNATURE_ERROR.test(rawStdout + stderr)) {
+    const backupName = await backupSession();
+    console.warn(
+      `[${new Date().toLocaleTimeString()}] Detected corrupted session (thinking block signature mismatch). Backed up to ${backupName ?? "unknown"}, retrying with fresh session...`
+    );
+    const freshArgs = args.filter((a) => a !== "--resume" && a !== existing?.sessionId);
+    const fmtIdx = freshArgs.indexOf("--output-format");
+    if (fmtIdx !== -1 && fmtIdx + 1 < freshArgs.length) freshArgs[fmtIdx + 1] = "stream-json";
+    exec = await runClaudeStream(freshArgs, primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs, spawnCwd);
+    rawStdout = exec.rawStdout;
+    stderr = exec.stderr;
+    exitCode = exec.exitCode;
+    stdout = rawStdout;
+  }
+
   const rateLimitMessage = extractRateLimitMessage(rawStdout, stderr);
 
   if (rateLimitMessage) {

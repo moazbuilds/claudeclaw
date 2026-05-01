@@ -156,6 +156,53 @@ function resolveJobPath(jobName: string): string {
   return join(getJobsDir(), `${jobName}.md`);
 }
 
+/**
+ * Snapshot a job file's frontmatter before execution.
+ * Returns a restore function that re-applies the original frontmatter
+ * if Claude overwrote or stripped it during the run.
+ */
+export async function snapshotJobFrontmatter(
+  jobName: string
+): Promise<() => Promise<boolean>> {
+  const path = resolveJobPath(jobName);
+  let originalContent: string;
+  try {
+    originalContent = await Bun.file(path).text();
+  } catch {
+    return async () => false;
+  }
+
+  const originalMatch = originalContent.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/);
+  if (!originalMatch) return async () => false;
+
+  const originalFrontmatter = originalMatch[1];
+
+  return async () => {
+    let currentContent: string;
+    try {
+      currentContent = await Bun.file(path).text();
+    } catch {
+      return false;
+    }
+
+    const currentMatch = currentContent.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/);
+
+    if (!currentMatch) {
+      await Bun.write(path, originalContent);
+      return true;
+    }
+
+    if (currentMatch[1].trim() !== originalFrontmatter.trim()) {
+      const restoredBody = currentMatch[2].trim();
+      const restored = `---\n${originalFrontmatter}\n---\n${restoredBody}\n`;
+      await Bun.write(path, restored);
+      return true;
+    }
+
+    return false;
+  };
+}
+
 export async function clearJobSchedule(jobName: string): Promise<void> {
   const path = resolveJobPath(jobName);
   const content = await Bun.file(path).text();

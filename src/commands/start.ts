@@ -5,7 +5,7 @@ import { fileURLToPath } from "url";
 import { run, runUserMessage, streamUserMessage, bootstrap, ensureProjectClaudeMd, loadHeartbeatPromptTemplate } from "../runner";
 import { writeState, type StateData } from "../statusline";
 import { cronMatches, nextCronMatch } from "../cron";
-import { clearJobSchedule, loadJobs } from "../jobs";
+import { clearJobSchedule, loadJobs, snapshotJobFrontmatter } from "../jobs";
 import { writePidFile, cleanupPidFile, checkExistingDaemon } from "../pid";
 import { initConfig, loadSettings, reloadSettings, resolvePrompt, type HeartbeatConfig, type Settings } from "../config";
 import { getDayAndMinuteAtOffset, buildClockPromptPrefix } from "../timezone";
@@ -747,51 +747,56 @@ export async function start(args: string[] = []) {
 
   function runJob(job: (typeof currentJobs)[0]) {
     const timeoutMs = job.timeoutSeconds ? job.timeoutSeconds * 1000 : undefined;
-    resolvePrompt(job.prompt)
-      .then((prompt) => {
-        const clock = buildClockPromptPrefix(new Date(), currentSettings.timezoneOffsetMinutes);
-        return run(
-          job.name,
-          `${clock}\n${prompt}`,
-          job.agent ? `agent:${job.agent}` : job.name,
-          job.model,
-          timeoutMs,
-          job.agent
-        );
-      })
-      .then((r) => {
-        if (r.exitCode === 0) {
-          jobRetryState.delete(job.name);
-        } else if (job.retry && job.retry > 0) {
-          // Preserve existing state so failCount accumulates correctly across retries.
-          const state = jobRetryState.get(job.name) ?? { failCount: 0, retryAt: 0 };
-          state.failCount += 1;
-          if (state.failCount <= job.retry) {
-            const delayMs = (job.retryDelay ?? 300) * 1000;
-            state.retryAt = Date.now() + delayMs;
-            jobRetryState.set(job.name, state);
-            console.log(`[${ts()}] Job ${job.name} failed (attempt ${state.failCount}/${job.retry}), retrying in ${job.retryDelay ?? 300}s`);
-          } else {
-            jobRetryState.delete(job.name);
-            console.log(`[${ts()}] Job ${job.name} exhausted ${job.retry} retries`);
-          }
-        }
-        if (job.notify === false) return;
-        if (job.notify === "error" && r.exitCode === 0) return;
-        forwardToTelegram(job.name, r);
-        forwardToDiscord(job.name, r);
-      })
-      .finally(async () => {
-        if (job.recurring) return;
-        // Only clear one-shot schedule when no retry is pending.
-        if (jobRetryState.has(job.name)) return;
-        try {
-          await clearJobSchedule(job.name);
-          console.log(`[${ts()}] Cleared schedule for one-time job: ${job.name}`);
-        } catch (err) {
-          console.error(`[${ts()}] Failed to clear schedule for ${job.name}:`, err);
-        }
-      });
+    snapshotJobFrontmatter(job.name)
+      .then((restoreFrontmatter) =>
+        resolvePrompt(job.prompt)
+          .then((prompt) => {
+            const clock = buildClockPromptPrefix(new Date(), currentSettings.timezoneOffsetMinutes);
+            return run(
+              job.name,
+              `${clock}\n${prompt}`,
+              job.agent ? `agent:${job.agent}` : job.name,
+              job.model,
+              timeoutMs,
+              job.agent
+            );
+          })
+          .then(async (r) => {
+            const restored = await restoreFrontmatter();
+            if (restored) console.log(`[${ts()}] Restored frontmatter for job: ${job.name}`);
+            if (r.exitCode === 0) {
+              jobRetryState.delete(job.name);
+            } else if (job.retry && job.retry > 0) {
+              // Preserve existing state so failCount accumulates correctly across retries.
+              const state = jobRetryState.get(job.name) ?? { failCount: 0, retryAt: 0 };
+              state.failCount += 1;
+              if (state.failCount <= job.retry) {
+                const delayMs = (job.retryDelay ?? 300) * 1000;
+                state.retryAt = Date.now() + delayMs;
+                jobRetryState.set(job.name, state);
+                console.log(`[${ts()}] Job ${job.name} failed (attempt ${state.failCount}/${job.retry}), retrying in ${job.retryDelay ?? 300}s`);
+              } else {
+                jobRetryState.delete(job.name);
+                console.log(`[${ts()}] Job ${job.name} exhausted ${job.retry} retries`);
+              }
+            }
+            if (job.notify === false) return;
+            if (job.notify === "error" && r.exitCode === 0) return;
+            forwardToTelegram(job.name, r);
+            forwardToDiscord(job.name, r);
+          })
+          .finally(async () => {
+            if (job.recurring) return;
+            // Only clear one-shot schedule when no retry is pending.
+            if (jobRetryState.has(job.name)) return;
+            try {
+              await clearJobSchedule(job.name);
+              console.log(`[${ts()}] Cleared schedule for one-time job: ${job.name}`);
+            } catch (err) {
+              console.error(`[${ts()}] Failed to clear schedule for ${job.name}:`, err);
+            }
+          })
+      );
   }
 
   setInterval(() => {
