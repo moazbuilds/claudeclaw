@@ -11,6 +11,7 @@ import { getDayAndMinuteAtOffset } from "../timezone";
 import { startWebUi, type WebServerHandle } from "../web";
 import type { Job } from "../jobs";
 import { isWizardTrigger, hasActiveWizard, handleWizardInput } from "./plugin-wizard";
+import { PluginManager, setPluginManager } from "../plugins";
 
 const CLAUDE_DIR = join(process.cwd(), ".claude");
 const HEARTBEAT_DIR = join(CLAUDE_DIR, "claudeclaw");
@@ -332,7 +333,18 @@ export async function start(args: string[] = []) {
   let web: WebServerHandle | null = null;
   let discordStopGateway: (() => void) | null = null;
 
+  // Plugin system — initialize before gateway start
+  const pluginManager = new PluginManager(process.cwd());
+  if (Object.keys(settings.plugins).length > 0) {
+    await pluginManager.loadAll(settings.plugins);
+    await pluginManager.startServices();
+    await pluginManager.emit("gateway_start", {}, { workspaceDir: process.cwd() });
+    setPluginManager(pluginManager);
+  }
+
   async function shutdown() {
+    await pluginManager.stopServices();
+    setPluginManager(null);
     if (discordStopGateway) discordStopGateway();
     if (web) web.stop();
     await teardownStatusline();
@@ -407,6 +419,22 @@ export async function start(args: string[] = []) {
 
   await initDiscord(currentSettings.discord.token);
   if (!discordToken) console.log("  Discord: not configured");
+
+  // Wire channel senders into plugin runtime so plugins can send messages
+  if (pluginManager.hasPlugins) {
+    pluginManager.setChannelSenders({
+      telegram: {
+        sendMessageTelegram: telegramSend
+          ? (chatId: number, text: string) => telegramSend!(chatId, text)
+          : () => Promise.resolve(),
+      },
+      discord: {
+        sendMessageDiscord: discordSendToUser
+          ? (userId: string, text: string) => discordSendToUser!(userId, text)
+          : () => Promise.resolve(),
+      },
+    });
+  }
 
   function isAddrInUse(err: unknown): boolean {
     if (!err || typeof err !== "object") return false;
