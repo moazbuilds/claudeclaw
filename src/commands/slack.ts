@@ -2,7 +2,7 @@ import { ensureProjectClaudeMd, runUserMessage, compactCurrentSession, agentDirK
 import { getSettings, loadSettings } from "../config";
 import { resetSession, resetFallbackSession, peekSession } from "../sessions";
 import { extractErrorDetail } from "../messaging";
-import { listThreadSessions, peekThreadSession } from "../sessionManager";
+import { listThreadSessions, peekThreadSession, removeThreadSession } from "../sessionManager";
 import { transcribeAudioToText } from "../whisper";
 import { resolveSkillPrompt } from "../skills";
 import { mkdir, realpath } from "node:fs/promises";
@@ -41,6 +41,10 @@ const SAFE_DOWNLOAD_EXTENSIONS = new Set([
   ".ts", ".js", ".py", ".go", ".rs", ".rb", ".java",
   ".html", ".css", ".yaml", ".yml", ".toml", ".log",
 ]);
+
+// Uploads are restricted to this outbox directory to prevent exfiltrating
+// project-local secrets (e.g. .env, settings.json) via model-authored directives.
+const SLACK_OUTBOX_DIR = join(process.cwd(), ".claude", "claudeclaw", "outbox", "slack");
 
 // --- Type interfaces ---
 
@@ -104,8 +108,9 @@ function botMessageKey(channelId: string, threadTs?: string): string {
   return threadTs ? `${channelId}:${threadTs}` : channelId;
 }
 
-// #5: Track threads where history has already been loaded
-const threadHistoryLoaded = new Set<string>();
+// #5: Track threads where history has already been loaded (key → timestamp for TTL eviction)
+const threadHistoryLoaded = new Map<string, number>();
+const THREAD_STATE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 function isDuplicate(channelId: string, ts: string): boolean {
   const key = `${channelId}:${ts}`;
@@ -131,6 +136,12 @@ setInterval(() => {
       .slice(0, 1000)
       .map(([k]) => k);
     for (const k of oldest) recentlyProcessed.delete(k);
+  }
+  for (const [k, t] of assistantThreadKeys) {
+    if (now - t > THREAD_STATE_TTL_MS) assistantThreadKeys.delete(k);
+  }
+  for (const [k, t] of threadHistoryLoaded) {
+    if (now - t > THREAD_STATE_TTL_MS) threadHistoryLoaded.delete(k);
   }
 }, 60_000).unref();
 
@@ -219,9 +230,8 @@ async function setAssistantSuggestedPrompts(
   });
 }
 
-// Track specific (channel, thread_ts) pairs that are assistant threads.
-// Keyed by "channelId:threadTs" to scope per-thread, not per-channel.
-const assistantThreadKeys = new Set<string>();
+// Track specific (channel, thread_ts) pairs that are assistant threads (key → timestamp for TTL eviction).
+const assistantThreadKeys = new Map<string, number>();
 
 function assistantKey(channelId: string, threadTs: string): string {
   return `${channelId}:${threadTs}`;
@@ -529,7 +539,7 @@ async function fetchBotMessages(
     const data = await res.json() as { ok: boolean; messages?: Array<{ ts: string; text: string; bot_id?: string; user?: string }> };
     if (!data.ok || !data.messages) return [];
     return data.messages
-      .filter((m) => m.user === botUserId || m.bot_id)
+      .filter((m) => m.user === botUserId)
       .map((m) => ({ ts: m.ts, text: m.text }));
   } else {
     // DM/channel: use conversations.history
@@ -537,7 +547,7 @@ async function fetchBotMessages(
       token, "conversations.history", { channel: channelId, limit },
     );
     return (data.messages ?? [])
-      .filter((m) => m.user === botUserId || m.bot_id)
+      .filter((m) => m.user === botUserId)
       .map((m) => ({ ts: m.ts, text: m.text }));
   }
 }
@@ -716,10 +726,11 @@ function extractUploadDirectives(text: string): {
       const rawPath = parts[0].trim();
       const title = parts.length > 1 ? parts[1].trim() : undefined;
       if (!rawPath) return "";
-      // Reject absolute paths and resolve relative paths; only allow within project root
+      // Reject absolute paths; resolve relative paths from project root
       if (isAbsolute(rawPath)) return "";
       const resolved = resolve(projectRoot, rawPath);
-      if (!resolved.startsWith(projectRoot + sep) && resolved !== projectRoot) return "";
+      // Restrict to the dedicated outbox — prevents exfiltrating .env, settings.json, etc.
+      if (!resolved.startsWith(SLACK_OUTBOX_DIR + sep) && resolved !== SLACK_OUTBOX_DIR) return "";
       uploads.push({ path: resolved, title });
       return "";
     })
@@ -914,7 +925,7 @@ async function handleMessage(event: SlackMessage): Promise<void> {
           debugLog(`Failed to load thread history: ${err instanceof Error ? err.message : err}`);
         }
       }
-      threadHistoryLoaded.add(sessionThreadId);
+      threadHistoryLoaded.set(sessionThreadId, Date.now());
     }
 
     let imagePath: string | null = null;
@@ -1032,10 +1043,12 @@ async function handleMessage(event: SlackMessage): Promise<void> {
       ? (() => { try { return agentDirKey(`slack-${channelId}`, event.thread_ts!); } catch { return undefined; } })()
       : undefined;
 
-    const result = await runUserMessage("slack", prefixedPrompt, sessionThreadId, agentName);
-
-    // Stop refreshing status
-    clearInterval(statusRefreshInterval);
+    let result;
+    try {
+      result = await runUserMessage("slack", prefixedPrompt, sessionThreadId, agentName);
+    } finally {
+      clearInterval(statusRefreshInterval);
+    }
 
     if (result.exitCode !== 0) {
       // Remove thinking reaction and status on error, before sending error message
@@ -1114,13 +1127,12 @@ async function handleMessage(event: SlackMessage): Promise<void> {
       }
 
       // #6: Handle file uploads
-      const projectRoot = process.cwd();
       for (const upload of uploads) {
         try {
-          // Guard against symlink escape: resolve() in extractUploadDirectives is lexical only
+          // Guard against symlink escape: extractUploadDirectives check is lexical only
           const real = await realpath(upload.path).catch(() => null);
-          if (!real || (!real.startsWith(projectRoot + sep) && real !== projectRoot)) {
-            debugLog(`Upload rejected (symlink escape or missing file): ${upload.path}`);
+          if (!real || (!real.startsWith(SLACK_OUTBOX_DIR + sep) && real !== SLACK_OUTBOX_DIR)) {
+            debugLog(`Upload rejected (outside outbox or symlink escape): ${upload.path}`);
             continue;
           }
           console.log(`[Slack] Uploading file: ${upload.path}`);
@@ -1259,10 +1271,12 @@ async function handleBlockAction(payload: any): Promise<void> {
   const agentName = sessionThreadId
     ? (() => { try { return agentDirKey(`slack-${channelId}`, threadTs!); } catch { return undefined; } })()
     : undefined;
-  const result = await runUserMessage("slack", prompt, sessionThreadId, agentName);
-
-  // Stop refreshing status
-  if (statusRefreshInterval) clearInterval(statusRefreshInterval);
+  let result;
+  try {
+    result = await runUserMessage("slack", prompt, sessionThreadId, agentName);
+  } finally {
+    if (statusRefreshInterval) clearInterval(statusRefreshInterval);
+  }
 
   if (result.exitCode === 0 && result.stdout) {
     const { cleanedText } = extractReactionDirective(result.stdout);
@@ -1309,7 +1323,15 @@ async function handleSlashCommand(
     case "/reset": {
       await resetSession();
       await resetFallbackSession();
-      return "Session reset. Fresh start!";
+      // Clear all Slack thread sessions from disk
+      const allThreads = await listThreadSessions();
+      const slackThreads = allThreads.filter((t) => t.threadId.startsWith("slk:"));
+      await Promise.all(slackThreads.map((t) => removeThreadSession(t.threadId).catch(() => {})));
+      // Clear in-memory thread state
+      threadHistoryLoaded.clear();
+      assistantThreadKeys.clear();
+      lastBotMessageTs.clear();
+      return `Session reset. ${slackThreads.length > 0 ? `Cleared ${slackThreads.length} thread session(s). ` : ""}Fresh start!`;
     }
 
     case "/compact": {
@@ -1403,7 +1425,7 @@ async function handleSocketPayload(
       const threadChannel = (event as any).assistant_thread?.channel_id;
       const threadTs = (event as any).assistant_thread?.thread_ts;
       if (threadChannel && threadTs) {
-        assistantThreadKeys.add(assistantKey(threadChannel, threadTs));
+        assistantThreadKeys.set(assistantKey(threadChannel, threadTs), Date.now());
         debugLog(`Assistant thread started: channel=${threadChannel} ts=${threadTs}`);
         const config = getSettings().slack;
         await setAssistantSuggestedPrompts(config.botToken, threadChannel, threadTs, [
@@ -1419,7 +1441,7 @@ async function handleSocketPayload(
       const threadChannel = (event as any).assistant_thread?.channel_id;
       const threadTs = (event as any).assistant_thread?.thread_ts;
       if (threadChannel && threadTs) {
-        assistantThreadKeys.add(assistantKey(threadChannel, threadTs));
+        assistantThreadKeys.set(assistantKey(threadChannel, threadTs), Date.now());
         debugLog(`Assistant thread context changed: channel=${threadChannel} ts=${threadTs}`);
       }
       return;
@@ -1601,6 +1623,7 @@ export function startSlack(debug = false): void {
 
   (async () => {
     await ensureProjectClaudeMd();
+    await mkdir(SLACK_OUTBOX_DIR, { recursive: true });
 
     // Resolve bot identity
     try {
