@@ -239,7 +239,8 @@ function buildChildEnv(baseEnv: Record<string, string>, model: string, api: stri
  * Name mapping:
  *   "telegram"  → settings.timeouts.telegram  (default 5 min)
  *   "heartbeat" → settings.timeouts.heartbeat (default 15 min)
- *   anything else (jobs, bootstrap, trigger…) → settings.timeouts.job (default 30 min)
+ *   "job"       → settings.timeouts.job       (default 30 min)
+ *   anything else (bootstrap, trigger, chat…) → settings.timeouts.default (default 5 min)
  */
 function resolveTimeoutMs(name: string): number {
   const t = getSettings().timeouts;
@@ -248,8 +249,10 @@ function resolveTimeoutMs(name: string): number {
     minutes = t.telegram;
   } else if (name === "heartbeat") {
     minutes = t.heartbeat;
-  } else {
+  } else if (name === "job") {
     minutes = t.job;
+  } else {
+    minutes = t.default;
   }
   return minutes * 60_000;
 }
