@@ -1046,6 +1046,7 @@ process.on("SIGINT", () => { running = false; });
 /** Start polling in-process (called by start.ts when token is configured) */
 export function startPolling(debug = false): void {
   if (isPolling) return;
+  running = true;
   isPolling = true;
   telegramDebug = debug;
   (async () => {
@@ -1055,6 +1056,12 @@ export function startPolling(debug = false): void {
     console.error(`[Telegram] Fatal: ${err}`);
     isPolling = false;
   });
+}
+
+/** Stop polling in-process (called by start.ts when receiveEnabled is toggled off) */
+export function stopPolling(): void {
+  running = false;
+  isPolling = false;
 }
 
 /** Standalone entry point (bun run src/index.ts telegram) */

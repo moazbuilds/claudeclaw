@@ -62,7 +62,28 @@ export async function buildState(snapshot: WebSnapshot) {
   };
 }
 
+function redactSettings(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object") return raw;
+  const s = raw as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...s };
+  if ("apiToken" in out) out.apiToken = out.apiToken ? "[redacted]" : undefined;
+  if (out.telegram && typeof out.telegram === "object") {
+    const t = out.telegram as Record<string, unknown>;
+    out.telegram = { ...t, token: t.token ? "[redacted]" : "" };
+  }
+  if (out.discord && typeof out.discord === "object") {
+    const d = out.discord as Record<string, unknown>;
+    out.discord = { ...d, token: d.token ? "[redacted]" : "" };
+  }
+  if (out.slack && typeof out.slack === "object") {
+    const sl = out.slack as Record<string, unknown>;
+    out.slack = { ...sl, botToken: sl.botToken ? "[redacted]" : "", appToken: sl.appToken ? "[redacted]" : "" };
+  }
+  return out;
+}
+
 export async function buildTechnicalInfo(snapshot: WebSnapshot) {
+  const rawSettings = await readJsonFile(SETTINGS_FILE);
   return {
     daemon: {
       pid: snapshot.pid,
@@ -70,11 +91,14 @@ export async function buildTechnicalInfo(snapshot: WebSnapshot) {
       uptimeMs: Math.max(0, Date.now() - snapshot.startedAt),
     },
     files: {
-      settingsJson: await readJsonFile(SETTINGS_FILE),
+      settingsJson: redactSettings(rawSettings),
       sessionJson: await readJsonFile(SESSION_FILE),
       stateJson: await readJsonFile(STATE_FILE),
     },
-    snapshot,
+    snapshot: {
+      ...snapshot,
+      settings: redactSettings(snapshot.settings) as WebSnapshot["settings"],
+    },
   };
 }
 

@@ -376,6 +376,7 @@ export async function start(args: string[] = []) {
   // --- Telegram ---
   let telegramSend: ((chatId: number, text: string) => Promise<void>) | null = null;
   let telegramToken = "";
+  let telegramReceiveEnabled = true;
 
   async function initTelegram(token: string, receiveEnabled = true) {
     if (token && token !== telegramToken) {
@@ -383,7 +384,18 @@ export async function start(args: string[] = []) {
       if (receiveEnabled) startPolling(debugFlag);
       telegramSend = (chatId, text) => sendMessage(token, chatId, text);
       telegramToken = token;
+      telegramReceiveEnabled = receiveEnabled;
       console.log(`[${ts()}] Telegram: enabled${receiveEnabled ? "" : " (send-only)"}`);
+    } else if (token && token === telegramToken && receiveEnabled !== telegramReceiveEnabled) {
+      const { startPolling, stopPolling } = await import("./telegram");
+      if (receiveEnabled) {
+        startPolling(debugFlag);
+        console.log(`[${ts()}] Telegram: receive enabled`);
+      } else {
+        stopPolling();
+        console.log(`[${ts()}] Telegram: receive disabled (send-only)`);
+      }
+      telegramReceiveEnabled = receiveEnabled;
     } else if (!token && telegramToken) {
       telegramSend = null;
       telegramToken = "";
