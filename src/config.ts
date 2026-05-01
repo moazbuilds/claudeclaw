@@ -83,6 +83,7 @@ const DEFAULT_SETTINGS: Settings = {
   stt: { baseUrl: "", model: "" },
   sessionTimeoutMs: DEFAULT_SESSION_TIMEOUT_MS,
   watchdog: { maxConsecutiveTimeouts: null, maxRuntimeSeconds: null },
+  session: { autoRotate: false, maxMessages: 50, maxAgeHours: 24, summaryPath: "" },
   plugins: {},
 };
 
@@ -141,6 +142,7 @@ export interface Settings {
   sessionTimeoutMs: number;
   watchdog: WatchdogSettings;
   plugins: Record<string, PluginEntry>;
+  session: SessionConfig;
   jobsDir?: string;
 }
 
@@ -176,6 +178,17 @@ export interface SttConfig {
   baseUrl: string;
   /** Model name passed to the API (default: "Systran/faster-whisper-large-v3") */
   model: string;
+}
+
+export interface SessionConfig {
+  /** Automatically rotate the global session when a threshold is exceeded. Default: false. */
+  autoRotate: boolean;
+  /** Rotate after this many messages. Default: 50. */
+  maxMessages: number;
+  /** Rotate after this many hours. Default: 24. */
+  maxAgeHours: number;
+  /** Directory to write markdown summaries before rotation. Empty string disables summaries. */
+  summaryPath: string;
 }
 
 let cached: Settings | null = null;
@@ -318,6 +331,12 @@ function parseSettings(
       : DEFAULT_SESSION_TIMEOUT_MS,
     watchdog: parseWatchdogConfig(raw.watchdog),
     plugins: parsePlugins(raw.plugins),
+    session: {
+      autoRotate: raw.session?.autoRotate ?? false,
+      maxMessages: Number.isFinite(raw.session?.maxMessages) ? Number(raw.session.maxMessages) : 50,
+      maxAgeHours: Number.isFinite(raw.session?.maxAgeHours) ? Number(raw.session.maxAgeHours) : 24,
+      summaryPath: typeof raw.session?.summaryPath === "string" ? raw.session.summaryPath.trim() : "",
+    },
     ...(typeof raw.jobsDir === "string" && raw.jobsDir.trim() ? { jobsDir: raw.jobsDir.trim() } : {}),
   };
 }

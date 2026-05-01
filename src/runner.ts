@@ -9,7 +9,9 @@ import {
   getFallbackSession,
   createFallbackSession,
   incrementFallbackTurn,
+  peekSession,
 } from "./sessions";
+import { needsRotation, rotateSession, loadLatestSummary } from "./rotation";
 import {
   getThreadSession,
   createThreadSession,
@@ -624,6 +626,17 @@ async function execClaude(
 ): Promise<RunResult> {
   await mkdir(LOGS_DIR, { recursive: true });
 
+  // Rotate the global session if thresholds are exceeded (thread/agent sessions are not rotated).
+  if (!threadId && !agentName) {
+    const { session: sessionConfig } = getSettings();
+    if (sessionConfig.autoRotate) {
+      const peeked = await peekSession();
+      if (peeked && needsRotation(peeked, sessionConfig)) {
+        await rotateSession(sessionConfig);
+      }
+    }
+  }
+
   const existing = threadId
     ? await getThreadSession(threadId)
     : await getSession(agentName);
@@ -1065,6 +1078,11 @@ export async function bootstrap(): Promise<void> {
   if (existing) return;
 
   console.log(`[${new Date().toLocaleTimeString()}] Bootstrapping new session...`);
-  await execClaude("bootstrap", "Wakeup, my friend!");
+  const { session: sessionConfig } = getSettings();
+  const summary = sessionConfig.summaryPath ? await loadLatestSummary(sessionConfig.summaryPath) : null;
+  const wakeupPrompt = summary
+    ? `Wakeup, my friend!\n\nContext from the previous session:\n\n${summary}`
+    : "Wakeup, my friend!";
+  await execClaude("bootstrap", wakeupPrompt);
   console.log(`[${new Date().toLocaleTimeString()}] Bootstrap complete — session is live.`);
 }
