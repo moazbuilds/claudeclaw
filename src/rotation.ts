@@ -35,18 +35,20 @@ export function needsRotation(session: GlobalSession, config: SessionConfig): bo
   return false;
 }
 
-export async function rotateSession(config: SessionConfig): Promise<void> {
+/** Rotate the global session. Returns the freshly-written summary content, or null if summary generation was skipped, timed out, or failed. */
+export async function rotateSession(config: SessionConfig): Promise<string | null> {
   const session = await peekSession();
-  if (!session) return;
+  if (!session) return null;
 
   const ageH = Math.round((Date.now() - new Date(session.createdAt).getTime()) / 3_600_000);
   console.log(
     `[${new Date().toLocaleTimeString()}] Rotating session ${session.sessionId.slice(0, 8)} (messages: ${session.messageCount ?? 0}, age: ${ageH}h)`
   );
 
+  let freshSummary: string | null = null;
   if (config.summaryPath) {
     try {
-      await generateSummary(session.sessionId, config.summaryPath);
+      freshSummary = await generateSummary(session.sessionId, config.summaryPath);
     } catch (e) {
       console.error(`[${new Date().toLocaleTimeString()}] Failed to generate session summary:`, e);
     }
@@ -59,9 +61,11 @@ export async function rotateSession(config: SessionConfig): Promise<void> {
 
   await resetSession();
   console.log(`[${new Date().toLocaleTimeString()}] Session rotated — next message will create a new session`);
+  return freshSummary;
 }
 
-async function generateSummary(sessionId: string, summaryPath: string): Promise<void> {
+/** Write a summary for the given session. Returns the summary content on success, null on timeout or failure. */
+async function generateSummary(sessionId: string, summaryPath: string): Promise<string | null> {
   await mkdir(summaryPath, { recursive: true });
 
   let summaryPrompt: string;
@@ -92,21 +96,23 @@ async function generateSummary(sessionId: string, summaryPath: string): Promise<
 
   if (killed) {
     console.warn(`[${new Date().toLocaleTimeString()}] Summary generation timed out after ${SUMMARY_TIMEOUT_MS / 1000}s — continuing rotation without summary`);
-    return;
+    return null;
   }
 
   if (proc.exitCode !== 0 || !stdout.trim()) {
     console.error(`[${new Date().toLocaleTimeString()}] Summary generation failed (exit ${proc.exitCode}):`, stderr);
-    return;
+    return null;
   }
 
+  const content = stdout.trim();
   const now = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
   const filename = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}-${pad(now.getMinutes())}.md`;
   const filepath = join(summaryPath, filename);
 
-  await Bun.write(filepath, stdout.trim() + "\n");
+  await Bun.write(filepath, content + "\n");
   console.log(`[${new Date().toLocaleTimeString()}] Session summary saved: ${filepath}`);
+  return content;
 }
 
 export async function loadLatestSummary(summaryPath: string): Promise<string | null> {
