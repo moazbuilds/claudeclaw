@@ -1,411 +1,258 @@
 <p align="center">
-  <img src="images/claudeclaw-banner.svg" alt="ClaudeClaw Banner" />
+  <img src="images/claudeclaw-banner.svg" alt="ClaudeClaw+ Banner" />
 </p>
 <p align="center">
-  <img src="images/claudeclaw-wordmark.png" alt="ClaudeClaw Wordmark" />
+  <img src="images/claudeclaw-wordmark.png" alt="ClaudeClaw+ Wordmark" />
 </p>
 
 <p align="center">
-  <img src="https://awesome.re/badge.svg" alt="Awesome" />
-  <a href="https://github.com/moazbuilds/ClaudeClaw/stargazers">
-    <img src="https://img.shields.io/github/stars/moazbuilds/ClaudeClaw?style=flat-square&color=f59e0b" alt="GitHub Stars" />
+  <a href="https://github.com/TerrysPOV/ClaudeClaw-Plus/stargazers">
+    <img src="https://img.shields.io/github/stars/TerrysPOV/ClaudeClaw-Plus?style=flat-square&color=f59e0b" alt="GitHub Stars" />
   </a>
-  <a href="https://github.com/moazbuilds/ClaudeClaw">
-    <img src="https://img.shields.io/static/v1?label=downloads&message=~15k%20every%2014%20days&color=2da44e&style=flat-square" alt="Downloads ~15k every 14 days" />
+  <a href="https://github.com/TerrysPOV/ClaudeClaw-Plus/commits/main">
+    <img src="https://img.shields.io/github/last-commit/TerrysPOV/ClaudeClaw-Plus?style=flat-square&color=0ea5e9" alt="Last Commit" />
   </a>
-  <a href="https://github.com/moazbuilds/ClaudeClaw/commits/master">
-    <img src="https://img.shields.io/github/last-commit/moazbuilds/ClaudeClaw?style=flat-square&color=0ea5e9" alt="Last Commit" />
+  <a href="https://github.com/TerrysPOV/ClaudeClaw-Plus/graphs/contributors">
+    <img src="https://img.shields.io/github/contributors/TerrysPOV/ClaudeClaw-Plus?style=flat-square&color=a855f7" alt="Contributors" />
   </a>
-  <a href="https://github.com/moazbuilds/ClaudeClaw/graphs/contributors">
-    <img src="https://img.shields.io/github/contributors/moazbuilds/ClaudeClaw?style=flat-square&color=a855f7" alt="Contributors" />
-  </a>
-  <a href="https://x.com/moazbuilds">
-    <img src="https://img.shields.io/badge/X-%40moazbuilds-000000?style=flat-square&logo=x" alt="X @moazbuilds" />
+  <a href="https://github.com/moazbuilds/claudeclaw">
+    <img src="https://img.shields.io/badge/synced%20from-moazbuilds%2Fclaudeclaw-2da44e?style=flat-square" alt="Synced from moazbuilds/claudeclaw" />
   </a>
 </p>
 
-<p align="center"><b>A lightweight, open-source OpenClaw version built into your Claude Code.</b></p>
+<p align="center"><b>ClaudeClaw, plus the heavy stuff. Governance, orchestration, persistent memory, hardened web UI.</b></p>
 
-ClaudeClaw turns your Claude Code into a personal assistant that never sleeps. It runs as a background daemon, executing tasks on a schedule, responding to messages on Telegram and Discord, transcribing voice commands, and integrating with any service you need.
+ClaudeClaw+ is a sister project to [`moazbuilds/claudeclaw`](https://github.com/moazbuilds/claudeclaw) — the lightweight Claude Code daemon you already know. Plus exists to house the features that are too heavy or too opinionated for the core repo: a full governance and policy layer, durable multi-step orchestration, persistent cross-session memory, and a hardened web UI.
 
-> Note: Please don't use ClaudeClaw for hacking any bank system or doing any illegal activities. Thank you.
+Everything from upstream lives here too. ClaudeClaw+ syncs from upstream automatically every day, so you never fall behind.
 
-## Why ClaudeClaw?
+> Note: Please don't use ClaudeClaw+ for hacking any bank system or doing anything illegal. Same rules apply.
 
-| Category | ClaudeClaw | OpenClaw |
-| --- | --- | --- |
-| Anthropic Will Come After You | No | Yes |
-| API Overhead | Directly uses your Claude Code subscription | Nightmare |
-| Setup & Installation | ~5 minutes | Nightmare |
-| Deployment | Install Claude Code on any device or VPS and run | Nightmare |
-| Isolation Model | Folder-based and isolated as needed | Global by default (security nightmare) |
-| Reliability | Simple reliable system for agents | Bugs nightmare |
-| Feature Scope | Lightweight features you actually use | 600k+ LOC nightmare |
-| Security | Average Claude Code usage | Nightmare |
-| Cost Efficiency | Efficient usage | Nightmare |
-| Memory | Uses Claude internal memory system + `CLAUDE.md` | Nightmare |
+---
+
+## Standing on the shoulders of giants
+
+ClaudeClaw+ is built on top of the original [`moazbuilds/claudeclaw`](https://github.com/moazbuilds/claudeclaw), created by [@moazbuilds](https://github.com/moazbuilds). The core daemon, Telegram/Discord adapters, heartbeat, web dashboard, skills system — all of that comes from upstream and the amazing contributors who built it.
+
+**Upstream contributors — thank you:**
+
+<a href="https://github.com/moazbuilds/claudeclaw/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=moazbuilds/claudeclaw" />
+</a>
+
+### How the sync works
+
+A GitHub Actions workflow (`.github/workflows/sync-upstream.yml`) runs at 07:00 UTC every day. It pulls `moazbuilds/claudeclaw master` and opens a PR if there are new commits. Every fix and feature that lands upstream is here within a day.
+
+If you see a PR titled **"chore: sync upstream"** — that's the robot doing its job. Review it, resolve any conflicts if needed, and merge.
+
+---
+
+## Why ClaudeClaw+?
+
+| Category | ClaudeClaw | ClaudeClaw+ | OpenClaw |
+| --- | --- | --- | --- |
+| Anthropic Will Come After You | No | No | Yes |
+| API Overhead | Directly uses your Claude Code subscription | Same | Nightmare |
+| Setup & Installation | ~5 minutes | ~5 minutes | Nightmare |
+| Isolation | Folder-based and isolated as needed | Folder-based + per-agent scope | Nightmare |
+| Reliability | Simple reliable system | Simple + durable workflows that survive restarts | Nightmare |
+| Feature Scope | Lightweight features you actually use | Everything in ClaudeClaw, plus governance and orchestration | 600k+ LOC nightmare |
+| Security | Average Claude Code usage | Policy engine, audit log, CSRF protection | Nightmare |
+| Cost Control | Manual | Automatic token budgets + model routing per task type | Nightmare |
+| Memory | Claude internal memory + `CLAUDE.md` | Persistent cross-session `MEMORY.md` with dual-layer write guarantee | Nightmare |
+| Multi-step Jobs | Cron + heartbeat | DAG orchestrator with dependency resolution and resumable state | Nightmare |
+
+---
 
 ## Getting Started in 5 Minutes
 
 ```bash
-claude plugin marketplace add moazbuilds/claudeclaw
-claude plugin install claudeclaw
+claude plugin marketplace add TerrysPOV/ClaudeClaw-Plus
+claude plugin install claudeclaw-plus
 ```
+
 Then open a Claude Code session and run:
+
 ```
 /claudeclaw:start
 ```
-The setup wizard walks you through model, heartbeat, Telegram, Discord, and security, then your daemon is live with a web dashboard.
 
-## v2.0 Milestone Complete ✓
+The setup wizard covers model, heartbeat, Telegram, Discord, and security. Your daemon is live in under five minutes — same as upstream.
 
-**All phases complete** — ClaudeClaw v2.0 is fully verified with:
-- **574 tests passing (99.5% pass rate)**
-- **Security hardening applied** (rate limiting, file size limits, CSRF protection, log injection prevention)
-- **Code simplification** applied across core modules
+---
 
-### Contributor Note: Plugin Version Metadata
+## What's in Plus that isn't in claudeclaw
 
-If you change shipped plugin files under `src/`, `commands/`, `prompts/`, or `.claude-plugin/`, the plugin metadata version may also need to be bumped so Claude Code and marketplace consumers detect the update correctly.
+These features originated as PRs to `moazbuilds/claudeclaw`. The upstream maintainer has given his blessing for them to live here instead. Links below point to the originating PRs so you can read the full rationale.
 
-Helpers:
+### Policy Engine — fine-grained tool governance
 
-```bash
-bun run bump:plugin-version
-bun run bump:marketplace-version
-```
+**[PR #71 — open upstream](https://github.com/moazbuilds/claudeclaw/pull/71)**
 
-Docs-only and other non-shipped changes do not require these bumps.
+Every tool call (Bash, Read, Edit, etc.) is evaluated against deterministic rules before execution. Rules can allow, deny, or gate behind operator approval — scoped by channel, user, skill, and source. Includes an audit log and a bounded LRU approval cache.
 
-## What Would Be Built Next?
+**Why:** Replaces blanket `--dangerously-skip-permissions` with actual governance. Operators can deny destructive tools in public channels, require approval for high-risk operations, and keep a tamper-evident audit trail for compliance.
 
-> **Mega Post:** Help shape the next ClaudeClaw features.
-> Vote, suggest ideas, and discuss priorities in **[this post](https://github.com/moazbuilds/ClaudeClaw/issues/14)**.
+---
 
-<p align="center">
-  <a href="https://github.com/moazbuilds/ClaudeClaw/issues/14">
-    <img src="https://img.shields.io/badge/Roadmap-Mega%20Post-blue?style=for-the-badge&logo=github" alt="Roadmap Mega Post" />
-  </a>
-</p>
+### Governance Layer — model routing, budgets, watchdog
 
-## Features
+**[PR #72 — open upstream](https://github.com/moazbuilds/claudeclaw/pull/72)**
 
-### Automation
-- **Heartbeat:** Periodic check-ins with configurable intervals, quiet hours, and editable prompts.
-- **Cron Jobs:** Timezone-aware schedules for repeating or one-time tasks with reliable execution.
+Sits between the daemon and Claude CLI. Automatically routes planning tasks to Opus and implementation tasks to Sonnet. Tracks token and cost spend per session and globally, with configurable warn/throttle/block states. Watchdog kills runaway sessions before they drain your credits.
 
-### Communication
-- **Telegram:** Text, image, and voice support.
-- **Discord:** DMs, server mentions/replies, slash commands, voice messages, and image attachments.
-- **Time Awareness:** Message time prefixes help the agent understand delays and daily patterns.
+**Why:** Stops cost overruns before they happen. Makes ClaudeClaw safe to leave unattended — the thing that needs a babysitter becomes the babysitter.
 
-### Multi-Session Threads (Discord)
-- **Independent Thread Sessions:** Each Discord thread gets its own Claude CLI session, fully isolated from the main channel.
-- **Parallel Processing:** Thread conversations run concurrently — messages in different threads don't block each other.
-- **Auto-Create:** First message in a new thread automatically bootstraps a fresh session. No setup needed.
-- **Session Cleanup:** Thread sessions are automatically cleaned up when threads are deleted or archived.
-- **Backward Compatible:** DMs and main channel messages continue using the global session.
+---
+
+### Gateway, Events & Escalation — unified ingestion and replayable event log
+
+**[PR #73 — open upstream](https://github.com/moazbuilds/claudeclaw/pull/73)**
+
+Unified message ingestion pipeline normalises Discord/Telegram messages to a common format. Crash-safe append-only event log, retry queue with exponential backoff, dead-letter queue, full event replay, and an escalation framework (pause session, hand off to a human, notify across channels).
+
+**Why:** Eliminates duplicated per-adapter logic and gives you an audit trail you can replay. When something goes wrong at 3am, you can see exactly what happened and re-run it.
+
+---
+
+### Orchestrator — DAG task graph and resumable jobs
+
+**[PR #74 — open upstream](https://github.com/moazbuilds/claudeclaw/pull/74)**
+
+Multi-step task execution via dependency graph with topological sort. Durable workflow state with atomic writes. Jobs survive daemon restarts mid-execution. Governance-integrated executor with configurable parallelism.
+
+**Why:** Complex requests decompose into dependent subtasks that run in parallel where possible and resume exactly where they left off after a crash. No more lost work.
+
+---
+
+### CSRF Protection for Web UI
+
+**[PR #75 — open upstream](https://github.com/moazbuilds/claudeclaw/pull/75)**
+
+Cryptographically random single-use UUID tokens per session, timing-safe comparison, conditional `Secure` cookie flag, and a client-side `mutatingFetch()` wrapper that auto-retries on 403.
+
+**Why:** Prevents malicious cross-origin pages from triggering heartbeat toggles, job runs, or chat actions in an operator's logged-in browser — hardening on top of whatever reverse-proxy auth you're running.
+
+---
+
+### Persistent Memory — cross-session `MEMORY.md`
+
+**[PR #77 — open upstream](https://github.com/moazbuilds/claudeclaw/pull/77)**
+
+`MEMORY.md` loaded into `--append-system-prompt` on every invocation. Dual-layer write guarantee: Claude is instructed to write after each task, and a daemon-side fallback appends a log entry if `MEMORY.md` is unchanged after a run. Pre-compact and pre-shutdown saves, 200-line cap with auto-trim, per-agent memory paths.
+
+**Why:** Sessions stop being amnesiac. Claude remembers prior work across restarts, compactions, and crashes — making long-running deployments coherent.
+
+---
+
+### Multi-Session Discord Threads
+
+Each Discord thread gets its own Claude CLI session, fully isolated. Thread conversations run concurrently without blocking each other. First message in a new thread bootstraps a fresh session automatically.
 
 See [docs/MULTI_SESSION.md](docs/MULTI_SESSION.md) for technical details.
 
-### Reliability and Control
-- **GLM Fallback:** Automatically continue with GLM models if your primary limit is reached.
-- **Web Dashboard:** Manage jobs, monitor runs, and inspect logs in real time.
-- **Security Levels:** Four access levels from read-only to full system access.
-- **Model Selection:** Switch models based on your workload.
+---
 
-## Architecture
+### Daemon Plugin API
 
-### Core Modules
+**[PR #144 — open upstream](https://github.com/moazbuilds/claudeclaw/pull/144)**
 
-```
-src/
-├── event-log.ts          # Append-only event log with daily rotation
-├── event-processor.ts    # Event dispatch and processing
-├── retry-queue.ts        # Retry handling with exponential backoff
-├── dead-letter-queue.ts  # Failed event DLQ
-├── replay.ts             # Event replay capability
-├── gateway/              # Session mapping and routing layer
-│   ├── index.ts          # Gateway orchestrator
-│   ├── session-map.ts    # Per-channel+thread session isolation
-│   ├── normalizer.ts     # Unified event schema
-│   └── resume.ts         # Session resume logic
-├── policy/               # Policy engine
-│   ├── engine.ts         # Rule evaluation
-│   ├── channel-policies.ts  # Per-channel overrides
-│   ├── skill-overlays.ts    # Skill-specific constraints
-│   ├── approval-queue.ts     # Durable approval workflow
-│   └── audit-log.ts          # Audit trail
-├── governance/            # Cost and model governance
-│   ├── usage-tracker.ts   # Per-invocation usage records
-│   ├── budget-engine.ts   # Budget evaluation (warn/degrade/block)
-│   ├── model-router.ts    # Governance-aware routing
-│   ├── watchdog.ts        # Runaway detection
-│   ├── telemetry.ts       # Governance metrics
-│   └── client.ts          # Unified GovernanceClient interface
-├── orchestrator/          # Task orchestration
-│   ├── task-graph.ts      # Graph validation and sorting
-│   ├── workflow-state.ts  # Crash-safe state persistence
-│   ├── executor.ts        # Task execution
-│   ├── resumable-jobs.ts  # Job scheduling
-│   ├── governance-adapter.ts  # Governance bridge
-│   └── telemetry.ts        # Orchestration metrics
-├── escalation/            # Human escalation
-│   ├── pause.ts           # Pause/resume modes
-│   ├── handoff.ts         # Structured handoff packages
-│   ├── notifications.ts    # 7 notification types
-│   ├── triggers.ts        # Policy-driven escalation
-│   └── status.ts          # Status aggregation
-├── commands/              # Channel adapters
-│   ├── telegram.ts        # Telegram integration
-│   └── discord.ts         # Discord integration
-├── adapters/              # Additional channel adapters (scaffolds)
-│   ├── slack/             # Slack adapter (future)
-│   ├── teams/             # Teams adapter (future)
-│   ├── email/             # Email adapter (future)
-│   └── github/            # GitHub adapter (future)
-└── ui/                    # Web dashboard
-```
+OpenClaw-compatible lifecycle events at the daemon level — `gateway_start`, `before_agent_start`, `before_prompt_build`, `tool_result_persist`, `agent_end`, and more. Plugins hook in via `api.on()`, `api.registerService()`, and `api.registerCommand()`. Includes path traversal prevention, SSRF-safe health checks, and fire-and-forget async emission.
 
-### Data Storage
+**Why:** Lets external code extend the daemon without modifying it — memory systems, observability, custom routing, anything.
 
-All state stored in `.claude/claudeclaw/`:
-```
-.claude/claudeclaw/
-├── event-log/           # Append-only event log (rotated daily)
-├── retry-queue.json     # Retry queue state
-├── dlq.jsonl           # Dead letter queue
-├── session-map.json     # Channel→session mappings
-├── audit-log.jsonl      # Policy decision audit trail
-├── usage/               # Per-session usage accounting
-├── workflows/           # Persisted workflow state
-├── paused.json          # Pause state flag
-├── jobs/                # Scheduled job definitions
-└── logs/                # Run logs
-```
+---
 
-## Configuration
+## All the things from upstream
 
-### Settings File
+Everything ClaudeClaw ships, Plus ships too:
 
-ClaudeClaw stores settings in `.claude/claudeclaw/settings.json`:
+- **Heartbeat** — periodic check-ins, configurable intervals, quiet hours
+- **Cron Jobs** — timezone-aware schedules, one-time and repeating
+- **Telegram** — text, image, and voice support
+- **Discord** — DMs, server mentions/replies, slash commands, voice, images
+- **GLM Fallback** — continue with GLM models when your primary limit is hit
+- **Web Dashboard** — manage jobs, monitor runs, inspect logs in real time
+- **Security Levels** — four access levels from read-only to full system access
+- **Skills & Plugins** — folder-based, isolated as needed
 
-```json
-{
-  "model": "claude-sonnet-4-20250514",
-  "api": "https://api.anthropic.com",
-  "fallback": {
-    "model": "claude-3-5-haiku-20241022",
-    "api": "https://api.anthropic.com"
-  },
-  "agentic": {
-    "enabled": true,
-    "defaultMode": "implementation",
-    "modes": [
-      {
-        "name": "planning",
-        "model": "claude-opus-4-20250514",
-        "keywords": ["plan", "design", "architect", "strategy"]
-      },
-      {
-        "name": "implementation",
-        "model": "claude-sonnet-4-20250514",
-        "keywords": ["implement", "code", "write", "create", "build"]
-      }
-    ]
-  },
-  "timezone": "America/New_York",
-  "timezoneOffsetMinutes": -240,
-  "heartbeat": {
-    "enabled": true,
-    "interval": 15,
-    "prompt": "How's everything going?",
-    "excludeWindows": [],
-    "forwardToTelegram": true
-  },
-  "telegram": {
-    "token": "123456:ABC-DEF...",
-    "allowedUserIds": [123456789]
-  },
-  "discord": {
-    "token": "ABC123...",
-    "allowedUserIds": ["123456789012345678"],
-    "listenChannels": []
-  },
-  "security": {
-    "level": "moderate",
-    "allowedTools": [],
-    "disallowedTools": []
-  },
-  "web": {
-    "enabled": true,
-    "host": "127.0.0.1",
-    "port": 4632
-  },
-  "stt": {
-    "baseUrl": "",
-    "model": ""
-  }
-}
-```
+---
 
-### Security Levels
+## Contributing
 
-| Level | Description |
-|-------|-------------|
-| `locked` | Only allow explicitly listed tools |
-| `strict` | Allow all tools except dangerous ones |
-| `moderate` | Allow most tools with some restrictions |
-| `unrestricted` | Full access (not recommended) |
+Big ideas welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
 
-### Environment Variables
+Short version: open an issue or discussion first, then the PR. Large refactors fine. Opinionated changes fine. Multi-file stacks fine. Just talk first, code second.
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `USE_GATEWAY` | Enable gateway layer for event routing | `false` |
-| `USE_GATEWAY_TELEGRAM` | Route Telegram through gateway | `false` |
-| `USE_GATEWAY_DISCORD` | Route Discord through gateway | `false` |
+---
 
-### Feature Flags
+## Roadmap
 
-Gateway routing is controlled by environment variables:
-```bash
-# Enable gateway for all events
-USE_GATEWAY=true
+Watch the [Issues](https://github.com/TerrysPOV/ClaudeClaw-Plus/issues) tab for upcoming work. Want to propose something? Open a discussion — all ideas welcome.
 
-# Enable gateway only for specific channels
-USE_GATEWAY_TELEGRAM=true
-USE_GATEWAY_DISCORD=true
-```
-
-## Security Features
-
-### Rate Limiting
-- **Telegram:** 30 messages/minute per user
-- **Discord:** 30 messages/minute per user
-- In-memory tracking with automatic cleanup
-
-### File Upload Protection
-- **25MB maximum** file size for all attachments
-- Prevents disk exhaustion attacks
-
-### Filename Sanitization
-- Removes null bytes, path traversal sequences (`../`), and unsafe characters
-- Prevents path traversal attacks
-
-### CSRF Protection
-- Token validation on all web UI state-changing endpoints:
-  - `/api/settings/heartbeat`
-  - `/api/jobs/quick`
-  - `/api/chat`
-- Tokens expire after 1 hour
-
-### Log Injection Prevention
-- All user-controlled fields sanitized before logging
-- Prevents log forgery attacks
-
-## Development
-
-### Running Tests
-
-```bash
-# Run all tests
-bun test
-
-# Run specific test file
-bun test src/__tests__/gateway/index.test.ts
-
-# Run with coverage
-bun test --coverage
-```
-
-**Test Suite Status:** 574/577 tests passing (99.5%)
-
-### Project Structure
-
-```
-moazbuilds-claudeclaw/
-├── src/
-│   ├── __tests__/           # Test files (co-located with source)
-│   ├── commands/            # Telegram, Discord adapters
-│   ├── gateway/             # Session mapping layer
-│   ├── policy/              # Policy engine
-│   ├── governance/          # Cost + model governance
-│   ├── orchestrator/        # Task graph + workflow
-│   ├── escalation/          # Human escalation
-│   ├── adapters/            # Additional channel adapters
-│   └── ui/                  # Web dashboard
-├── .planning/               # GSD planning artifacts
-├── .claude-plugin/          # Claude Code plugin manifest
-├── package.json
-├── tsconfig.json
-└── bun.lock
-```
-
-### Tech Stack
-
-| Component | Choice | Rationale |
-|-----------|--------|-----------|
-| Runtime | **Bun** | Fast startup, native TypeScript, ESM-first |
-| Package Manager | **Bun** | Native workspace, fast installs |
-| Language | **TypeScript** | Type safety, IDE support |
-| Module System | **ESM** | Native async, tree-shaking |
-| Persistence | **Flat JSON/JSONL** | Zero dependencies, human-readable |
-| Test Runner | **Bun test** | Built-in, fast, Jest-compatible |
-
-### Key Design Decisions
-
-1. **Flat files over database** — Zero external dependencies, easy backup/restore
-2. **Bun over Node.js** — Faster startup, native TypeScript
-3. **ESM over CommonJS** — Tree-shaking, top-level await
-4. **Additive only** — No breaking changes to existing modules
+---
 
 ## FAQ
 
 <details open>
-  <summary><strong>Can ClaudeClaw do &lt;something&gt;?</strong></summary>
+  <summary><strong>Is this a hard fork?</strong></summary>
   <p>
-    If Claude Code can do it, ClaudeClaw can do it too. ClaudeClaw adds cron jobs,
-    heartbeats, and Telegram/Discord bridges on top. You can also give your ClaudeClaw new
-    skills and teach it custom workflows.
+    No. ClaudeClaw+ syncs from <a href="https://github.com/moazbuilds/claudeclaw">moazbuilds/claudeclaw</a> every day.
+    Upstream fixes land here within 24 hours. It's a sister project — same foundation, wider scope.
   </p>
 </details>
 
 <details open>
-  <summary><strong>Is this project breaking Anthropic ToS?</strong></summary>
+  <summary><strong>Will features here go back upstream?</strong></summary>
   <p>
-    No. ClaudeClaw is local usage inside the Claude Code ecosystem. It wraps Claude Code
-    directly and does not require third-party OAuth outside that flow.
-    If you build your own scripts to do the same thing, it would be the same.
+    Sometimes. All the Plus features were proposed to upstream first.
+    <a href="https://github.com/moazbuilds">@moazbuilds</a> decides what fits the lightweight core.
+    Whether they get merged upstream or not, they're available here today.
   </p>
 </details>
 
 <details open>
-  <summary><strong>Will Anthropic sue you for building ClaudeClaw?</strong></summary>
+  <summary><strong>Why not just keep these as PRs upstream?</strong></summary>
+  <p>
+    Six PRs totalling ~55,000 lines of additions need a home where they can actually be used.
+    Sitting as open PRs with no activity doesn't help anyone.
+    ClaudeClaw+ is that home.
+  </p>
+</details>
+
+<details open>
+  <summary><strong>Is this breaking Anthropic ToS?</strong></summary>
+  <p>
+    No. Same answer as upstream: ClaudeClaw+ is local usage inside the Claude Code ecosystem.
+    It wraps Claude Code directly and does not require third-party OAuth outside that flow.
+  </p>
+</details>
+
+<details open>
+  <summary><strong>Will Anthropic / @moazbuilds sue you for building ClaudeClaw+?</strong></summary>
   <p>
     I hope not.
   </p>
 </details>
 
-<details open>
-  <summary><strong>Are you ready to change this project name?</strong></summary>
-  <p>
-    If it bothers Anthropic, I might rename it to OpenClawd. Not sure yet.
-  </p>
-</details>
+---
 
 ## Screenshots
 
-### Claude Code Folder-Based Status Bar
+### Web Dashboard
+![Cool UI to manage and check your ClaudeClaw](images/dashboard.png)
+
+### Claude Code Status Bar
 ![Claude Code folder-based status bar](images/bar.png)
 
-### Cool UI to Manage and Check Your ClaudeClaw
-![Cool UI to manage and check your ClaudeClaw](images/dashboard.png)
+---
 
 ## Contributors
 
-Thanks for helping make ClaudeClaw better.
+Thanks for building ClaudeClaw+.
 
-<a href="https://github.com/moazbuilds/ClaudeClaw/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=moazbuilds/ClaudeClaw" />
+<a href="https://github.com/TerrysPOV/ClaudeClaw-Plus/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=TerrysPOV/ClaudeClaw-Plus" />
 </a>
+</content>
