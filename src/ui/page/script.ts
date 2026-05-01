@@ -1175,8 +1175,19 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
       if (msg.role === "agent") {
         var agentCls = "chat-msg chat-msg-agent" + (msg.agentStatus === "running" ? " chat-msg-agent-running" : " chat-msg-agent-done");
         if (msgEl.className !== agentCls) msgEl.className = agentCls;
-        var agentText = (msg.text || "") + (msg.agentStatus === "running" ? ' <span class="chat-agent-spinner">…</span>' : "");
-        if (msgEl.innerHTML !== agentText) msgEl.innerHTML = agentText;
+        var agentPlainText = msg.text || "";
+        var existingSpinner = msgEl.querySelector(".chat-agent-spinner");
+        if (msgEl.dataset.agentText !== agentPlainText || msgEl.dataset.agentStatus !== msg.agentStatus) {
+          msgEl.textContent = agentPlainText;
+          msgEl.dataset.agentText = agentPlainText;
+          msgEl.dataset.agentStatus = msg.agentStatus || "";
+          if (msg.agentStatus === "running") {
+            var spinner = document.createElement("span");
+            spinner.className = "chat-agent-spinner";
+            spinner.textContent = "…";
+            msgEl.appendChild(spinner);
+          }
+        }
         return;
       }
 

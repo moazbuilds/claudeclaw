@@ -1037,13 +1037,15 @@ async function streamClaude(
               textEmitted = true;
               hasActivity = true;
             }
-            // Detect Agent tool spawns
+            // Detect Agent tool spawns and emit lifecycle event
             if (block.type === "tool_use" && block.name === "Agent" && block.id && onAgentEvent) {
               const description = String(block.input?.description ?? block.input?.prompt ?? "Running background task...");
               pendingAgents.set(block.id, description);
               onAgentEvent({ type: "spawn", id: block.id, description });
               hasActivity = true;
-            } else if (block.type === "tool_use") {
+            }
+            // Always emit plugin observation for all tool_use blocks (including Agent)
+            if (block.type === "tool_use") {
               hasActivity = true;
               if (streamPm && block.name) {
                 streamPm.emitAsync("tool_result_persist", {
