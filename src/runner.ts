@@ -740,7 +740,7 @@ async function execClaude(
   // Capture session ID from stream events and persist for new sessions.
   // Gate only on isNew + sessionId present — not on exitCode, so a session that timed
   // out mid-run is still persisted and can be resumed on the next message.
-  if (!rateLimitMessage && isNew && exec.sessionId) {
+  if (!rateLimitMessage && isNew && exec.sessionId && !usedFallback) {
     sessionId = exec.sessionId;
     if (threadId) {
       await createThreadSession(threadId, sessionId);

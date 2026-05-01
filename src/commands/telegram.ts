@@ -1,7 +1,7 @@
 import { ensureProjectClaudeMd, run, runUserMessage, compactCurrentSession } from "../runner";
 import { extractErrorDetail } from "../messaging";
 import { getSettings, loadSettings } from "../config";
-import { resetSession, peekSession } from "../sessions";
+import { resetSession, resetFallbackSession, peekSession } from "../sessions";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
@@ -625,6 +625,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
 
   if (command === "/reset") {
     await resetSession();
+    await resetFallbackSession();
     await sendMessage(config.token, chatId, "Global session reset. Next message starts fresh.", threadId);
     return;
   }

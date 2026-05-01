@@ -1,7 +1,7 @@
 import { ensureProjectClaudeMd, run, runUserMessage, compactCurrentSession, compactCurrentThreadSession, agentDirKey } from "../runner";
 import { extractErrorDetail } from "../messaging";
 import { getSettings, loadSettings } from "../config";
-import { resetSession, peekSession } from "../sessions";
+import { resetSession, resetFallbackSession, peekSession } from "../sessions";
 import { listThreadSessions, removeThreadSession, peekThreadSession } from "../sessionManager";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -738,6 +738,7 @@ async function handleInteractionCreate(token: string, interaction: DiscordIntera
 
     if (interaction.data.name === "reset") {
       await resetSession();
+      await resetFallbackSession();
       await respondToInteraction(interaction, {
         content: "Global session reset. Next message starts fresh.",
       });
