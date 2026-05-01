@@ -967,8 +967,13 @@ async function registerBotCommands(token: string): Promise<void> {
 
 let running = true;
 let isPolling = false;
+// Monotonically increasing counter. Each startPolling() call captures the
+// value at the time it starts. The poll loop checks it after every await so
+// a stale loop exits cleanly when stopPolling() or a subsequent startPolling()
+// increments the counter, even if a long-poll request is still in flight.
+let pollingGeneration = 0;
 
-async function poll(): Promise<void> {
+async function poll(generation: number): Promise<void> {
   const config = getSettings().telegram;
   let offset = 0;
   try {
@@ -990,13 +995,16 @@ async function poll(): Promise<void> {
   // Register available skills as bot command menu (non-blocking)
   registerBotCommands(config.token).catch(() => {});
 
-  while (running) {
+  while (running && pollingGeneration === generation) {
     try {
       const data = await callApi<{ ok: boolean; result: TelegramUpdate[] }>(
         config.token,
         "getUpdates",
         { offset, timeout: 30, allowed_updates: ["message", "my_chat_member", "callback_query"] }
       );
+
+      // Check generation after the in-flight long-poll request returns.
+      if (pollingGeneration !== generation) break;
 
       if (!data.ok || !data.result.length) continue;
 
@@ -1028,11 +1036,14 @@ async function poll(): Promise<void> {
         }
       }
     } catch (err) {
+      if (pollingGeneration !== generation) break;
       if (!running) break;
       console.error(`[Telegram] Poll error: ${err instanceof Error ? err.message : err}`);
       await Bun.sleep(5000);
     }
   }
+
+  if (pollingGeneration === generation) isPolling = false;
 }
 
 // --- Exports ---
@@ -1049,17 +1060,24 @@ export function startPolling(debug = false): void {
   running = true;
   isPolling = true;
   telegramDebug = debug;
+  const gen = ++pollingGeneration;
   (async () => {
     await ensureProjectClaudeMd();
-    await poll();
+    await poll(gen);
   })().catch((err) => {
-    console.error(`[Telegram] Fatal: ${err}`);
-    isPolling = false;
+    if (pollingGeneration === gen) {
+      console.error(`[Telegram] Fatal: ${err}`);
+      isPolling = false;
+    }
   });
 }
 
-/** Stop polling in-process (called by start.ts when receiveEnabled is toggled off) */
+/** Stop polling in-process (called by start.ts when receiveEnabled is toggled off).
+ *  Increments the generation token so the in-flight long-poll loop exits as soon
+ *  as its current getUpdates call returns, even if running is briefly reset to true
+ *  by a concurrent startPolling() call. */
 export function stopPolling(): void {
+  pollingGeneration++;
   running = false;
   isPolling = false;
 }
@@ -1068,5 +1086,5 @@ export function stopPolling(): void {
 export async function telegram() {
   await loadSettings();
   await ensureProjectClaudeMd();
-  await poll();
+  await poll(++pollingGeneration);
 }
