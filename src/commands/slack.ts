@@ -6,7 +6,7 @@ import { listThreadSessions, peekThreadSession } from "../sessionManager";
 import { transcribeAudioToText } from "../whisper";
 import { resolveSkillPrompt } from "../skills";
 import { mkdir } from "node:fs/promises";
-import { extname, join } from "node:path";
+import { extname, join, resolve, isAbsolute, sep } from "node:path";
 import { existsSync } from "node:fs";
 
 // Slack-specific directives prompt (loaded once)
@@ -686,12 +686,18 @@ function extractUploadDirectives(text: string): {
   uploads: { path: string; title?: string }[];
 } {
   const uploads: { path: string; title?: string }[] = [];
+  const projectRoot = process.cwd();
   const cleaned = text
     .replace(/\[upload_file:([^\]]+)\]/gi, (_match, raw) => {
       const parts = String(raw).split("|");
-      const path = parts[0].trim();
+      const rawPath = parts[0].trim();
       const title = parts.length > 1 ? parts[1].trim() : undefined;
-      if (path) uploads.push({ path, title });
+      if (!rawPath) return "";
+      // Reject absolute paths and resolve relative paths; only allow within project root
+      if (isAbsolute(rawPath)) return "";
+      const resolved = resolve(projectRoot, rawPath);
+      if (!resolved.startsWith(projectRoot + sep) && resolved !== projectRoot) return "";
+      uploads.push({ path: resolved, title });
       return "";
     })
     .trim();
@@ -1098,7 +1104,13 @@ async function handleMessage(event: SlackMessage): Promise<void> {
 
 
       // #12: Handle channel read directives — fetch history, run follow-up, post result
+      // Only allow reads for the current channel or explicitly configured listenChannels
+      const approvedChannels = new Set([channelId, ...config.listenChannels]);
       for (const read of channelReads) {
+        if (!approvedChannels.has(read.channelId)) {
+          debugLog(`[read_channel] rejected: ${read.channelId} not in approved channels`);
+          continue;
+        }
         try {
           const history = await fetchChannelHistory(config.botToken, read.channelId, read.limit);
           const historyPath = join(process.cwd(), ".claude", "claudeclaw", "inbox", "slack", `channel-${read.channelId}-${Date.now()}.txt`);
@@ -1214,7 +1226,10 @@ async function handleBlockAction(payload: any): Promise<void> {
     : null;
 
   const prompt = `[Slack interactive from ${user.id}]\nUser clicked: "${label}" (action: ${actionId}, value: ${value})`;
-  const result = await runUserMessage("slack", prompt, sessionThreadId);
+  const agentName = sessionThreadId
+    ? (() => { try { return agentDirKey(`slack-${channelId}`, threadTs!); } catch { return undefined; } })()
+    : undefined;
+  const result = await runUserMessage("slack", prompt, sessionThreadId, agentName);
 
   // Stop refreshing status
   if (statusRefreshInterval) clearInterval(statusRefreshInterval);
