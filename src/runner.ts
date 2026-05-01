@@ -4,6 +4,7 @@ import { existsSync } from "fs";
 import {
   getSession,
   createSession,
+  resetSession,
   incrementTurn,
   markCompactWarned,
   getFallbackSession,
@@ -17,6 +18,7 @@ import { needsRotation, rotateSession, loadLatestSummary } from "./rotation";
 import {
   getThreadSession,
   createThreadSession,
+  removeThreadSession,
   incrementThreadTurn,
   markThreadCompactWarned,
 } from "./sessionManager";
@@ -769,11 +771,18 @@ async function execClaude(
   let sessionId = existing?.sessionId ?? "unknown";
 
   // Auto-detect corrupted session from thinking block signature mismatch.
-  // Back up the broken session and retry with a fresh one.
+  // Reset the broken session and retry with a fresh one.
   if (exitCode !== 0 && !isNew && SIGNATURE_ERROR.test(rawStdout + stderr)) {
-    const backupName = await backupSession();
+    if (threadId) {
+      await removeThreadSession(threadId);
+    } else if (agentName) {
+      await resetSession(agentName);
+    } else {
+      await backupSession();
+    }
+    const label = threadId ? ` (thread ${threadId.slice(0, 8)})` : agentName ? ` (agent ${agentName})` : "";
     console.warn(
-      `[${new Date().toLocaleTimeString()}] Detected corrupted session (thinking block signature mismatch). Backed up to ${backupName ?? "unknown"}, retrying with fresh session...`
+      `[${new Date().toLocaleTimeString()}] Detected corrupted session (thinking block signature mismatch). Reset${label}, retrying with fresh session...`
     );
     const freshArgs = args.filter((a) => a !== "--resume" && a !== existing?.sessionId);
     const fmtIdx = freshArgs.indexOf("--output-format");
@@ -783,6 +792,20 @@ async function execClaude(
     stderr = exec.stderr;
     exitCode = exec.exitCode;
     stdout = rawStdout;
+
+    // Persist the fresh session ID so subsequent calls resume it correctly.
+    if (exec.sessionId) {
+      sessionId = exec.sessionId;
+      if (threadId) {
+        await createThreadSession(threadId, sessionId);
+        console.log(`[${new Date().toLocaleTimeString()}] Thread session recovered: ${sessionId} (thread ${threadId.slice(0, 8)})`);
+      } else {
+        await createSession(sessionId, agentName);
+        const sLabel = agentName ? ` (agent ${agentName})` : "";
+        console.log(`[${new Date().toLocaleTimeString()}] Session recovered: ${sessionId}${sLabel}`);
+      }
+      startSession(sessionId);
+    }
   }
 
   const rateLimitMessage = extractRateLimitMessage(rawStdout, stderr);
