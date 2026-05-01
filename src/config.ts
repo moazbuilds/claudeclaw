@@ -3,6 +3,7 @@ import { mkdir } from "fs/promises";
 import { existsSync } from "fs";
 import { normalizeTimezoneName, resolveTimezoneOffsetMinutes } from "./timezone";
 import { parseWatchdogConfig, type WatchdogConfig } from "./watchdog";
+import { parsePlugins, type PluginEntry } from "./plugins";
 
 /** Re-exported under the name used in the Settings interface. */
 export type WatchdogSettings = WatchdogConfig;
@@ -82,6 +83,7 @@ const DEFAULT_SETTINGS: Settings = {
   stt: { baseUrl: "", model: "" },
   sessionTimeoutMs: DEFAULT_SESSION_TIMEOUT_MS,
   watchdog: { maxConsecutiveTimeouts: null, maxRuntimeSeconds: null },
+  plugins: {},
 };
 
 export interface HeartbeatExcludeWindow {
@@ -137,6 +139,7 @@ export interface Settings {
   stt: SttConfig;
   sessionTimeoutMs: number;
   watchdog: WatchdogSettings;
+  plugins: Record<string, PluginEntry>;
   jobsDir?: string;
 }
 
@@ -310,6 +313,7 @@ function parseSettings(
       ? raw.sessionTimeoutMs
       : DEFAULT_SESSION_TIMEOUT_MS,
     watchdog: parseWatchdogConfig(raw.watchdog),
+    plugins: parsePlugins(raw.plugins),
     ...(typeof raw.jobsDir === "string" && raw.jobsDir.trim() ? { jobsDir: raw.jobsDir.trim() } : {}),
   };
 }

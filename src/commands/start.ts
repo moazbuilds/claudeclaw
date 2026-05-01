@@ -2,6 +2,7 @@ import { writeFile, unlink, mkdir } from "fs/promises";
 import { join } from "path";
 import { fileURLToPath } from "url";
 import { run, runUserMessage, streamUserMessage, bootstrap, ensureProjectClaudeMd, loadHeartbeatPromptTemplate } from "../runner";
+import { PluginManager, setPluginManager } from "../plugins";
 import { writeState, type StateData } from "../statusline";
 import { cronMatches, nextCronMatch } from "../cron";
 import { clearJobSchedule, loadJobs } from "../jobs";
@@ -329,10 +330,21 @@ export async function start(args: string[] = []) {
 
   await setupStatusline();
   await writePidFile();
+
+  // Initialise plugin manager and load enabled plugins
+  const pluginManager = new PluginManager(process.cwd());
+  setPluginManager(pluginManager);
+  if (Object.keys(settings.plugins).length > 0) {
+    await pluginManager.loadAll(settings.plugins);
+    await pluginManager.startServices();
+  }
+
   let web: WebServerHandle | null = null;
   let discordStopGateway: (() => void) | null = null;
 
   async function shutdown() {
+    await pluginManager.stopServices();
+    setPluginManager(null);
     if (discordStopGateway) discordStopGateway();
     if (web) web.stop();
     await teardownStatusline();
