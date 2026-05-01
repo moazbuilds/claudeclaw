@@ -3,6 +3,8 @@ import { join } from "path";
 import { existsSync } from "fs";
 import { peekSession, backupSession, resetSession } from "./sessions";
 import type { GlobalSession } from "./sessions";
+
+const SUMMARY_TIMEOUT_MS = 60_000;
 import type { SessionConfig } from "./config";
 
 const PROMPTS_DIR = join(import.meta.dir, "..", "prompts");
@@ -74,11 +76,24 @@ async function generateSummary(sessionId: string, summaryPath: string): Promise<
     { stdout: "pipe", stderr: "pipe", env: cleanEnv() }
   );
 
+  // Kill the subprocess and skip summary if it takes too long.
+  let killed = false;
+  const timer = setTimeout(() => {
+    killed = true;
+    try { proc.kill(); } catch {}
+  }, SUMMARY_TIMEOUT_MS);
+
   const [stdout, stderr] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
   ]);
   await proc.exited;
+  clearTimeout(timer);
+
+  if (killed) {
+    console.warn(`[${new Date().toLocaleTimeString()}] Summary generation timed out after ${SUMMARY_TIMEOUT_MS / 1000}s — continuing rotation without summary`);
+    return;
+  }
 
   if (proc.exitCode !== 0 || !stdout.trim()) {
     console.error(`[${new Date().toLocaleTimeString()}] Summary generation failed (exit ${proc.exitCode}):`, stderr);

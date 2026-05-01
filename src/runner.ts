@@ -10,6 +10,7 @@ import {
   createFallbackSession,
   incrementFallbackTurn,
   peekSession,
+  incrementMessageCount,
 } from "./sessions";
 import { needsRotation, rotateSession, loadLatestSummary } from "./rotation";
 import {
@@ -816,6 +817,8 @@ async function execClaude(
   ].join("\n");
 
   await Bun.write(logFile, output);
+  // Count this invocation for rotation tracking (global session only; agent sessions don't rotate).
+  if (!agentName && !threadId) await incrementMessageCount();
   console.log(`[${new Date().toLocaleTimeString()}] Done: ${name} → ${logFile}`);
 
   // --- Watchdog: track consecutive timeouts ---
@@ -914,6 +917,15 @@ async function streamClaude(
   onUnblock: () => void
 ): Promise<void> {
   await mkdir(LOGS_DIR, { recursive: true });
+
+  // Rotate the global session if thresholds are exceeded (mirrors the check in execClaude).
+  const { session: streamSessionConfig } = getSettings();
+  if (streamSessionConfig.autoRotate) {
+    const streamPeeked = await peekSession();
+    if (streamPeeked && needsRotation(streamPeeked, streamSessionConfig)) {
+      await rotateSession(streamSessionConfig);
+    }
+  }
 
   const existing = await getSession();
   const { security, model, api } = getSettings();
@@ -1041,6 +1053,9 @@ async function streamClaude(
 
   // Plugins: agent_end
   if (streamPm) streamPm.emitAsync("agent_end", { messages: [] }, streamCtx);
+
+  // Count this invocation for rotation tracking.
+  await incrementMessageCount();
 
   console.log(`[${new Date().toLocaleTimeString()}] Done: ${name}`);
 }

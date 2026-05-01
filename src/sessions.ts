@@ -55,7 +55,6 @@ export async function getSession(
     if (typeof existing.turnCount !== "number") existing.turnCount = 0;
     if (typeof existing.compactWarned !== "boolean") existing.compactWarned = false;
     existing.lastUsedAt = new Date().toISOString();
-    existing.messageCount = (existing.messageCount ?? 0) + 1;
     await saveSession(existing, agentName);
     return { sessionId: existing.sessionId, turnCount: existing.turnCount, compactWarned: existing.compactWarned };
   }
@@ -86,6 +85,14 @@ export async function incrementTurn(agentName?: string): Promise<number> {
   existing.turnCount += 1;
   await saveSession(existing, agentName);
   return existing.turnCount;
+}
+
+/** Increment the message counter for rotation tracking. Call once per actual Claude invocation, not on reads. */
+export async function incrementMessageCount(agentName?: string): Promise<void> {
+  const existing = await loadSession(agentName);
+  if (!existing) return;
+  existing.messageCount = (existing.messageCount ?? 0) + 1;
+  await saveSession(existing, agentName);
 }
 
 /** Mark that the compact warning has been sent for the current session. */
