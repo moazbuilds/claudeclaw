@@ -628,12 +628,16 @@ async function execClaude(
   await mkdir(LOGS_DIR, { recursive: true });
 
   // Rotate the global session if thresholds are exceeded (thread/agent sessions are not rotated).
+  let rotationSummary: string | null = null;
   if (!threadId && !agentName) {
     const { session: sessionConfig } = getSettings();
     if (sessionConfig.autoRotate) {
       const peeked = await peekSession();
       if (peeked && needsRotation(peeked, sessionConfig)) {
         await rotateSession(sessionConfig);
+        if (sessionConfig.summaryPath) {
+          rotationSummary = await loadLatestSummary(sessionConfig.summaryPath);
+        }
       }
     }
   }
@@ -705,6 +709,8 @@ async function execClaude(
   const appendParts: string[] = [
     "You are running inside ClaudeClaw.",
   ];
+
+  if (rotationSummary) appendParts.push(`Context from the previous session:\n\n${rotationSummary}`);
 
   try {
     const claudeMd = await Bun.file(PROJECT_CLAUDE_MD).text();
@@ -919,11 +925,15 @@ async function streamClaude(
   await mkdir(LOGS_DIR, { recursive: true });
 
   // Rotate the global session if thresholds are exceeded (mirrors the check in execClaude).
+  let streamRotationSummary: string | null = null;
   const { session: streamSessionConfig } = getSettings();
   if (streamSessionConfig.autoRotate) {
     const streamPeeked = await peekSession();
     if (streamPeeked && needsRotation(streamPeeked, streamSessionConfig)) {
       await rotateSession(streamSessionConfig);
+      if (streamSessionConfig.summaryPath) {
+        streamRotationSummary = await loadLatestSummary(streamSessionConfig.summaryPath);
+      }
     }
   }
 
@@ -944,6 +954,8 @@ async function streamClaude(
   if (existing) args.push("--resume", existing.sessionId);
 
   const appendParts: string[] = ["You are running inside ClaudeClaw."];
+
+  if (streamRotationSummary) appendParts.push(`Context from the previous session:\n\n${streamRotationSummary}`);
 
   try {
     const claudeMd = await Bun.file(PROJECT_CLAUDE_MD).text();
