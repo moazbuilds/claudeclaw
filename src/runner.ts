@@ -225,15 +225,19 @@ function buildChildEnv(baseEnv: Record<string, string>, model: string, api: stri
 }
 
 /**
- * Resolve the subprocess timeout (in ms) for a given invocation name.
+ * Resolve the subprocess timeout (in ms) for a given invocation category.
  * Values are read fresh from settings on every call, so hot-reload works
  * automatically: edit settings.json and the next subprocess picks it up.
  *
- * Name mapping:
+ * Category mapping:
  *   "telegram"  → settings.timeouts.telegram  (default 5 min)
  *   "heartbeat" → settings.timeouts.heartbeat (default 15 min)
  *   "job"       → settings.timeouts.job       (default 30 min)
  *   anything else (bootstrap, trigger, chat…) → settings.timeouts.default (default 5 min)
+ *
+ * Use execClaude's `timeoutCategory` param to pass the category separately from
+ * the display/log/session name (e.g. scheduled jobs use job.name for the session
+ * ID but pass "job" as the category so they get timeouts.job, not timeouts.default).
  */
 function resolveTimeoutMs(name: string): number {
   const t = getSettings().timeouts;
@@ -696,7 +700,8 @@ async function execClaude(
   threadId?: string,
   modelOverride?: string,
   timeoutMsOverride?: number,
-  agentName?: string
+  agentName?: string,
+  timeoutCategory?: string
 ): Promise<RunResult> {
   await mkdir(LOGS_DIR, { recursive: true });
 
@@ -749,7 +754,7 @@ async function execClaude(
     api: fallback?.api ?? "",
   };
   const securityArgs = buildSecurityArgs(security);
-  const timeoutMs = timeoutMsOverride ?? resolveTimeoutMs(name);
+  const timeoutMs = timeoutMsOverride ?? resolveTimeoutMs(timeoutCategory ?? name);
 
   console.log(
     `[${new Date().toLocaleTimeString()}] Running: ${name} (${isNew ? "new session" : `resume ${existing.sessionId.slice(0, 8)}`}, security: ${security.level}, timeout: ${timeoutMs / 60_000}m)`
@@ -987,9 +992,10 @@ export async function run(
   threadId?: string,
   modelOverride?: string,
   timeoutMs?: number,
-  agentName?: string
+  agentName?: string,
+  timeoutCategory?: string
 ): Promise<RunResult> {
-  return enqueue(() => execClaude(name, prompt, threadId, modelOverride, timeoutMs, agentName), threadId);
+  return enqueue(() => execClaude(name, prompt, threadId, modelOverride, timeoutMs, agentName, timeoutCategory), threadId);
 }
 
 async function streamClaude(
