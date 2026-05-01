@@ -634,10 +634,7 @@ async function execClaude(
     if (sessionConfig.autoRotate) {
       const peeked = await peekSession();
       if (peeked && needsRotation(peeked, sessionConfig)) {
-        await rotateSession(sessionConfig);
-        if (sessionConfig.summaryPath) {
-          rotationSummary = await loadLatestSummary(sessionConfig.summaryPath);
-        }
+        rotationSummary = await rotateSession(sessionConfig);
       }
     }
   }
@@ -930,10 +927,7 @@ async function streamClaude(
   if (streamSessionConfig.autoRotate) {
     const streamPeeked = await peekSession();
     if (streamPeeked && needsRotation(streamPeeked, streamSessionConfig)) {
-      await rotateSession(streamSessionConfig);
-      if (streamSessionConfig.summaryPath) {
-        streamRotationSummary = await loadLatestSummary(streamSessionConfig.summaryPath);
-      }
+      streamRotationSummary = await rotateSession(streamSessionConfig);
     }
   }
 
