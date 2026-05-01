@@ -9,6 +9,7 @@ import {
   markCompactWarned,
   getFallbackSession,
   createFallbackSession,
+  resetFallbackSession,
   incrementFallbackTurn,
   peekSession,
   incrementMessageCount,
@@ -752,8 +753,23 @@ async function execClaude(
     }
     exec = await runClaudeStream(fallbackArgs, fallbackConfig.model, fallbackConfig.api, baseEnv, timeoutMs, spawnCwd);
     usedFallback = true;
-    const fallbackRateLimit = extractRateLimitMessage(exec.rawStdout, exec.stderr);
-    if (!fallbackRateLimit) {
+    let fallbackRateLimit = extractRateLimitMessage(exec.rawStdout, exec.stderr);
+
+    // If the fallback resumed a corrupted session, reset it and retry fresh.
+    if (!fallbackRateLimit && fallbackSession && exec.exitCode !== 0 && SIGNATURE_ERROR.test(exec.rawStdout + exec.stderr)) {
+      await resetFallbackSession(agentName);
+      const flabel = agentName ? ` (agent ${agentName})` : "";
+      console.warn(
+        `[${new Date().toLocaleTimeString()}] Detected corrupted fallback session (thinking block signature mismatch). Reset${flabel}, retrying fallback fresh...`
+      );
+      const freshFallbackArgs = fallbackArgs.filter((a) => a !== "--resume" && a !== fallbackSession.sessionId);
+      exec = await runClaudeStream(freshFallbackArgs, fallbackConfig.model, fallbackConfig.api, baseEnv, timeoutMs, spawnCwd);
+      fallbackRateLimit = extractRateLimitMessage(exec.rawStdout, exec.stderr);
+      if (!fallbackRateLimit && exec.sessionId) {
+        await createFallbackSession(exec.sessionId, agentName);
+        console.log(`[${new Date().toLocaleTimeString()}] Fallback session recovered: ${exec.sessionId}${flabel}`);
+      }
+    } else if (!fallbackRateLimit) {
       if (!fallbackSession && exec.sessionId) {
         await createFallbackSession(exec.sessionId, agentName);
         const label = agentName ? ` (agent ${agentName})` : "";
@@ -770,9 +786,9 @@ async function execClaude(
   let stdout = rawStdout;
   let sessionId = existing?.sessionId ?? "unknown";
 
-  // Auto-detect corrupted session from thinking block signature mismatch.
-  // Reset the broken session and retry with a fresh one.
-  if (exitCode !== 0 && !isNew && SIGNATURE_ERROR.test(rawStdout + stderr)) {
+  // Auto-detect corrupted primary session from thinking block signature mismatch.
+  // Gated on !usedFallback — fallback corruption is handled inside the fallback block above.
+  if (exitCode !== 0 && !isNew && !usedFallback && SIGNATURE_ERROR.test(rawStdout + stderr)) {
     if (threadId) {
       await removeThreadSession(threadId);
     } else if (agentName) {
