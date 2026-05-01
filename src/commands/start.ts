@@ -11,6 +11,7 @@ import { getDayAndMinuteAtOffset, buildClockPromptPrefix } from "../timezone";
 import { startWebUi, type WebServerHandle } from "../web";
 import type { Job } from "../jobs";
 import { isWizardTrigger, hasActiveWizard, handleWizardInput } from "./plugin-wizard";
+import { PluginManager, parsePlugins, setPluginManager } from "../plugins";
 
 const CLAUDE_DIR = join(process.cwd(), ".claude");
 const HEARTBEAT_DIR = join(CLAUDE_DIR, "claudeclaw");
@@ -333,6 +334,9 @@ export async function start(args: string[] = []) {
   let discordStopGateway: (() => void) | null = null;
 
   async function shutdown() {
+    const pm = (await import("../plugins")).getPluginManager();
+    if (pm) await pm.stopServices();
+    setPluginManager(null);
     if (discordStopGateway) discordStopGateway();
     if (web) web.stop();
     await teardownStatusline();
@@ -407,6 +411,21 @@ export async function start(args: string[] = []) {
 
   await initDiscord(currentSettings.discord.token);
   if (!discordToken) console.log("  Discord: not configured");
+
+  // --- Plugins ---
+  if (currentSettings.plugins && typeof currentSettings.plugins === "object") {
+    const pm = new PluginManager(process.cwd());
+    setPluginManager(pm);
+    const entries = parsePlugins(currentSettings.plugins);
+    await pm.loadAll(entries);
+    await pm.startServices();
+    if (pm.hasPlugins) {
+      console.log(`  Plugins: ${pm.loaded.join(", ")}`);
+      pm.emitAsync("gateway_start", {}, { workspaceDir: process.cwd() });
+    }
+  } else {
+    console.log("  Plugins: none configured");
+  }
 
   function isAddrInUse(err: unknown): boolean {
     if (!err || typeof err !== "object") return false;

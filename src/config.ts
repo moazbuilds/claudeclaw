@@ -138,6 +138,7 @@ export interface Settings {
   sessionTimeoutMs: number;
   watchdog: WatchdogSettings;
   jobsDir?: string;
+  plugins?: Record<string, any>;
 }
 
 
@@ -311,6 +312,7 @@ function parseSettings(
       : DEFAULT_SESSION_TIMEOUT_MS,
     watchdog: parseWatchdogConfig(raw.watchdog),
     ...(typeof raw.jobsDir === "string" && raw.jobsDir.trim() ? { jobsDir: raw.jobsDir.trim() } : {}),
+    ...(raw.plugins && typeof raw.plugins === "object" ? { plugins: raw.plugins } : {}),
   };
 }
 

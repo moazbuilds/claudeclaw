@@ -12,6 +12,7 @@ import { getSettings, DEFAULT_SESSION_TIMEOUT_MS, type ModelConfig, type Securit
 import { buildClockPromptPrefix } from "./timezone";
 import { selectModel } from "./model-router";
 import { recordResult, abortReason, clearSession, startSession } from "./watchdog";
+import { getPluginManager } from "./plugins";
 
 const LOGS_DIR = join(process.cwd(), ".claude/claudeclaw/logs");
 // Resolve prompts relative to the claudeclaw installation, not the project dir
@@ -279,6 +280,8 @@ async function runClaudeStream(
   let sessionId: string | undefined;
   let resultText = "";
   let stderr = "";
+  // Track tool_use blocks by id so we can emit tool_result_persist when the result arrives
+  const pendingToolUses = new Map<string, { name: string; input: unknown }>();
 
   const readStdout = async () => {
     const reader = proc.stdout.getReader();
@@ -300,6 +303,34 @@ async function runClaudeStream(
           }
           if (event.type === "result" && typeof event.result === "string") {
             resultText = event.result;
+          }
+          // Track tool calls from assistant message content blocks
+          if (event.type === "assistant" && Array.isArray((event as any).message?.content)) {
+            for (const block of (event as any).message.content) {
+              if (block?.type === "tool_use" && typeof block.id === "string") {
+                pendingToolUses.set(block.id, { name: block.name, input: block.input });
+              }
+            }
+          }
+          // Emit tool_result_persist when tool results arrive
+          if (event.type === "user" && Array.isArray((event as any).message?.content)) {
+            const pm = getPluginManager();
+            if (pm?.hasPlugins) {
+              for (const block of (event as any).message.content) {
+                if (block?.type === "tool_result" && typeof block.tool_use_id === "string") {
+                  const call = pendingToolUses.get(block.tool_use_id);
+                  if (call) {
+                    pendingToolUses.delete(block.tool_use_id);
+                    pm.emitAsync("tool_result_persist", {
+                      toolName: call.name,
+                      input: call.input,
+                      output: block.content,
+                      toolUseId: block.tool_use_id,
+                    }, { sessionKey: sessionId });
+                  }
+                }
+              }
+            }
           }
         } catch {}
       }
@@ -676,12 +707,28 @@ async function execClaude(
   }
 
   if (security.level !== "unrestricted") appendParts.push(DIR_SCOPE_PROMPT);
+
+  // before_prompt_build: let plugins inject additional system context
+  const pluginMgr = getPluginManager();
+  const pluginCtx = { agentId: agentName, workspaceDir: process.cwd() };
+  if (pluginMgr?.hasPlugins) {
+    const injection = await pluginMgr.emit("before_prompt_build", { prompt }, pluginCtx);
+    if (injection?.appendSystemContext) {
+      appendParts.push(injection.appendSystemContext);
+    }
+  }
+
   if (appendParts.length > 0) {
     args.push("--append-system-prompt", appendParts.join("\n\n"));
   }
 
   const baseEnv = cleanSpawnEnv();
   const spawnCwd = agentName ? await ensureAgentDir(agentName) : undefined;
+
+  // before_agent_start: notify plugins a Claude invocation is about to begin
+  if (pluginMgr?.hasPlugins) {
+    pluginMgr.emitAsync("before_agent_start", { name, prompt }, pluginCtx);
+  }
 
   let exec = await runClaudeStream(args, primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs, spawnCwd);
   const primaryRateLimit = extractRateLimitMessage(exec.rawStdout, exec.stderr);
@@ -732,6 +779,16 @@ async function execClaude(
     stderr,
     exitCode,
   };
+
+  // agent_end: notify plugins the invocation finished
+  if (pluginMgr?.hasPlugins) {
+    pluginMgr.emitAsync("agent_end", {
+      name,
+      exitCode,
+      stdout,
+      sessionId,
+    }, pluginCtx);
+  }
 
   const output = [
     `# ${name}`,
@@ -785,6 +842,9 @@ async function execClaude(
     emitCompactEvent({ type: "auto-compact-done", success: compactOk });
 
     if (compactOk) {
+      if (pluginMgr?.hasPlugins) {
+        pluginMgr.emitAsync("after_compaction", { sessionId: existing.sessionId }, pluginCtx);
+      }
       console.log(`[${new Date().toLocaleTimeString()}] Retrying ${name} after compact...`);
       const retryExec = await runClaudeStream(args, primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs, spawnCwd);
       const retryResult: RunResult = {
