@@ -196,7 +196,8 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
                 await onChat(
                   message,
                   (chunk) => send({ type: "chunk", text: chunk }),
-                  () => send({ type: "unblock" })
+                  () => send({ type: "unblock" }),
+                  (ev) => send({ type: ev.type === "spawn" ? "agent_spawn" : "agent_done", id: ev.id, description: ev.description, result: ev.result })
                 );
                 send({ type: "done" });
               } catch (err) {
