@@ -168,7 +168,7 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
 
       if (url.pathname.startsWith("/api/sessions/") && url.pathname.endsWith("/messages") && req.method === "GET") {
         const sessionId = url.pathname.slice("/api/sessions/".length, -"/messages".length);
-        const limit = clampInt(url.searchParams.get("limit"), 10, 1, 200);
+        const limit = clampInt(url.searchParams.get("limit"), 10, 1, 2000);
         const rawOffset = url.searchParams.get("offset");
         const offset = rawOffset === "-1" ? -1 : clampInt(rawOffset, 0, 0, 100_000);
         try {

@@ -188,19 +188,24 @@ export async function listSessions(): Promise<SessionInfo[]> {
   return sessions;
 }
 
+export interface MessagesResult {
+  messages: ChatMessage[];
+  total: number;
+}
+
 export async function readSessionMessages(
   sessionId: string,
   limit = 10,
   offset = 0,
-): Promise<ChatMessage[]> {
+): Promise<MessagesResult> {
   // Validate UUID shape before constructing file path (prevent path traversal).
-  if (!UUID_RE.test(sessionId)) return [];
+  if (!UUID_RE.test(sessionId)) return { messages: [], total: 0 };
 
   const filePath = join(getProjectDir(), `${sessionId}.jsonl`);
-  if (!existsSync(filePath)) return [];
+  if (!existsSync(filePath)) return { messages: [], total: 0 };
 
   const content = await readFile(filePath, "utf-8");
-  const messages: ChatMessage[] = [];
+  const all: ChatMessage[] = [];
 
   for (const line of content.split("\n")) {
     if (!line.trim()) continue;
@@ -209,14 +214,14 @@ export async function readSessionMessages(
       if (entry.type === "user") {
         const text = extractUserText(line);
         if (text) {
-          messages.push({ role: "user", text, timestamp: entry.timestamp ?? "", uuid: entry.uuid });
+          all.push({ role: "user", text, timestamp: entry.timestamp ?? "", uuid: entry.uuid });
         }
       } else if (entry.type === "assistant") {
         const parts = (entry.message?.content ?? [])
           .filter((c: any) => c.type === "text" && c.text)
           .map((c: any) => c.text as string);
         if (parts.length > 0) {
-          messages.push({
+          all.push({
             role: "assistant",
             text: parts.join("\n"),
             timestamp: entry.timestamp ?? "",
@@ -227,8 +232,9 @@ export async function readSessionMessages(
     } catch {}
   }
 
-  if (offset === -1) return messages.slice(-limit);
-  return messages.slice(offset, offset + limit);
+  const total = all.length;
+  const messages = offset === -1 ? all.slice(-limit) : all.slice(offset, offset + limit);
+  return { messages, total };
 }
 
 export async function listAgents(): Promise<Array<{ id: string; name: string }>> {

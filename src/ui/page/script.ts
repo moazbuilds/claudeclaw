@@ -1058,18 +1058,15 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
       var loadMoreBtn = document.getElementById("load-more-btn");
       if (!loadMore) {
         try {
-          // Fetch last N messages
+          // Single fetch: last N messages + total count in one response.
           var res = await fetch("/api/sessions/" + sessionId + "/messages?limit=" + BROWSE_PAGE + "&offset=-1");
-          var msgs = await res.json();
+          var data = await res.json();
+          var msgs = data.messages;
           if (!Array.isArray(msgs)) return;
+          browseTotalCount = typeof data.total === "number" ? data.total : msgs.length;
+          browseOffset = Math.max(0, browseTotalCount - BROWSE_PAGE);
           chatHistory = msgs.map(function(m) { return { role: m.role, text: m.text }; });
           renderChatHistory();
-
-          // Fetch total count for "load older" button
-          var countRes = await fetch("/api/sessions/" + sessionId + "/messages?limit=1000000&offset=0");
-          var allMsgs = await countRes.json();
-          browseTotalCount = Array.isArray(allMsgs) ? allMsgs.length : 0;
-          browseOffset = Math.max(0, browseTotalCount - BROWSE_PAGE);
           if (loadMoreContainer) loadMoreContainer.hidden = browseOffset <= 0;
           if (loadMoreBtn && browseOffset > 0) loadMoreBtn.textContent = "Load older (" + browseOffset + " more)";
         } catch (e) {}
@@ -1079,7 +1076,8 @@ export const pageScript = String.raw`    const $ = (id) => document.getElementBy
         if (limit <= 0) return;
         try {
           var res2 = await fetch("/api/sessions/" + sessionId + "/messages?limit=" + limit + "&offset=" + newOffset);
-          var older = await res2.json();
+          var data2 = await res2.json();
+          var older = data2.messages;
           if (!Array.isArray(older)) return;
           var chatMsgsEl = document.getElementById("chat-messages");
           var scrollHeightBefore = chatMsgsEl ? chatMsgsEl.scrollHeight : 0;
