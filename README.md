@@ -84,11 +84,11 @@ The setup wizard covers model, heartbeat, Telegram, Discord, and security. Your 
 
 ## What's in Plus that isn't in claudeclaw
 
-These features originated as PRs to `moazbuilds/claudeclaw`. The upstream maintainer has given his blessing for them to live here instead. Links below point to the originating PRs so you can read the full rationale.
+These features originated as PRs to `moazbuilds/claudeclaw` and have been closed upstream — they're out of scope for the lightweight core and live here permanently. Links below point to the originating PRs so you can read the full rationale.
 
 ### Policy Engine — fine-grained tool governance
 
-**[PR #71 — open upstream](https://github.com/moazbuilds/claudeclaw/pull/71)**
+**[PR #71 — closed upstream — lives here](https://github.com/moazbuilds/claudeclaw/pull/71)**
 
 Every tool call (Bash, Read, Edit, etc.) is evaluated against deterministic rules before execution. Rules can allow, deny, or gate behind operator approval — scoped by channel, user, skill, and source. Includes an audit log and a bounded LRU approval cache.
 
@@ -98,7 +98,7 @@ Every tool call (Bash, Read, Edit, etc.) is evaluated against deterministic rule
 
 ### Governance Layer — model routing, budgets, watchdog
 
-**[PR #72 — open upstream](https://github.com/moazbuilds/claudeclaw/pull/72)**
+**[PR #72 — closed upstream — lives here](https://github.com/moazbuilds/claudeclaw/pull/72)**
 
 Sits between the daemon and Claude CLI. Automatically routes planning tasks to Opus and implementation tasks to Sonnet. Tracks token and cost spend per session and globally, with configurable warn/throttle/block states. Watchdog kills runaway sessions before they drain your credits.
 
@@ -108,7 +108,7 @@ Sits between the daemon and Claude CLI. Automatically routes planning tasks to O
 
 ### Gateway, Events & Escalation — unified ingestion and replayable event log
 
-**[PR #73 — open upstream](https://github.com/moazbuilds/claudeclaw/pull/73)**
+**[PR #73 — closed upstream — lives here](https://github.com/moazbuilds/claudeclaw/pull/73)**
 
 Unified message ingestion pipeline normalises Discord/Telegram messages to a common format. Crash-safe append-only event log, retry queue with exponential backoff, dead-letter queue, full event replay, and an escalation framework (pause session, hand off to a human, notify across channels).
 
@@ -118,7 +118,7 @@ Unified message ingestion pipeline normalises Discord/Telegram messages to a com
 
 ### Orchestrator — DAG task graph and resumable jobs
 
-**[PR #74 — open upstream](https://github.com/moazbuilds/claudeclaw/pull/74)**
+**[PR #74 — closed upstream — lives here](https://github.com/moazbuilds/claudeclaw/pull/74)**
 
 Multi-step task execution via dependency graph with topological sort. Durable workflow state with atomic writes. Jobs survive daemon restarts mid-execution. Governance-integrated executor with configurable parallelism.
 
@@ -128,7 +128,7 @@ Multi-step task execution via dependency graph with topological sort. Durable wo
 
 ### CSRF Protection for Web UI
 
-**[PR #75 — open upstream](https://github.com/moazbuilds/claudeclaw/pull/75)**
+**[PR #75 — closed upstream — lives here](https://github.com/moazbuilds/claudeclaw/pull/75)**
 
 Cryptographically random single-use UUID tokens per session, timing-safe comparison, conditional `Secure` cookie flag, and a client-side `mutatingFetch()` wrapper that auto-retries on 403.
 
@@ -138,7 +138,7 @@ Cryptographically random single-use UUID tokens per session, timing-safe compari
 
 ### Persistent Memory — cross-session `MEMORY.md`
 
-**[PR #77 — open upstream](https://github.com/moazbuilds/claudeclaw/pull/77)**
+**[PR #77 — closed upstream — lives here](https://github.com/moazbuilds/claudeclaw/pull/77)**
 
 `MEMORY.md` loaded into `--append-system-prompt` on every invocation. Dual-layer write guarantee: Claude is instructed to write after each task, and a daemon-side fallback appends a log entry if `MEMORY.md` is unchanged after a run. Pre-compact and pre-shutdown saves, 200-line cap with auto-trim, per-agent memory paths.
 
@@ -156,7 +156,7 @@ See [docs/MULTI_SESSION.md](docs/MULTI_SESSION.md) for technical details.
 
 ### Daemon Plugin API
 
-**[PR #144 — open upstream](https://github.com/moazbuilds/claudeclaw/pull/144)**
+**[PR #144 — closed upstream — lives here](https://github.com/moazbuilds/claudeclaw/pull/144)**
 
 OpenClaw-compatible lifecycle events at the daemon level — `gateway_start`, `before_agent_start`, `before_prompt_build`, `tool_result_persist`, `agent_end`, and more. Plugins hook in via `api.on()`, `api.registerService()`, and `api.registerCommand()`. Includes path traversal prevention, SSRF-safe health checks, and fire-and-forget async emission.
 
@@ -206,7 +206,7 @@ Watch the [Issues](https://github.com/TerrysPOV/ClaudeClaw-Plus/issues) tab for 
 <details open>
   <summary><strong>Will features here go back upstream?</strong></summary>
   <p>
-    Sometimes. All the Plus features were proposed to upstream first.
+    Unlikely for the Plus-exclusive features — they've been closed upstream as out-of-scope for the lightweight core.
     <a href="https://github.com/moazbuilds">@moazbuilds</a> decides what fits the lightweight core.
     Whether they get merged upstream or not, they're available here today.
   </p>
