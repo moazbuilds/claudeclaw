@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile, realpath } from "fs/promises";
-import { join, resolve, sep } from "path";
+import { join, dirname, resolve, sep } from "path";
+import { execSync } from "child_process";
 import { existsSync } from "fs";
 import {
   getSession,
@@ -39,6 +40,37 @@ const PROJECT_CLAUDE_MD = join(process.cwd(), "CLAUDE.md");
 const LEGACY_PROJECT_CLAUDE_MD = join(process.cwd(), ".claude", "CLAUDE.md");
 const CLAUDECLAW_BLOCK_START = "<!-- claudeclaw:managed:start -->";
 const CLAUDECLAW_BLOCK_END = "<!-- claudeclaw:managed:end -->";
+
+/**
+ * On Windows, `claude` resolves to `claude.cmd`, a batch wrapper that must
+ * be run through cmd.exe (8191-char command-line limit). Resolving the
+ * underlying `claude.exe` lets us call it directly via CreateProcessW
+ * (32767-char limit). Required because --append-system-prompt + prompt
+ * files + CLAUDE.md can easily exceed 8K.
+ */
+function resolveClaudeExecutable(): string {
+  if (process.platform !== "win32") return "claude";
+  try {
+    const out = execSync("where claude", { encoding: "utf8" });
+    const cmdPath = out
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .find((s) => s.toLowerCase().endsWith(".cmd"));
+    if (!cmdPath) return "claude";
+    const exePath = join(
+      dirname(cmdPath),
+      "node_modules",
+      "@anthropic-ai",
+      "claude-code",
+      "bin",
+      "claude.exe"
+    );
+    return existsSync(exePath) ? exePath : "claude";
+  } catch {
+    return "claude";
+  }
+}
+const CLAUDE_EXECUTABLE = resolveClaudeExecutable();
 
 /**
  * Compact configuration.
@@ -130,6 +162,37 @@ export interface AgentStreamEvent {
 const RATE_LIMIT_PATTERN = /you(?:'|')ve hit your limit|out of extra usage/i;
 const RATE_LIMIT_RESET_PATTERN = /resets?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*\(?\s*UTC\s*\)?/i;
 const SIGNATURE_ERROR = /Invalid.*signature.*thinking block/i;
+
+// Claude Code prints this when --resume references a session it no longer
+// has on disk (cleared, expired, compacted away, or moved to another machine).
+// When we see it, the cached session ID is dead and the only recovery is to
+// drop --resume and start fresh.
+const STALE_SESSION_PATTERN = /No conversation found with session ID/i;
+
+function isStaleSessionError(stdout: string, stderr: string): boolean {
+  return STALE_SESSION_PATTERN.test(stderr) || STALE_SESSION_PATTERN.test(stdout);
+}
+
+/** Strip --resume <id> from a claude argv list so it runs as a brand-new session. */
+function stripResume(args: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--resume") {
+      i += 1; // skip the session id that follows
+      continue;
+    }
+    out.push(args[i]!);
+  }
+  return out;
+}
+
+/** Replace the value following --output-format (returns a modified copy). */
+function withOutputFormat(args: string[], format: string): string[] {
+  const out = [...args];
+  const idx = out.indexOf("--output-format");
+  if (idx >= 0 && idx + 1 < out.length) out[idx + 1] = format;
+  return out;
+}
 
 // --- Rate limit state ---
 let rateLimitResetAt: number = 0; // epoch ms; 0 = not rate-limited
@@ -635,7 +698,7 @@ export async function runCompact(
   cwd?: string
 ): Promise<boolean> {
   const compactArgs = [
-    "claude", "-p", "/compact",
+    CLAUDE_EXECUTABLE, "-p", "/compact",
     "--output-format", "text",
     "--resume", sessionId,
     ...securityArgs,
@@ -782,7 +845,7 @@ async function execClaude(
   // blocking until all spawned agents finish. --verbose is required for stream-json in
   // print (-p) mode. Session ID is captured from the system/init event; the final result
   // text comes from the result event — no separate output format needed for new vs resumed.
-  const args = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose", ...securityArgs];
+  const args = [CLAUDE_EXECUTABLE, "-p", prompt, "--output-format", "stream-json", "--verbose", ...securityArgs];
 
   if (!isNew) {
     args.push("--resume", existing.sessionId);
@@ -829,7 +892,7 @@ async function execClaude(
       `[${new Date().toLocaleTimeString()}] Claude limit reached; retrying with fallback${fallbackConfig.model ? ` (${fallbackConfig.model})` : ""}...`
     );
     const fallbackSession = await getFallbackSession(agentName);
-    const fallbackArgs = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose", ...securityArgs];
+    const fallbackArgs = [CLAUDE_EXECUTABLE, "-p", prompt, "--output-format", "stream-json", "--verbose", ...securityArgs];
     if (fallbackSession) {
       fallbackArgs.push("--resume", fallbackSession.sessionId);
     }
@@ -909,6 +972,51 @@ async function execClaude(
     }
   }
 
+  let recoveredFromStale = false;
+
+  // --- Stale session recovery ---
+  // Claude Code returns "No conversation found with session ID: <id>" when
+  // --resume points at a session it no longer has (cleared, expired, etc.).
+  // Back up the dead ID, drop --resume, and retry as a new session so the
+  // user isn't permanently stuck.
+  if (
+    !isNew &&
+    exitCode !== 0 &&
+    existing &&
+    isStaleSessionError(rawStdout, stderr)
+  ) {
+    console.warn(
+      `[${new Date().toLocaleTimeString()}] Stale session ${existing.sessionId.slice(0, 8)} for ${name}; recovering with a new session...`
+    );
+
+    if (usedFallback) {
+      await resetFallbackSession(agentName);
+    } else if (threadId) {
+      await removeThreadSession(threadId);
+    } else if (agentName) {
+      await resetSession(agentName);
+    } else {
+      await backupSession();
+    }
+
+    const retryArgs = withOutputFormat(stripResume(args), "stream-json");
+    const retryConfig = usedFallback ? fallbackConfig : primaryConfig;
+    exec = await runClaudeStream(
+      retryArgs,
+      retryConfig.model,
+      retryConfig.api,
+      baseEnv,
+      timeoutMs,
+      spawnCwd
+    );
+
+    rawStdout = exec.rawStdout;
+    stderr = exec.stderr;
+    exitCode = exec.exitCode;
+    stdout = rawStdout;
+    recoveredFromStale = true;
+  }
+
   const rateLimitMessage = extractRateLimitMessage(rawStdout, stderr);
 
   if (rateLimitMessage) {
@@ -929,17 +1037,25 @@ async function execClaude(
   // Capture session ID from stream events and persist for new sessions.
   // Gate only on isNew + sessionId present — not on exitCode, so a session that timed
   // out mid-run is still persisted and can be resumed on the next message.
-  if (!rateLimitMessage && isNew && exec.sessionId && !usedFallback) {
+  const parseAsNew = isNew || recoveredFromStale;
+  if (!rateLimitMessage && parseAsNew && exec.sessionId) {
     sessionId = exec.sessionId;
-    if (threadId) {
-      await createThreadSession(threadId, sessionId);
-      console.log(`[${new Date().toLocaleTimeString()}] Thread session created: ${sessionId} (thread ${threadId.slice(0, 8)})`);
-    } else {
-      await createSession(sessionId, agentName);
+    if (recoveredFromStale && usedFallback) {
+      await createFallbackSession(sessionId, agentName);
       const label = agentName ? ` (agent ${agentName})` : "";
-      console.log(`[${new Date().toLocaleTimeString()}] Session created: ${sessionId}${label}`);
+      console.log(`[${new Date().toLocaleTimeString()}] Fallback session created: ${sessionId}${label}`);
+      startSession(sessionId);
+    } else if (!usedFallback) {
+      if (threadId) {
+        await createThreadSession(threadId, sessionId);
+        console.log(`[${new Date().toLocaleTimeString()}] Thread session created: ${sessionId} (thread ${threadId.slice(0, 8)})`);
+      } else {
+        await createSession(sessionId, agentName);
+        const label = agentName ? ` (agent ${agentName})` : "";
+        console.log(`[${new Date().toLocaleTimeString()}] Session created: ${sessionId}${label}`);
+      }
+      startSession(sessionId);
     }
-    startSession(sessionId);
   }
 
   const result: RunResult = {
@@ -995,7 +1111,7 @@ async function execClaude(
   }
 
   // --- Auto-compact on timeout (exit 124) ---
-  if (COMPACT_TIMEOUT_ENABLED && exitCode === 124 && !isNew && existing) {
+  if (COMPACT_TIMEOUT_ENABLED && exitCode === 124 && !isNew && existing && !recoveredFromStale) {
     emitCompactEvent({ type: "auto-compact-start" });
     const compactOk = await runCompact(
       existing.sessionId,
@@ -1034,7 +1150,7 @@ async function execClaude(
   }
 
   // --- Turn tracking & compact warning ---
-  if (exitCode === 0 && !isNew) {
+  if (exitCode === 0 && !isNew && !recoveredFromStale) {
     const turnCount = threadId ? await incrementThreadTurn(threadId) : await incrementTurn(agentName);
     const turnLabel = threadId ? ` (thread ${threadId.slice(0, 8)})` : agentName ? ` (agent ${agentName})` : "";
     console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${turnCount}${turnLabel}`);
@@ -1095,7 +1211,7 @@ async function streamClaude(
   // stream-json gives us events as they happen — text before tool calls,
   // so we can unblock the UI as soon as Claude acknowledges, not after sub-agents finish.
   // --verbose is required for stream-json to produce output in -p (print) mode.
-  const args = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose", ...securityArgs];
+  const args = [CLAUDE_EXECUTABLE, "-p", prompt, "--output-format", "stream-json", "--verbose", ...securityArgs];
 
   if (existing) args.push("--resume", existing.sessionId);
 
@@ -1131,6 +1247,10 @@ async function streamClaude(
     stderr: "pipe",
     env: childEnv,
   });
+
+  // Collect stderr in the background so it doesn't back-pressure the process.
+  // We need it after proc.exited for stale session detection.
+  const stderrPromise = new Response(proc.stderr).text();
 
   const reader = proc.stdout.getReader();
   const decoder = new TextDecoder();
@@ -1232,6 +1352,23 @@ async function streamClaude(
   }
 
   await proc.exited;
+  const stderrText = await stderrPromise;
+
+  // --- Stale session recovery (stream path) ---
+  if (
+    existing &&
+    !textEmitted &&
+    (proc.exitCode ?? 0) !== 0 &&
+    isStaleSessionError("", stderrText)
+  ) {
+    console.warn(
+      `[${new Date().toLocaleTimeString()}] Stale session ${existing.sessionId.slice(0, 8)} for ${name} (stream); recovering with a new session...`
+    );
+    await backupSession();
+    await streamClaude(name, prompt, onChunk, onUnblock, onAgentEvent);
+    return;
+  }
+
   // Ensure unblock fires even if something unexpected happened
   maybeUnblock();
 
