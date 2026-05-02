@@ -907,6 +907,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
       await sendMessage(config.token, chatId, errorMsg, threadId);
     } else {
       const { cleanedText: afterReact, reactionEmoji } = extractReactionDirective(result.stdout || "");
+      const hadVoiceDirective = /\[voice:\/[^\]\r\n]+\]/i.test(afterReact);
       const { cleanedText: afterVoice, voicePaths } = extractVoiceDirectives(afterReact);
       const { cleanedText, filePaths } = extractSendFileDirectives(afterVoice);
       if (reactionEmoji) {
@@ -933,7 +934,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
           await sendMessage(config.token, chatId, `Failed to send file: ${fp.split("/").pop()}`, threadId);
         }
       }
-      if (!cleanedText && filePaths.length === 0 && voicePaths.length === 0) {
+      if (!cleanedText && filePaths.length === 0 && voicePaths.length === 0 && !hadVoiceDirective) {
         await sendMessage(config.token, chatId, "(empty response)", threadId);
       }
     }
