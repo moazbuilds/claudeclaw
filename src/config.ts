@@ -16,6 +16,8 @@ const LOGS_DIR = join(HEARTBEAT_DIR, "logs");
 /** Default Claude session timeout (30 minutes). Exported so runner.ts can reference the same value. */
 export const DEFAULT_SESSION_TIMEOUT_MS = 30 * 60 * 1000;
 
+export const DEFAULT_IMAGE_OUTPUT_ROOT = join(HEARTBEAT_DIR, "outbox", "discord");
+
 export function getJobsDir(): string {
   if (cached?.jobsDir) {
     return isAbsolute(cached.jobsDir) ? cached.jobsDir : join(process.cwd(), cached.jobsDir);
@@ -77,7 +79,7 @@ const DEFAULT_SETTINGS: Settings = {
     forwardToTelegram: true,
   },
   telegram: { token: "", allowedUserIds: [], listenChats: [], receiveEnabled: true },
-  discord: { token: "", allowedUserIds: [], listenChannels: [], listenGuilds: [] },
+  discord: { token: "", allowedUserIds: [], listenChannels: [], listenGuilds: [], imageOutputRoots: [] },
   slack: { botToken: "", appToken: "", allowedUserIds: [], listenChannels: [] },
   security: { level: "moderate", allowedTools: [], disallowedTools: [] },
   web: { enabled: false, host: "127.0.0.1", port: 4632 },
@@ -116,6 +118,8 @@ export interface DiscordConfig {
   allowedUserIds: string[]; // Discord snowflake IDs exceed Number.MAX_SAFE_INTEGER
   listenChannels: string[]; // Channel IDs where bot responds to all messages (no mention needed)
   listenGuilds: string[]; // Guild IDs where bot responds to all messages in any channel/thread
+  channelNames?: Record<string, string>; // channelId -> friendly name for system prompt context
+  imageOutputRoots: string[]; // Absolute path prefixes from which image uploads are permitted
 }
 
 export interface SlackConfig {
@@ -336,6 +340,14 @@ function parseSettings(
         : [],
       listenGuilds: Array.isArray(raw.discord?.listenGuilds)
         ? raw.discord.listenGuilds.map(String)
+        : [],
+      channelNames: raw.discord?.channelNames && typeof raw.discord.channelNames === "object"
+        ? Object.fromEntries(
+            Object.entries(raw.discord.channelNames as Record<string, unknown>).map(([k, v]) => [String(k), String(v)]),
+          )
+        : undefined,
+      imageOutputRoots: Array.isArray(raw.discord?.imageOutputRoots)
+        ? raw.discord.imageOutputRoots.filter((r: unknown) => typeof r === "string" && isAbsolute(r))
         : [],
     },
     slack: {

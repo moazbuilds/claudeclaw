@@ -166,6 +166,18 @@ describe("sessions — agent-scoped paths", () => {
     // Verify path uses getAgentsDir() (project root) not HEARTBEAT_DIR (.claude/...)
     expect(src).toContain('join(getAgentsDir(), agentName, "session.json")');
   });
+
+  test("fallback sessions can be scoped by thread id", async () => {
+    const sessionsSrc = await Bun.file(join(import.meta.dir, "../sessions.ts")).text();
+    const runnerSrc = await Bun.file(join(import.meta.dir, "../runner.ts")).text();
+    const discordSrc = await Bun.file(join(import.meta.dir, "../commands/discord.ts")).text();
+
+    expect(sessionsSrc).toContain('join(HEARTBEAT_DIR, "fallback-sessions", `${encodeURIComponent(threadId)}.json`)');
+    expect(sessionsSrc).toContain("getFallbackSession(\n  agentName?: string,\n  threadId?: string");
+    expect(runnerSrc).toContain("getFallbackSession(agentName, threadId)");
+    expect(runnerSrc).toContain("createFallbackSession(exec.sessionId, agentName, threadId)");
+    expect(discordSrc).toContain("resetFallbackSession(undefined, interaction.channel_id!)");
+  });
 });
 
 // ─── Unit: protection-bug validation (the core motivation) ───────────────

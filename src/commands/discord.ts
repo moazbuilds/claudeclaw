@@ -1,15 +1,15 @@
 import { ensureProjectClaudeMd, run, runUserMessage, compactCurrentSession, compactCurrentThreadSession, agentDirKey } from "../runner";
 import { extractErrorDetail } from "../messaging";
-import { getSettings, loadSettings } from "../config";
+import { getSettings, loadSettings, DEFAULT_IMAGE_OUTPUT_ROOT } from "../config";
 import { resetSession, resetFallbackSession, peekSession } from "../sessions";
 import { listThreadSessions, removeThreadSession, peekThreadSession } from "../sessionManager";
 import { readFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { transcribeAudioToText } from "../whisper";
 import { resolveSkillPrompt } from "../skills";
 import { mkdir } from "node:fs/promises";
-import { extname, join } from "node:path";
+import { extname, join, basename, sep } from "node:path";
 import { isWizardTrigger, hasActiveWizard, handleWizardInput } from "./plugin-wizard";
 
 // --- Discord API constants ---
@@ -148,6 +148,7 @@ async function discordApi<T>(
   method: string,
   endpoint: string,
   body?: unknown,
+  attempt = 0,
 ): Promise<T> {
   const res = await fetch(`${DISCORD_API}${endpoint}`, {
     method,
@@ -160,11 +161,16 @@ async function discordApi<T>(
 
   // Rate limit handling
   if (res.status === 429) {
-    const data = (await res.json()) as { retry_after: number };
-    const retryMs = Math.ceil(data.retry_after * 1000);
-    debugLog(`Rate limited on ${method} ${endpoint}, retrying in ${retryMs}ms`);
+    if (attempt >= 3) {
+      throw new Error(`Discord rate limit exceeded after 3 retries on ${method} ${endpoint}`);
+    }
+    const data = (await res.json().catch(() => ({}))) as { retry_after?: number };
+    const retryMs = typeof data.retry_after === "number" && isFinite(data.retry_after)
+      ? Math.ceil(data.retry_after * 1000)
+      : 5_000;
+    debugLog(`Rate limited on ${method} ${endpoint}, retrying in ${retryMs}ms (attempt ${attempt + 1}/3)`);
     await Bun.sleep(retryMs);
-    return discordApi(token, method, endpoint, body);
+    return discordApi(token, method, endpoint, body, attempt + 1);
   }
 
   if (!res.ok) {
@@ -179,20 +185,30 @@ async function discordApi<T>(
 
 // --- Message sending ---
 
+const DISCORD_MAX_MESSAGE_LEN = 2000;
+
+function discordMessageChunks(text: string): string[] {
+  const normalized = text.replace(/\[react:[^\]\r\n]+\]/gi, "").trim();
+  if (!normalized) return [];
+  const chunks: string[] = [];
+  for (let i = 0; i < normalized.length; i += DISCORD_MAX_MESSAGE_LEN) {
+    chunks.push(normalized.slice(i, i + DISCORD_MAX_MESSAGE_LEN));
+  }
+  return chunks;
+}
+
 async function sendMessage(
   token: string,
   channelId: string,
   text: string,
   components?: unknown[],
 ): Promise<void> {
-  const normalized = text.replace(/\[react:[^\]\r\n]+\]/gi, "").trim();
-  if (!normalized) return;
-  const MAX_LEN = 2000;
-  for (let i = 0; i < normalized.length; i += MAX_LEN) {
-    const chunk = normalized.slice(i, i + MAX_LEN);
+  const chunks = discordMessageChunks(text);
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
     const body: Record<string, unknown> = { content: chunk };
     // Attach components only to the last chunk
-    if (components && i + MAX_LEN >= normalized.length) {
+    if (components && i === chunks.length - 1) {
       body.components = components;
     }
     await discordApi(token, "POST", `/channels/${channelId}/messages`, body);
@@ -250,28 +266,121 @@ function extractReactionDirective(text: string): { cleanedText: string; reaction
   return { cleanedText, reactionEmoji };
 }
 
+// Matches absolute image file paths embedded in reply text so they can be
+// sent as Discord file attachments instead of appearing as raw paths.
+const IMAGE_PATH_RE = /(?<![^\s])(\/[^\s]+\.(?:png|jpe?g|gif|webp))(?=\s|$)/gi;
+const PATH_SKEW_MS = 30_000;
+
+function extractImagePaths(
+  text: string,
+  allowedRoots: string[],
+  requestStartedAt: number,
+): { paths: string[]; cleanedText: string } {
+  const roots = allowedRoots.length > 0 ? allowedRoots : [DEFAULT_IMAGE_OUTPUT_ROOT];
+  const canonRoots = roots.map((r) => {
+    try { return realpathSync(r); } catch { return r; }
+  });
+  const paths: string[] = [];
+  const cleanedText = text
+    .replace(IMAGE_PATH_RE, (match, p1) => {
+      let resolved: string;
+      try {
+        resolved = realpathSync(p1);
+      } catch {
+        return match;
+      }
+      const confined = canonRoots.some((root) => resolved === root || resolved.startsWith(root + sep));
+      if (!confined) return match;
+      try {
+        const { mtimeMs } = statSync(resolved);
+        if (mtimeMs < requestStartedAt - PATH_SKEW_MS) return match;
+      } catch {
+        return match;
+      }
+      paths.push(resolved);
+      return "";
+    })
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return { paths, cleanedText };
+}
+
+async function sendMessageWithImages(
+  token: string,
+  channelId: string,
+  text: string,
+  imagePaths: string[],
+): Promise<void> {
+  const chunks = discordMessageChunks(text || "​");
+  const uploadText = chunks.pop() ?? "​";
+  for (const chunk of chunks) {
+    await discordApi(token, "POST", `/channels/${channelId}/messages`, { content: chunk });
+  }
+
+  await uploadImageMessage(token, channelId, uploadText, imagePaths);
+}
+
+async function uploadImageMessage(
+  token: string,
+  channelId: string,
+  text: string,
+  imagePaths: string[],
+  attempt = 0,
+): Promise<void> {
+  const form = new FormData();
+  form.append("payload_json", JSON.stringify({ content: text }));
+  for (let i = 0; i < imagePaths.length; i++) {
+    const file = Bun.file(imagePaths[i]);
+    form.append(`files[${i}]`, file, basename(imagePaths[i]));
+  }
+  const res = await fetch(`${DISCORD_API}/channels/${channelId}/messages`, {
+    method: "POST",
+    headers: { Authorization: `Bot ${token}` },
+    body: form,
+  });
+  if (res.status === 429) {
+    if (attempt >= 3) {
+      throw new Error(`Discord rate limit exceeded after 3 retries on ${channelId}`);
+    }
+    const data = (await res.json().catch(() => ({}))) as { retry_after?: number };
+    const delay = typeof data.retry_after === "number" && isFinite(data.retry_after)
+      ? Math.ceil(data.retry_after * 1000)
+      : 5_000;
+    await Bun.sleep(delay);
+    return uploadImageMessage(token, channelId, text, imagePaths, attempt + 1);
+  }
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    throw new Error(`Discord image upload ${channelId}: ${res.status} ${errText}`);
+  }
+}
+
 // --- Thread rejoin helper ---
 async function rejoinThreads(token: string): Promise<void> {
   const threadSessions = await listThreadSessions();
+  let rejoinedCount = 0;
   for (const ts of threadSessions) {
-    // Skip non-snowflake keys (e.g. job names) — they are not Discord thread IDs
+    // Skip non-snowflake keys (e.g. job names); they are not Discord channel IDs.
     if (!/^\d{17,19}$/.test(ts.threadId)) continue;
     try {
+      const ch = await discordApi<{ parent_id?: string; name?: string; type?: number }>(token, "GET", `/channels/${ts.threadId}`);
+      const isThread = ch.type === 10 || ch.type === 11 || ch.type === 12;
+      if (!isThread) continue;
+
+      if (ch.parent_id && !knownThreads.has(ts.threadId)) {
+        upsertThread(ts.threadId, ch.parent_id, ch.name);
+      }
+
       await discordApi(token, "DELETE", `/channels/${ts.threadId}/thread-members/@me`).catch(() => {});
       await discordApi(token, "PUT", `/channels/${ts.threadId}/thread-members/@me`);
-      if (!knownThreads.has(ts.threadId)) {
-        const ch = await discordApi<{ parent_id?: string; name?: string }>(token, "GET", `/channels/${ts.threadId}`);
-        if (ch.parent_id) {
-          upsertThread(ts.threadId, ch.parent_id, ch.name);
-        }
-      }
+      rejoinedCount += 1;
       console.log(`[Discord] Rejoined thread: ${ts.threadId}`);
     } catch (err) {
       console.error(`[Discord] Failed to rejoin thread ${ts.threadId}: ${err}`);
     }
   }
-  if (threadSessions.length > 0) {
-    console.log(`[Discord] Rejoined ${threadSessions.length} thread(s) from sessions.json`);
+  if (rejoinedCount > 0) {
+    console.log(`[Discord] Rejoined ${rejoinedCount} thread(s) from sessions.json`);
   }
 }
 
@@ -665,7 +774,9 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
     }
 
     // Build prompt (same pattern as Telegram)
-    const promptParts = [`[Discord from ${label}]`];
+    const channelName = config.channelNames?.[channelId] ?? channelId;
+    const channelTag = isGuild ? `[Discord Channel: ${channelName}]` : `[Discord DM]`;
+    const promptParts = [channelTag, `[Discord from ${label}]`];
     if (skillContext) {
       const args = cleanContent.trim().slice(command!.length).trim();
       promptParts.push(`<command-name>${command}</command-name>`);
@@ -695,9 +806,20 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
     }
 
     const prefixedPrompt = promptParts.join("\n");
-    // Use thread-specific session if message is in a known thread
-    const threadId = knownThreads.has(channelId) ? channelId : undefined;
-    const result = await runUserMessage("discord", prefixedPrompt, threadId, threadInfo?.agentName);
+    // Guild channels (including threads) each get their own isolated session; DMs use the global session
+    const sessionKey = isGuild ? channelId : undefined;
+    const requestStartedAt = Date.now();
+    if (sessionKey) {
+      const existing = await peekThreadSession(sessionKey);
+      const globalSession = await peekSession();
+      if (!existing && globalSession) {
+        console.warn(
+          `[Discord] Channel ${channelId} now using isolated session. ` +
+            `Global session history is no longer accessible here.`,
+        );
+      }
+    }
+    const result = await runUserMessage("discord", prefixedPrompt, sessionKey, threadInfo?.agentName);
 
     if (result.exitCode !== 0) {
       await sendMessage(config.token, channelId, `Error (exit ${result.exitCode}): ${extractErrorDetail(result) || "Unknown error"}`);
@@ -708,7 +830,12 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
           console.error(`[Discord] Failed to send reaction for ${label}: ${err instanceof Error ? err.message : err}`);
         });
       }
-      await sendMessage(config.token, channelId, cleanedText || "(empty response)");
+      const { paths: imagePaths, cleanedText: finalText } = extractImagePaths(cleanedText || "", config.imageOutputRoots, requestStartedAt);
+      if (imagePaths.length > 0) {
+        await sendMessageWithImages(config.token, channelId, finalText || "(empty response)", imagePaths);
+      } else {
+        await sendMessage(config.token, channelId, finalText || "(empty response)");
+      }
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -740,10 +867,16 @@ async function handleInteractionCreate(token: string, interaction: DiscordIntera
     }
 
     if (interaction.data.name === "reset") {
-      await resetSession();
-      await resetFallbackSession();
+      const isGuildCmd = !!interaction.guild_id && !!interaction.channel_id;
+      if (isGuildCmd) {
+        await removeThreadSession(interaction.channel_id!);
+        await resetFallbackSession(undefined, interaction.channel_id!);
+      } else {
+        await resetSession();
+        await resetFallbackSession();
+      }
       await respondToInteraction(interaction, {
-        content: "Global session reset. Next message starts fresh.",
+        content: isGuildCmd ? "Channel session reset. Next message starts fresh." : "Global session reset. Next message starts fresh.",
       });
       return;
     }
@@ -752,8 +885,9 @@ async function handleInteractionCreate(token: string, interaction: DiscordIntera
       await respondToInteraction(interaction, { content: "⏳ Compacting session..." });
       const compactChannelId = interaction.channel_id;
       const compactThreadInfo = compactChannelId ? knownThreads.get(compactChannelId) : undefined;
-      const result = compactChannelId && compactThreadInfo
-        ? await compactCurrentThreadSession(compactChannelId, compactThreadInfo.agentName)
+      const isGuildCmd = !!interaction.guild_id && !!compactChannelId;
+      const result = isGuildCmd
+        ? await compactCurrentThreadSession(compactChannelId!, compactThreadInfo?.agentName)
         : await compactCurrentSession();
       await fetch(
         `${DISCORD_API}/webhooks/${applicationId}/${interaction.token}/messages/@original`,
@@ -767,7 +901,10 @@ async function handleInteractionCreate(token: string, interaction: DiscordIntera
     }
 
     if (interaction.data.name === "status") {
-      const session = await peekSession();
+      const isGuildCmd = !!interaction.guild_id && !!interaction.channel_id;
+      const session = isGuildCmd
+        ? await peekThreadSession(interaction.channel_id!)
+        : await peekSession();
       const settings = getSettings();
       if (!session) {
         await respondToInteraction(interaction, { content: "📊 No active session." });
@@ -798,7 +935,10 @@ async function handleInteractionCreate(token: string, interaction: DiscordIntera
     }
 
     if (interaction.data.name === "context") {
-      const session = await peekSession();
+      const isGuildCmd = !!interaction.guild_id && !!interaction.channel_id;
+      const session = isGuildCmd
+        ? await peekThreadSession(interaction.channel_id!)
+        : await peekSession();
       if (!session) {
         await respondToInteraction(interaction, { content: "No active session." });
         return;
