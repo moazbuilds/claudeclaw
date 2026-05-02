@@ -61,7 +61,11 @@ function fmt(ms) {
 function alive() {
   try {
     var pid = readFileSync(PID_FILE, "utf-8").trim();
-    process.kill(Number(pid), 0);
+    var parsedPid = Number(pid);
+    if (!Number.isFinite(parsedPid) || !Number.isInteger(parsedPid) || parsedPid <= 0) {
+      return false;
+    }
+    process.kill(parsedPid, 0);
     return true;
   } catch { return false; }
 }
