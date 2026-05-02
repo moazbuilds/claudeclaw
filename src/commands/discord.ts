@@ -742,10 +742,15 @@ async function handleInteractionCreate(token: string, interaction: DiscordIntera
     }
 
     if (interaction.data.name === "reset") {
-      await resetSession();
-      await resetFallbackSession();
+      const isGuildCmd = !!interaction.guild_id && !!interaction.channel_id;
+      if (isGuildCmd) {
+        await removeThreadSession(interaction.channel_id!);
+      } else {
+        await resetSession();
+        await resetFallbackSession();
+      }
       await respondToInteraction(interaction, {
-        content: "Global session reset. Next message starts fresh.",
+        content: isGuildCmd ? "Channel session reset. Next message starts fresh." : "Global session reset. Next message starts fresh.",
       });
       return;
     }
@@ -754,8 +759,9 @@ async function handleInteractionCreate(token: string, interaction: DiscordIntera
       await respondToInteraction(interaction, { content: "⏳ Compacting session..." });
       const compactChannelId = interaction.channel_id;
       const compactThreadInfo = compactChannelId ? knownThreads.get(compactChannelId) : undefined;
-      const result = compactChannelId && compactThreadInfo
-        ? await compactCurrentThreadSession(compactChannelId, compactThreadInfo.agentName)
+      const isGuildCmd = !!interaction.guild_id && !!compactChannelId;
+      const result = isGuildCmd
+        ? await compactCurrentThreadSession(compactChannelId!, compactThreadInfo?.agentName)
         : await compactCurrentSession();
       await fetch(
         `${DISCORD_API}/webhooks/${applicationId}/${interaction.token}/messages/@original`,
@@ -769,7 +775,10 @@ async function handleInteractionCreate(token: string, interaction: DiscordIntera
     }
 
     if (interaction.data.name === "status") {
-      const session = await peekSession();
+      const isGuildCmd = !!interaction.guild_id && !!interaction.channel_id;
+      const session = isGuildCmd
+        ? await peekThreadSession(interaction.channel_id!)
+        : await peekSession();
       const settings = getSettings();
       if (!session) {
         await respondToInteraction(interaction, { content: "📊 No active session." });
@@ -800,7 +809,10 @@ async function handleInteractionCreate(token: string, interaction: DiscordIntera
     }
 
     if (interaction.data.name === "context") {
-      const session = await peekSession();
+      const isGuildCmd = !!interaction.guild_id && !!interaction.channel_id;
+      const session = isGuildCmd
+        ? await peekThreadSession(interaction.channel_id!)
+        : await peekSession();
       if (!session) {
         await respondToInteraction(interaction, { content: "No active session." });
         return;
