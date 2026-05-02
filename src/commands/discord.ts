@@ -699,6 +699,16 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
     const prefixedPrompt = promptParts.join("\n");
     // Guild channels (including threads) each get their own isolated session; DMs use the global session
     const sessionKey = isGuild ? channelId : undefined;
+    if (sessionKey) {
+      const existing = await peekThreadSession(sessionKey);
+      const globalSession = await peekSession();
+      if (!existing && globalSession) {
+        console.warn(
+          `[Discord] Channel ${channelId} now using isolated session. ` +
+            `Global session history is no longer accessible here.`,
+        );
+      }
+    }
     const result = await runUserMessage("discord", prefixedPrompt, sessionKey, threadInfo?.agentName);
 
     if (result.exitCode !== 0) {
