@@ -185,20 +185,30 @@ async function discordApi<T>(
 
 // --- Message sending ---
 
+const DISCORD_MAX_MESSAGE_LEN = 2000;
+
+function discordMessageChunks(text: string): string[] {
+  const normalized = text.replace(/\[react:[^\]\r\n]+\]/gi, "").trim();
+  if (!normalized) return [];
+  const chunks: string[] = [];
+  for (let i = 0; i < normalized.length; i += DISCORD_MAX_MESSAGE_LEN) {
+    chunks.push(normalized.slice(i, i + DISCORD_MAX_MESSAGE_LEN));
+  }
+  return chunks;
+}
+
 async function sendMessage(
   token: string,
   channelId: string,
   text: string,
   components?: unknown[],
 ): Promise<void> {
-  const normalized = text.replace(/\[react:[^\]\r\n]+\]/gi, "").trim();
-  if (!normalized) return;
-  const MAX_LEN = 2000;
-  for (let i = 0; i < normalized.length; i += MAX_LEN) {
-    const chunk = normalized.slice(i, i + MAX_LEN);
+  const chunks = discordMessageChunks(text);
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
     const body: Record<string, unknown> = { content: chunk };
     // Attach components only to the last chunk
-    if (components && i + MAX_LEN >= normalized.length) {
+    if (components && i === chunks.length - 1) {
       body.components = components;
     }
     await discordApi(token, "POST", `/channels/${channelId}/messages`, body);
@@ -300,10 +310,25 @@ async function sendMessageWithImages(
   channelId: string,
   text: string,
   imagePaths: string[],
+): Promise<void> {
+  const chunks = discordMessageChunks(text || "​");
+  const uploadText = chunks.pop() ?? "​";
+  for (const chunk of chunks) {
+    await discordApi(token, "POST", `/channels/${channelId}/messages`, { content: chunk });
+  }
+
+  await uploadImageMessage(token, channelId, uploadText, imagePaths);
+}
+
+async function uploadImageMessage(
+  token: string,
+  channelId: string,
+  text: string,
+  imagePaths: string[],
   attempt = 0,
 ): Promise<void> {
   const form = new FormData();
-  form.append("payload_json", JSON.stringify({ content: text || "​" }));
+  form.append("payload_json", JSON.stringify({ content: text }));
   for (let i = 0; i < imagePaths.length; i++) {
     const file = Bun.file(imagePaths[i]);
     form.append(`files[${i}]`, file, basename(imagePaths[i]));
@@ -322,7 +347,7 @@ async function sendMessageWithImages(
       ? Math.ceil(data.retry_after * 1000)
       : 5_000;
     await Bun.sleep(delay);
-    return sendMessageWithImages(token, channelId, text, imagePaths, attempt + 1);
+    return uploadImageMessage(token, channelId, text, imagePaths, attempt + 1);
   }
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
