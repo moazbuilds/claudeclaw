@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Encrypted secrets vault for ClaudeClaw agents.
-Les credentials ne sont jamais accessibles en clair sur disque.
-Chiffrement Fernet (AES-128-CBC + HMAC-SHA256).
+Credentials are never stored in plaintext on disk.
+Fernet encryption (AES-128-CBC + HMAC-SHA256).
 
 Usage:
     from vault import vault
@@ -25,30 +25,34 @@ VAULT_FILE = Path.home() / ".claudeclaw" / "vault" / "secrets.enc"
 KEY_FILE = Path.home() / ".claudeclaw" / "vault" / ".vault_key"
 
 
+class VaultError(RuntimeError):
+    """Raised when the vault cannot be safely read or written."""
+
+
 def _get_key() -> bytes:
-    """Charge ou génère la clé maître du vault."""
-    # Priorité 1 : variable d'environnement
+    """Load or generate the master vault key."""
+    # Priority 1: environment variable.
     env_key = os.environ.get("CLAUDECLAW_VAULT_KEY")
     if env_key:
         return env_key.encode()
 
-    # Priorité 2 : fichier clé (chmod 600)
+    # Priority 2: key file (chmod 600).
     if KEY_FILE.exists():
         key = KEY_FILE.read_bytes().strip()
         if key:
             return key
 
-    # Priorité 3 : générer une nouvelle clé
+    # Priority 3: generate a new key.
     key = Fernet.generate_key()
     KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
     KEY_FILE.write_bytes(key)
     KEY_FILE.chmod(0o600)
-    print(f"✅ Nouvelle clé vault générée : {KEY_FILE}", file=sys.stderr)
+    print(f"Generated new vault key: {KEY_FILE}", file=sys.stderr)
     return key
 
 
 def _load() -> dict:
-    """Charge et déchiffre le vault."""
+    """Load and decrypt the vault."""
     if not VAULT_FILE.exists():
         return {}
     try:
@@ -56,15 +60,13 @@ def _load() -> dict:
         raw = VAULT_FILE.read_bytes()
         return json.loads(f.decrypt(raw))
     except InvalidToken:
-        print("❌ VAULT: clé invalide ou fichier corrompu", file=sys.stderr)
-        return {}
+        raise VaultError("Vault key is invalid or the vault file is corrupted")
     except Exception as e:
-        print(f"❌ VAULT: erreur lecture — {e}", file=sys.stderr)
-        return {}
+        raise VaultError(f"Vault read failed: {e}") from e
 
 
 def _save(data: dict):
-    """Chiffre et sauvegarde le vault."""
+    """Encrypt and save the vault."""
     VAULT_FILE.parent.mkdir(parents=True, exist_ok=True)
     f = Fernet(_get_key())
     encrypted = f.encrypt(json.dumps(data, ensure_ascii=False).encode())
@@ -81,7 +83,7 @@ class Vault:
             self._data = _load()
 
     def get(self, key: str, default=None):
-        """Récupère un secret. Fallback sur .env si pas dans le vault."""
+        """Get a secret, falling back to the environment if it is not in the vault."""
         self._ensure_loaded()
         value = self._data.get(key)
         if value is not None:
@@ -90,25 +92,25 @@ class Vault:
         return os.environ.get(key, default)
 
     def set(self, key: str, value: str):
-        """Ajoute ou met à jour un secret dans le vault."""
+        """Add or update a secret in the vault."""
         self._ensure_loaded()
         self._data[key] = value
         _save(self._data)
 
     def delete(self, key: str):
-        """Supprime un secret du vault."""
+        """Delete a secret from the vault."""
         self._ensure_loaded()
         if key in self._data:
             del self._data[key]
             _save(self._data)
 
     def list_keys(self) -> list:
-        """Liste les clés présentes dans le vault (sans les valeurs)."""
+        """List the keys present in the vault, without values."""
         self._ensure_loaded()
         return list(self._data.keys())
 
     def import_from_env_file(self, env_path: str, overwrite: bool = False):
-        """Importe les secrets depuis un fichier .env vers le vault."""
+        """Import secrets from an .env file into the vault."""
         self._ensure_loaded()
         imported = []
         with open(env_path) as f:
@@ -169,26 +171,46 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.cmd == "set":
-        vault.set(args.key, args.value)
+        try:
+            vault.set(args.key, args.value)
+        except VaultError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
         print(f"✅ Stored {args.key}")
     elif args.cmd == "get":
-        value = vault.get(args.key)
+        try:
+            value = vault.get(args.key)
+        except VaultError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
         if value is None:
             print(f"❌ {args.key} not found", file=sys.stderr)
             sys.exit(1)
         print(value)
     elif args.cmd == "list":
-        keys = vault.list_keys()
+        try:
+            keys = vault.list_keys()
+        except VaultError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
         if not keys:
             print("(vault empty)")
         else:
             for k in sorted(keys):
                 print(k)
     elif args.cmd == "delete":
-        vault.delete(args.key)
+        try:
+            vault.delete(args.key)
+        except VaultError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
         print(f"✅ Deleted {args.key}")
     elif args.cmd == "import":
-        imported = vault.import_from_env_file(args.path, overwrite=args.overwrite)
+        try:
+            imported = vault.import_from_env_file(args.path, overwrite=args.overwrite)
+        except VaultError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
         if imported:
             print(f"✅ Imported {len(imported)} key(s): {", ".join(sorted(imported))}")
         else:
