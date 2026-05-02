@@ -1,4 +1,4 @@
-import { ensureProjectClaudeMd, run, runUserMessage, compactCurrentSession } from "../runner";
+import { ensureProjectClaudeMd, run, runUserMessage, compactCurrentSession, isRateLimited, getRateLimitResetAt } from "../runner";
 import { extractErrorDetail } from "../messaging";
 import { getSettings, loadSettings } from "../config";
 import { transcribeAudioToText } from "../whisper";
@@ -390,6 +390,40 @@ function extractSendFileDirectives(text: string): {
   return { cleanedText, filePaths };
 }
 
+const VOICE_DIRECTIVE_RE = /\[voice:(\/[^\]\r\n]+)\]/gi;
+
+function extractVoiceDirectives(text: string): { cleanedText: string; voicePaths: string[] } {
+  const voicePaths: string[] = [];
+  const cleanedText = text
+    .replace(VOICE_DIRECTIVE_RE, (_match, path) => {
+      const p = String(path).trim();
+      if (p && existsSync(p)) voicePaths.push(p);
+      return "";
+    })
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return { cleanedText, voicePaths };
+}
+
+async function sendVoiceMessage(token: string, chatId: number, voicePath: string, threadId?: number): Promise<void> {
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  if (threadId) form.append("message_thread_id", String(threadId));
+
+  const file = Bun.file(voicePath);
+  form.append("voice", file, voicePath.split("/").pop() ?? "voice.ogg");
+
+  const res = await fetch(`${API_BASE}${token}/sendVoice`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Telegram sendVoice: ${res.status} ${res.statusText} — ${body}`);
+  }
+}
+
 async function sendReaction(token: string, chatId: number, messageId: number, emoji: string): Promise<void> {
   await callApi(token, "setMessageReaction", {
     chat_id: chatId,
@@ -742,6 +776,14 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     `[${new Date().toLocaleTimeString()}] Telegram ${label}${mediaSuffix}: "${text.slice(0, 60)}${text.length > 60 ? "..." : ""}"`
   );
 
+  // If rate-limited, reply immediately without calling Claude
+  if (isRateLimited()) {
+    const resetAt = new Date(getRateLimitResetAt());
+    const resetStr = resetAt.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
+    await sendMessage(config.token, chatId, `Usage limit reached. Resets at ${resetStr} UTC. I'll be back after that.`, threadId);
+    return;
+  }
+
   // Keep typing indicator alive while queued/running
   const typingInterval = setInterval(() => sendTyping(config.token, chatId, threadId), 4000);
 
@@ -865,11 +907,20 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
       await sendMessage(config.token, chatId, errorMsg, threadId);
     } else {
       const { cleanedText: afterReact, reactionEmoji } = extractReactionDirective(result.stdout || "");
-      const { cleanedText, filePaths } = extractSendFileDirectives(afterReact);
+      const { cleanedText: afterVoice, voicePaths } = extractVoiceDirectives(afterReact);
+      const { cleanedText, filePaths } = extractSendFileDirectives(afterVoice);
       if (reactionEmoji) {
         await sendReaction(config.token, chatId, message.message_id, reactionEmoji).catch((err) => {
           console.error(`[Telegram] Failed to send reaction for ${label}: ${err instanceof Error ? err.message : err}`);
         });
+      }
+      for (const vp of voicePaths) {
+        try {
+          await sendVoiceMessage(config.token, chatId, vp, threadId);
+          debugLog(`Voice sent: ${vp}`);
+        } catch (err) {
+          console.error(`[Telegram] Failed to send voice ${vp} for ${label}: ${err instanceof Error ? err.message : err}`);
+        }
       }
       if (cleanedText) {
         await sendMessage(config.token, chatId, cleanedText, threadId);
@@ -882,7 +933,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
           await sendMessage(config.token, chatId, `Failed to send file: ${fp.split("/").pop()}`, threadId);
         }
       }
-      if (!cleanedText && filePaths.length === 0) {
+      if (!cleanedText && filePaths.length === 0 && voicePaths.length === 0) {
         await sendMessage(config.token, chatId, "(empty response)", threadId);
       }
     }
