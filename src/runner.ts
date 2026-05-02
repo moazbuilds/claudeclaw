@@ -959,13 +959,17 @@ async function execClaude(
 
     if (threadId) {
       await removeThreadSession(threadId);
+    } else if (usedFallback) {
+      await resetFallbackSession(agentName);
+    } else if (agentName) {
+      await resetSession(agentName);
     } else {
       await backupSession();
     }
 
     const retryArgs = withOutputFormat(stripResume(args), "stream-json");
     const retryConfig = usedFallback ? fallbackConfig : primaryConfig;
-    const retryExec = await runClaudeStream(
+    exec = await runClaudeStream(
       retryArgs,
       retryConfig.model,
       retryConfig.api,
@@ -974,9 +978,9 @@ async function execClaude(
       spawnCwd
     );
 
-    rawStdout = retryExec.rawStdout;
-    stderr = retryExec.stderr;
-    exitCode = retryExec.exitCode;
+    rawStdout = exec.rawStdout;
+    stderr = exec.stderr;
+    exitCode = exec.exitCode;
     stdout = rawStdout;
     recoveredFromStale = true;
   }
