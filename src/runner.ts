@@ -957,10 +957,10 @@ async function execClaude(
       `[${new Date().toLocaleTimeString()}] Stale session ${existing.sessionId.slice(0, 8)} for ${name}; recovering with a new session...`
     );
 
-    if (threadId) {
-      await removeThreadSession(threadId);
-    } else if (usedFallback) {
+    if (usedFallback) {
       await resetFallbackSession(agentName);
+    } else if (threadId) {
+      await removeThreadSession(threadId);
     } else if (agentName) {
       await resetSession(agentName);
     } else {
@@ -1007,17 +1007,24 @@ async function execClaude(
   // out mid-run is still persisted and can be resumed on the next message.
   // Also persist for stale-session recoveries, which start a fresh session.
   const parseAsNew = isNew || recoveredFromStale;
-  if (!rateLimitMessage && parseAsNew && exec.sessionId && !usedFallback) {
+  if (!rateLimitMessage && parseAsNew && exec.sessionId) {
     sessionId = exec.sessionId;
-    if (threadId) {
-      await createThreadSession(threadId, sessionId);
-      console.log(`[${new Date().toLocaleTimeString()}] Thread session created: ${sessionId} (thread ${threadId.slice(0, 8)})`);
-    } else {
-      await createSession(sessionId, agentName);
+    if (recoveredFromStale && usedFallback) {
+      await createFallbackSession(sessionId, agentName);
       const label = agentName ? ` (agent ${agentName})` : "";
-      console.log(`[${new Date().toLocaleTimeString()}] Session created: ${sessionId}${label}`);
+      console.log(`[${new Date().toLocaleTimeString()}] Fallback session created: ${sessionId}${label}`);
+      startSession(sessionId);
+    } else if (!usedFallback) {
+      if (threadId) {
+        await createThreadSession(threadId, sessionId);
+        console.log(`[${new Date().toLocaleTimeString()}] Thread session created: ${sessionId} (thread ${threadId.slice(0, 8)})`);
+      } else {
+        await createSession(sessionId, agentName);
+        const label = agentName ? ` (agent ${agentName})` : "";
+        console.log(`[${new Date().toLocaleTimeString()}] Session created: ${sessionId}${label}`);
+      }
+      startSession(sessionId);
     }
-    startSession(sessionId);
   }
 
   const result: RunResult = {
