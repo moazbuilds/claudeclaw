@@ -665,7 +665,9 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
     }
 
     // Build prompt (same pattern as Telegram)
-    const promptParts = [`[Discord from ${label}]`];
+    const channelName = config.channelNames?.[channelId] ?? channelId;
+    const channelTag = isGuild ? `[Discord Channel: ${channelName}]` : `[Discord DM]`;
+    const promptParts = [channelTag, `[Discord from ${label}]`];
     if (skillContext) {
       const args = cleanContent.trim().slice(command!.length).trim();
       promptParts.push(`<command-name>${command}</command-name>`);
@@ -695,9 +697,9 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
     }
 
     const prefixedPrompt = promptParts.join("\n");
-    // Use thread-specific session if message is in a known thread
-    const threadId = knownThreads.has(channelId) ? channelId : undefined;
-    const result = await runUserMessage("discord", prefixedPrompt, threadId, threadInfo?.agentName);
+    // Guild channels (including threads) each get their own isolated session; DMs use the global session
+    const sessionKey = isGuild ? channelId : undefined;
+    const result = await runUserMessage("discord", prefixedPrompt, sessionKey, threadInfo?.agentName);
 
     if (result.exitCode !== 0) {
       await sendMessage(config.token, channelId, `Error (exit ${result.exitCode}): ${extractErrorDetail(result) || "Unknown error"}`);
