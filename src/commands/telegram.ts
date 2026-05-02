@@ -463,13 +463,49 @@ function extractButtonsDirective(text: string): { cleanedText: string; buttonRow
 
 // Map short button IDs to labels for callback routing (in-memory, per-process).
 // IDs are never recycled within a process lifetime — the counter is strictly monotonic.
-const buttonLabelMap = new Map<string, string>();
+// Entries carry a creation timestamp so we can evict stale ones; otherwise a long-running
+// daemon would accumulate every button label ever generated and leak memory unbounded.
+type ButtonEntry = { label: string; createdAt: number };
+const buttonLabelMap = new Map<string, ButtonEntry>();
 let _buttonCounter = 0;
+const BUTTON_TTL_MS = 24 * 60 * 60 * 1000; // 24h is well past any reasonable user dwell
+const BUTTON_MAX_ENTRIES = 5000; // hard cap as a safety net for flood scenarios
+
+function pruneExpiredButtons(now: number = Date.now()): void {
+  for (const [id, entry] of buttonLabelMap) {
+    if (now - entry.createdAt > BUTTON_TTL_MS) {
+      buttonLabelMap.delete(id);
+    }
+  }
+  // Hard cap defense: if a flood fills the map within TTL, drop oldest insertions
+  // (Map preserves insertion order) until back under the cap.
+  if (buttonLabelMap.size > BUTTON_MAX_ENTRIES) {
+    const overflow = buttonLabelMap.size - BUTTON_MAX_ENTRIES;
+    let dropped = 0;
+    for (const id of buttonLabelMap.keys()) {
+      if (dropped >= overflow) break;
+      buttonLabelMap.delete(id);
+      dropped++;
+    }
+  }
+}
+
+function getButtonLabel(btnId: string): string | undefined {
+  const entry = buttonLabelMap.get(btnId);
+  if (!entry) return undefined;
+  if (Date.now() - entry.createdAt > BUTTON_TTL_MS) {
+    buttonLabelMap.delete(btnId);
+    return undefined;
+  }
+  return entry.label;
+}
 
 function makeButtonId(label: string): string {
   // Per-button counter guarantees uniqueness within a process lifetime.
   const id = `b${_buttonCounter++}`;
-  buttonLabelMap.set(id, label);
+  buttonLabelMap.set(id, { label, createdAt: Date.now() });
+  // Opportunistic eviction every 100 buttons — cheap O(n) sweep without a separate timer.
+  if (_buttonCounter % 100 === 0) pruneExpiredButtons();
   return `btn:${id}`;
 }
 
@@ -1078,7 +1114,7 @@ async function handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> 
   // Generic inline button press (btn:<id> pattern from [buttons: ...] directive)
   if (data.startsWith("btn:")) {
     const btnId = data.slice(4);
-    const label = buttonLabelMap.get(btnId);
+    const label = getButtonLabel(btnId);
 
     // Reject unknown/expired IDs — don't fall back to treating the raw ID as a label.
     // IDs are process-local; after a daemon restart old buttons are always expired.
@@ -1096,6 +1132,9 @@ async function handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> 
       callback_query_id: query.id,
       text: label,
     }).catch(() => {});
+
+    // Free the entry as soon as it's been consumed; buttons are one-shot.
+    buttonLabelMap.delete(btnId);
 
     // Edit original message to mark the selected button visually
     if (query.message) {
