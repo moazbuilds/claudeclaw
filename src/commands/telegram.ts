@@ -1153,10 +1153,14 @@ async function handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> 
       const result = await runUserMessage("telegram", `[Button pressed: ${label}]`);
       if (result.exitCode === 0 && result.stdout) {
         const { cleanedText: afterReact, reactionEmoji } = extractReactionDirective(result.stdout);
-        const { cleanedText: afterFile, filePaths } = extractSendFileDirectives(afterReact);
+        const { cleanedText: afterVoice, voicePaths } = extractVoiceDirectives(afterReact);
+        const { cleanedText: afterFile, filePaths } = extractSendFileDirectives(afterVoice);
         const { cleanedText, buttonRows } = extractButtonsDirective(afterFile);
         if (reactionEmoji && query.message) {
           await sendReaction(config.token, chatId, query.message.message_id, reactionEmoji).catch(() => {});
+        }
+        for (const vp of voicePaths) {
+          await sendVoiceMessage(config.token, chatId, vp, threadId).catch(() => {});
         }
         if (buttonRows) {
           await sendMessageWithButtons(config.token, chatId, cleanedText, buttonRows, threadId);
