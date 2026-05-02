@@ -148,6 +148,7 @@ async function discordApi<T>(
   method: string,
   endpoint: string,
   body?: unknown,
+  attempt = 0,
 ): Promise<T> {
   const res = await fetch(`${DISCORD_API}${endpoint}`, {
     method,
@@ -160,11 +161,16 @@ async function discordApi<T>(
 
   // Rate limit handling
   if (res.status === 429) {
-    const data = (await res.json()) as { retry_after: number };
-    const retryMs = Math.ceil(data.retry_after * 1000);
-    debugLog(`Rate limited on ${method} ${endpoint}, retrying in ${retryMs}ms`);
+    if (attempt >= 3) {
+      throw new Error(`Discord rate limit exceeded after 3 retries on ${method} ${endpoint}`);
+    }
+    const data = (await res.json().catch(() => ({}))) as { retry_after?: number };
+    const retryMs = typeof data.retry_after === "number" && isFinite(data.retry_after)
+      ? Math.ceil(data.retry_after * 1000)
+      : 5_000;
+    debugLog(`Rate limited on ${method} ${endpoint}, retrying in ${retryMs}ms (attempt ${attempt + 1}/3)`);
     await Bun.sleep(retryMs);
-    return discordApi(token, method, endpoint, body);
+    return discordApi(token, method, endpoint, body, attempt + 1);
   }
 
   if (!res.ok) {
@@ -294,6 +300,7 @@ async function sendMessageWithImages(
   channelId: string,
   text: string,
   imagePaths: string[],
+  attempt = 0,
 ): Promise<void> {
   const form = new FormData();
   form.append("payload_json", JSON.stringify({ content: text || "​" }));
@@ -307,9 +314,15 @@ async function sendMessageWithImages(
     body: form,
   });
   if (res.status === 429) {
-    const data = (await res.json()) as { retry_after: number };
-    await Bun.sleep(Math.ceil(data.retry_after * 1000));
-    return sendMessageWithImages(token, channelId, text, imagePaths);
+    if (attempt >= 3) {
+      throw new Error(`Discord rate limit exceeded after 3 retries on ${channelId}`);
+    }
+    const data = (await res.json().catch(() => ({}))) as { retry_after?: number };
+    const delay = typeof data.retry_after === "number" && isFinite(data.retry_after)
+      ? Math.ceil(data.retry_after * 1000)
+      : 5_000;
+    await Bun.sleep(delay);
+    return sendMessageWithImages(token, channelId, text, imagePaths, attempt + 1);
   }
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
