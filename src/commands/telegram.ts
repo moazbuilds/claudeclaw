@@ -1,4 +1,4 @@
-import { ensureProjectClaudeMd, run, runUserMessage, compactCurrentSession } from "../runner";
+import { ensureProjectClaudeMd, run, runUserMessage, compactCurrentSession, isRateLimited, getRateLimitResetAt } from "../runner";
 import { extractErrorDetail } from "../messaging";
 import { getSettings, loadSettings } from "../config";
 import { transcribeAudioToText } from "../whisper";
@@ -741,6 +741,14 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
   console.log(
     `[${new Date().toLocaleTimeString()}] Telegram ${label}${mediaSuffix}: "${text.slice(0, 60)}${text.length > 60 ? "..." : ""}"`
   );
+
+  // If rate-limited, reply immediately without calling Claude
+  if (isRateLimited()) {
+    const resetAt = new Date(getRateLimitResetAt());
+    const resetStr = resetAt.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
+    await sendMessage(config.token, chatId, `Usage limit reached. Resets at ${resetStr} UTC. I'll be back after that.`, threadId);
+    return;
+  }
 
   // Keep typing indicator alive while queued/running
   const typingInterval = setInterval(() => sendTyping(config.token, chatId, threadId), 4000);

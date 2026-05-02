@@ -2,7 +2,7 @@ import { writeFile, unlink, mkdir } from "fs/promises";
 import { extractErrorDetail } from "../messaging";
 import { join } from "path";
 import { fileURLToPath } from "url";
-import { run, runUserMessage, streamUserMessage, bootstrap, ensureProjectClaudeMd, loadHeartbeatPromptTemplate } from "../runner";
+import { run, runUserMessage, streamUserMessage, bootstrap, ensureProjectClaudeMd, loadHeartbeatPromptTemplate, isRateLimited, getRateLimitResetAt, wasRateLimitNotified, markRateLimitNotified } from "../runner";
 import { writeState, type StateData } from "../statusline";
 import { cronMatches, nextCronMatch } from "../cron";
 import { clearJobSchedule, loadJobs, snapshotJobFrontmatter } from "../jobs";
@@ -600,6 +600,17 @@ export async function start(args: string[] = []) {
     );
 
     function tick() {
+      if (isRateLimited()) {
+        const resetAt = new Date(getRateLimitResetAt());
+        console.log(`[${ts()}] Heartbeat skipped (rate limited until ${resetAt.toISOString()})`);
+        if (!wasRateLimitNotified()) {
+          markRateLimitNotified();
+          const msg = `Usage limit hit. Pausing until ${resetAt.toUTCString()}. Heartbeats and jobs suspended.`;
+          forwardToTelegram("", { exitCode: 1, stdout: msg, stderr: "" });
+          forwardToDiscord("", { exitCode: 1, stdout: msg, stderr: "" });
+        }
+        return;
+      }
       if (isHeartbeatExcludedNow(currentSettings.heartbeat, currentSettings.timezoneOffsetMinutes)) {
         console.log(`[${ts()}] Heartbeat skipped (excluded window)`);
         nextHeartbeatAt = nextAllowedHeartbeatAt(
@@ -813,6 +824,7 @@ export async function start(args: string[] = []) {
   }
 
   setInterval(() => {
+    if (isRateLimited()) return; // Skip all jobs while rate-limited
     const now = new Date();
     for (const job of currentJobs) {
       // Fire pending retries before checking the cron schedule.
