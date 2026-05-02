@@ -116,6 +116,7 @@ export interface DiscordConfig {
   allowedUserIds: string[]; // Discord snowflake IDs exceed Number.MAX_SAFE_INTEGER
   listenChannels: string[]; // Channel IDs where bot responds to all messages (no mention needed)
   listenGuilds: string[]; // Guild IDs where bot responds to all messages in any channel/thread
+  channelNames?: Record<string, string>; // channelId -> friendly name for system prompt context
 }
 
 export interface SlackConfig {
@@ -337,6 +338,11 @@ function parseSettings(
       listenGuilds: Array.isArray(raw.discord?.listenGuilds)
         ? raw.discord.listenGuilds.map(String)
         : [],
+      channelNames: raw.discord?.channelNames && typeof raw.discord.channelNames === "object"
+        ? Object.fromEntries(
+            Object.entries(raw.discord.channelNames as Record<string, unknown>).map(([k, v]) => [String(k), String(v)]),
+          )
+        : undefined,
     },
     slack: {
       botToken: process.env.SLACK_BOT_TOKEN?.trim() || (typeof raw.slack?.botToken === "string" ? raw.slack.botToken.trim() : ""),
