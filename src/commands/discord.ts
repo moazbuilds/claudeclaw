@@ -1,15 +1,15 @@
 import { ensureProjectClaudeMd, run, runUserMessage, compactCurrentSession, compactCurrentThreadSession, agentDirKey } from "../runner";
 import { extractErrorDetail } from "../messaging";
-import { getSettings, loadSettings } from "../config";
+import { getSettings, loadSettings, DEFAULT_IMAGE_OUTPUT_ROOT } from "../config";
 import { resetSession, resetFallbackSession, peekSession } from "../sessions";
 import { listThreadSessions, removeThreadSession, peekThreadSession } from "../sessionManager";
 import { readFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { transcribeAudioToText } from "../whisper";
 import { resolveSkillPrompt } from "../skills";
 import { mkdir } from "node:fs/promises";
-import { extname, join, basename } from "node:path";
+import { extname, join, basename, sep } from "node:path";
 import { isWizardTrigger, hasActiveWizard, handleWizardInput } from "./plugin-wizard";
 
 // --- Discord API constants ---
@@ -253,16 +253,36 @@ function extractReactionDirective(text: string): { cleanedText: string; reaction
 // Matches absolute image file paths embedded in reply text so they can be
 // sent as Discord file attachments instead of appearing as raw paths.
 const IMAGE_PATH_RE = /(?<![^\s])(\/[^\s]+\.(?:png|jpe?g|gif|webp))(?=\s|$)/gi;
+const PATH_SKEW_MS = 30_000;
 
-function extractImagePaths(text: string): { paths: string[]; cleanedText: string } {
+function extractImagePaths(
+  text: string,
+  allowedRoots: string[],
+  requestStartedAt: number,
+): { paths: string[]; cleanedText: string } {
+  const roots = allowedRoots.length > 0 ? allowedRoots : [DEFAULT_IMAGE_OUTPUT_ROOT];
+  const canonRoots = roots.map((r) => {
+    try { return realpathSync(r); } catch { return r; }
+  });
   const paths: string[] = [];
   const cleanedText = text
     .replace(IMAGE_PATH_RE, (match, p1) => {
-      if (existsSync(p1)) {
-        paths.push(p1);
-        return "";
+      let resolved: string;
+      try {
+        resolved = realpathSync(p1);
+      } catch {
+        return match;
       }
-      return match;
+      const confined = canonRoots.some((root) => resolved === root || resolved.startsWith(root + sep));
+      if (!confined) return match;
+      try {
+        const { mtimeMs } = statSync(resolved);
+        if (mtimeMs < requestStartedAt - PATH_SKEW_MS) return match;
+      } catch {
+        return match;
+      }
+      paths.push(resolved);
+      return "";
     })
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -744,6 +764,7 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
     const prefixedPrompt = promptParts.join("\n");
     // Use thread-specific session if message is in a known thread
     const threadId = knownThreads.has(channelId) ? channelId : undefined;
+    const requestStartedAt = Date.now();
     const result = await runUserMessage("discord", prefixedPrompt, threadId, threadInfo?.agentName);
 
     if (result.exitCode !== 0) {
@@ -755,7 +776,7 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
           console.error(`[Discord] Failed to send reaction for ${label}: ${err instanceof Error ? err.message : err}`);
         });
       }
-      const { paths: imagePaths, cleanedText: finalText } = extractImagePaths(cleanedText || "");
+      const { paths: imagePaths, cleanedText: finalText } = extractImagePaths(cleanedText || "", config.imageOutputRoots, requestStartedAt);
       if (imagePaths.length > 0) {
         await sendMessageWithImages(config.token, channelId, finalText || "(empty response)", imagePaths);
       } else {
