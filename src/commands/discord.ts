@@ -755,6 +755,7 @@ async function handleInteractionCreate(token: string, interaction: DiscordIntera
       const isGuildCmd = !!interaction.guild_id && !!interaction.channel_id;
       if (isGuildCmd) {
         await removeThreadSession(interaction.channel_id!);
+        await resetFallbackSession(undefined, interaction.channel_id!);
       } else {
         await resetSession();
         await resetFallbackSession();
