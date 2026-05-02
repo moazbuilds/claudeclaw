@@ -776,6 +776,14 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     `[${new Date().toLocaleTimeString()}] Telegram ${label}${mediaSuffix}: "${text.slice(0, 60)}${text.length > 60 ? "..." : ""}"`
   );
 
+  // Plugin wizard: local control-plane logic — not subject to rate limiting
+  const wizardCtx = { iface: "telegram" as const, scopeId: String(chatId) };
+  if ((command && isWizardTrigger(command)) || hasActiveWizard(wizardCtx)) {
+    const reply = await handleWizardInput(wizardCtx, text.trim());
+    await sendMessage(config.token, chatId, reply, threadId);
+    return;
+  }
+
   // If rate-limited, reply immediately without calling Claude
   if (isRateLimited()) {
     const resetAt = new Date(getRateLimitResetAt());
@@ -817,14 +825,6 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
           }
         }
       }
-    }
-
-    // Plugin wizard: intercept /plugin and /claudeclaw:plugin before Claude routing
-    const wizardCtx = { iface: "telegram" as const, scopeId: String(chatId) };
-    if ((command && isWizardTrigger(command)) || hasActiveWizard(wizardCtx)) {
-      const reply = await handleWizardInput(wizardCtx, text.trim());
-      await sendMessage(config.token, chatId, reply, threadId);
-      return;
     }
 
     // Skill routing: resolve slash commands to SKILL.md prompts
