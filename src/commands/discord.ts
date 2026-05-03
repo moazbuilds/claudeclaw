@@ -55,6 +55,12 @@ interface DiscordAttachment {
   flags?: number;
 }
 
+interface DiscordMessageSnapshot {
+  content: string;
+  attachments: DiscordAttachment[];
+  author?: DiscordUser;
+}
+
 interface DiscordMessage {
   id: string;
   channel_id: string;
@@ -64,6 +70,8 @@ interface DiscordMessage {
   attachments: DiscordAttachment[];
   mentions: DiscordUser[];
   referenced_message?: DiscordMessage | null;
+  message_reference?: { type?: number };
+  message_snapshots?: [{ message: DiscordMessageSnapshot }];
   flags?: number;
   type: number;
 }
@@ -803,6 +811,24 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
       promptParts.push(`Attached text file (${textAttachments[0].filename}):\n${textContent}`);
     } else if (hasText) {
       promptParts.push("The user attached a text file, but downloading it failed. Ask them to resend.");
+    }
+
+    // Include context from replied-to or forwarded messages
+    const isForward = message.message_reference?.type === 1;
+    const snapshot = message.message_snapshots?.[0]?.message;
+    if (isForward && snapshot) {
+      const fwdAuthor = snapshot.author ? snapshot.author.username : "unknown";
+      const fwdAttachments = snapshot.attachments.length > 0
+        ? ` [attachments: ${snapshot.attachments.map((a) => a.filename).join(", ")}]`
+        : "";
+      promptParts.push(`[Forwarded message from ${fwdAuthor}]: ${snapshot.content}${fwdAttachments}`);
+    } else if (message.referenced_message) {
+      const ref = message.referenced_message;
+      const refAuthor = ref.author.username;
+      const refAttachments = ref.attachments.length > 0
+        ? ` [attachments: ${ref.attachments.map((a) => a.filename).join(", ")}]`
+        : "";
+      promptParts.push(`[In reply to ${refAuthor}]: ${ref.content}${refAttachments}`);
     }
 
     const prefixedPrompt = promptParts.join("\n");
