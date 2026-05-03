@@ -750,10 +750,14 @@ export async function start(args: string[] = []) {
       heartbeat: currentSettings.heartbeat.enabled
         ? { nextAt: nextHeartbeatAt }
         : undefined,
-      jobs: currentJobs.map((job) => ({
-        name: job.name,
-        nextAt: nextCronMatch(job.schedule, now, currentSettings.timezoneOffsetMinutes).getTime(),
-      })),
+      jobs: currentJobs.map((job) => {
+        const last = jobLastResult.get(job.name);
+        return {
+          name: job.name,
+          nextAt: nextCronMatch(job.schedule, now, currentSettings.timezoneOffsetMinutes).getTime(),
+          ...(last ? { lastResult: last.result, lastRanAt: last.ranAt } : {}),
+        };
+      }),
       security: currentSettings.security.level,
       telegram: !!currentSettings.telegram.token,
       discord: !!currentSettings.discord.token,
@@ -771,6 +775,10 @@ export async function start(args: string[] = []) {
 
   // In-memory retry state: resets on daemon restart (no stale debt across restarts).
   const jobRetryState = new Map<string, { failCount: number; retryAt: number }>();
+
+  // Track each job's most recent outcome so state.json can expose lastResult/lastRanAt
+  // for crash-recovery + status displays. Resets on daemon restart (in-memory only).
+  const jobLastResult = new Map<string, { result: "ok" | "error" | "skipped"; ranAt: number }>();
 
   function runJob(job: (typeof currentJobs)[0]) {
     const timeoutMs = job.timeoutSeconds ? job.timeoutSeconds * 1000 : undefined;
@@ -792,6 +800,10 @@ export async function start(args: string[] = []) {
           .then(async (r) => {
             const restored = await restoreFrontmatter();
             if (restored) console.log(`[${ts()}] Restored frontmatter for job: ${job.name}`);
+            jobLastResult.set(job.name, {
+              result: r.exitCode === 0 ? "ok" : "error",
+              ranAt: Date.now(),
+            });
             if (r.exitCode === 0) {
               jobRetryState.delete(job.name);
             } else if (job.retry && job.retry > 0) {
