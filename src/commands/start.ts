@@ -10,6 +10,7 @@ import { writePidFile, cleanupPidFile, checkExistingDaemon } from "../pid";
 import { initConfig, loadSettings, reloadSettings, resolvePrompt, type HeartbeatConfig, type Settings } from "../config";
 import { getDayAndMinuteAtOffset, buildClockPromptPrefix } from "../timezone";
 import { startWebUi, type WebServerHandle } from "../web";
+import { getOrCreateWebToken } from "../ui/auth";
 import type { Job } from "../jobs";
 import { isWizardTrigger, hasActiveWizard, handleWizardInput } from "./plugin-wizard";
 import { PluginManager, setPluginManager } from "../plugins";
@@ -460,7 +461,7 @@ export async function start(args: string[] = []) {
     return code === "EADDRINUSE" || message.includes("EADDRINUSE");
   }
 
-  function startWebWithFallback(host: string, preferredPort: number): WebServerHandle {
+  function startWebWithFallback(host: string, preferredPort: number, token: string): WebServerHandle {
     const maxAttempts = 10;
     let lastError: unknown;
     for (let i = 0; i < maxAttempts; i++) {
@@ -469,6 +470,7 @@ export async function start(args: string[] = []) {
         return startWebUi({
           host,
           port: candidatePort,
+          token,
           getSnapshot: () => ({
             pid: process.pid,
             startedAt: daemonStartedAt,
@@ -537,11 +539,26 @@ export async function start(args: string[] = []) {
     throw lastError;
   }
 
+  // Task 1.5: Refuse to start if Telegram token is set but allowlist is empty
+  if (currentSettings.telegram.token && currentSettings.telegram.allowedUserIds.length === 0) {
+    console.error("Refusing to start: telegram.token is set but telegram.allowedUserIds is empty.");
+    console.error("Add at least one allowed user ID to .claude/claudeclaw/settings.json or remove the token.");
+    process.exit(1);
+  }
+
+  // Task 1.6: Refuse to start if Discord token is set but allowlist is empty
+  if (currentSettings.discord.token && currentSettings.discord.allowedUserIds.length === 0) {
+    console.error("Refusing to start: discord.token is set but discord.allowedUserIds is empty.");
+    console.error("Add at least one allowed user ID to .claude/claudeclaw/settings.json or remove the token.");
+    process.exit(1);
+  }
+
   if (webEnabled) {
     currentSettings.web.enabled = true;
-    web = startWebWithFallback(currentSettings.web.host, webPort);
+    const webToken = await getOrCreateWebToken();
+    web = startWebWithFallback(currentSettings.web.host, webPort, webToken);
     currentSettings.web.port = web.port;
-    console.log(`[${new Date().toLocaleTimeString()}] Web UI listening on http://${web.host}:${web.port}`);
+    console.log(`[${ts()}] Web UI: http://${web.host}:${web.port}/?token=${webToken}`);
   }
 
   // --- Helpers ---

@@ -79,7 +79,7 @@ const DEFAULT_SETTINGS: Settings = {
     forwardToTelegram: true,
   },
   telegram: { token: "", allowedUserIds: [], listenChats: [], receiveEnabled: true },
-  discord: { token: "", allowedUserIds: [], listenChannels: [], listenGuilds: [], imageOutputRoots: [] },
+  discord: { token: "", allowedUserIds: [], listenChannels: [], listenGuilds: [], allowedGuilds: [], imageOutputRoots: [] },
   slack: { botToken: "", appToken: "", allowedUserIds: [], listenChannels: [] },
   security: { level: "moderate", allowedTools: [], disallowedTools: [] },
   web: { enabled: false, host: "127.0.0.1", port: 4632 },
@@ -118,6 +118,7 @@ export interface DiscordConfig {
   allowedUserIds: string[]; // Discord snowflake IDs exceed Number.MAX_SAFE_INTEGER
   listenChannels: string[]; // Channel IDs where bot responds to all messages (no mention needed)
   listenGuilds: string[]; // Guild IDs where bot responds to all messages in any channel/thread
+  allowedGuilds: string[]; // Guild IDs where the bot will post a welcome message on join (empty = silent)
   channelNames?: Record<string, string>; // channelId -> friendly name for system prompt context
   imageOutputRoots: string[]; // Absolute path prefixes from which image uploads are permitted
 }
@@ -340,6 +341,9 @@ function parseSettings(
         : [],
       listenGuilds: Array.isArray(raw.discord?.listenGuilds)
         ? raw.discord.listenGuilds.map(String)
+        : [],
+      allowedGuilds: Array.isArray(raw.discord?.allowedGuilds)
+        ? raw.discord.allowedGuilds.map(String)
         : [],
       channelNames: raw.discord?.channelNames && typeof raw.discord.channelNames === "object"
         ? Object.fromEntries(
