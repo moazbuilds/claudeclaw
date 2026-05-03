@@ -1,4 +1,5 @@
 import { ensureProjectClaudeMd, run, runUserMessage, compactCurrentSession, isRateLimited, getRateLimitResetAt } from "../runner";
+import { wrapUntrusted } from "../prompt-safety";
 import { extractErrorDetail } from "../messaging";
 import { getSettings, loadSettings } from "../config";
 import { transcribeAudioToText } from "../whisper";
@@ -694,15 +695,22 @@ async function handleMyChatMember(update: TelegramMyChatMemberUpdate): Promise<v
 
   if (!isGroup || !wasOut || !isIn) return;
 
+  const adderId = update.from.id;
+  if (config.allowedUserIds.length === 0 || !config.allowedUserIds.includes(adderId)) {
+    console.log(`[Telegram] Unauthorized add to ${chat.id} by ${adderId}; leaving.`);
+    await callApi(config.token, "leaveChat", { chat_id: chat.id }).catch(() => {});
+    return;
+  }
+
   const chatName = chat.title ?? String(chat.id);
   console.log(`[Telegram] Added to ${chat.type}: ${chatName} (${chat.id}) by ${update.from.id}`);
 
   const addedBy = update.from.username ?? `${update.from.first_name} (${update.from.id})`;
   const eventPrompt =
     `[Telegram system event] I was added to a ${chat.type}.\n` +
-    `Group title: ${chatName}\n` +
+    `Group title: ${wrapUntrusted("group-title", chatName)}\n` +
     `Group id: ${chat.id}\n` +
-    `Added by: ${addedBy}\n` +
+    `Added by: ${wrapUntrusted("adder-username", addedBy)}\n` +
     "Write a short first message for the group. It should confirm I was added and explain how to trigger me.";
 
   try {
@@ -746,12 +754,12 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     `Handle message chat=${chatId} type=${chatType} from=${userId ?? "unknown"} reason=${triggerReason} text="${(text ?? "").slice(0, 80)}"`
   );
 
-  if (userId && config.allowedUserIds.length > 0 && !config.allowedUserIds.includes(userId)) {
+  if (config.allowedUserIds.length === 0 || !userId || !config.allowedUserIds.includes(userId)) {
     if (isPrivate) {
       await sendMessage(config.token, chatId, "Unauthorized.");
     } else {
-      console.log(`[Telegram] Ignored group message from unauthorized user ${userId} in chat ${chatId}`);
-      debugLog(`Skip group message chat=${chatId} from=${userId} reason=unauthorized_user`);
+      console.log(`[Telegram] Ignored group message from unauthorized user ${userId ?? "unknown"} in chat ${chatId}`);
+      debugLog(`Skip group message chat=${chatId} from=${userId ?? "unknown"} reason=unauthorized_user`);
     }
     return;
   }
@@ -973,9 +981,9 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
       const args = text.trim().slice(command!.length).trim();
       promptParts.push(`<command-name>${command}</command-name>`);
       promptParts.push(skillContext);
-      if (args) promptParts.push(`User arguments: ${args}`);
+      if (args) promptParts.push(`User arguments: ${wrapUntrusted("skill-arguments", args)}`);
     } else if (text.trim()) {
-      promptParts.push(`Message: ${text}`);
+      promptParts.push(`Message: ${wrapUntrusted("user-message", text)}`);
     }
     if (imagePath) {
       promptParts.push(`Image path: ${imagePath}`);
@@ -984,7 +992,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
       promptParts.push("The user attached an image, but downloading it failed. Respond and ask them to resend.");
     }
     if (voiceTranscript) {
-      promptParts.push(`Voice transcript: ${voiceTranscript}`);
+      promptParts.push(`Voice transcript: ${wrapUntrusted("voice-transcript", voiceTranscript, 2000)}`);
     } else if (voicePath) {
       const { delegateTool } = getSettings().stt;
       if (delegateTool) {
@@ -1002,7 +1010,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     }
     if (documentInfo) {
       promptParts.push(`Document path: ${documentInfo.localPath}`);
-      promptParts.push(`Original filename: ${documentInfo.originalName}`);
+      promptParts.push(`Original filename: ${wrapUntrusted("attachment-filename", documentInfo.originalName)}`);
       promptParts.push(
         "The user attached a document. Read and process this file directly."
       );
@@ -1074,7 +1082,7 @@ async function handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> 
 
   // Enforce allowlist on callback queries (same policy as regular messages)
   const callbackUserId = query.from.id;
-  if (config.allowedUserIds.length > 0 && !config.allowedUserIds.includes(callbackUserId)) {
+  if (config.allowedUserIds.length === 0 || !config.allowedUserIds.includes(callbackUserId)) {
     await callApi(config.token, "answerCallbackQuery", {
       callback_query_id: query.id,
       text: "Unauthorized.",

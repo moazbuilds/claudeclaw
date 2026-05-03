@@ -8,6 +8,7 @@
     "telegram": "bun run src/index.ts telegram",
     "discord": "bun run src/index.ts discord",
     "status": "bun run src/index.ts status",
+    "test": "bun test",
     "bump:plugin-version": "bun run scripts/bump-plugin-version.ts",
     "bump:marketplace-version": "bun run scripts/bump-marketplace-version.ts"
   },

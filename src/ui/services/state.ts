@@ -62,28 +62,32 @@ export async function buildState(snapshot: WebSnapshot) {
   };
 }
 
-function redactSettings(raw: unknown): unknown {
-  if (!raw || typeof raw !== "object") return raw;
-  const s = raw as Record<string, unknown>;
-  const out: Record<string, unknown> = { ...s };
-  if ("apiToken" in out) out.apiToken = out.apiToken ? "[redacted]" : undefined;
-  if (out.telegram && typeof out.telegram === "object") {
-    const t = out.telegram as Record<string, unknown>;
-    out.telegram = { ...t, token: t.token ? "[redacted]" : "" };
-  }
-  if (out.discord && typeof out.discord === "object") {
-    const d = out.discord as Record<string, unknown>;
-    out.discord = { ...d, token: d.token ? "[redacted]" : "" };
-  }
-  if (out.slack && typeof out.slack === "object") {
-    const sl = out.slack as Record<string, unknown>;
-    out.slack = { ...sl, botToken: sl.botToken ? "[redacted]" : "", appToken: sl.appToken ? "[redacted]" : "" };
+const SECRET_KEYS = new Set(["token", "api", "apiKey", "apiToken", "botToken", "appToken", "password", "secret"]);
+
+function redact(obj: unknown): unknown {
+  if (!obj || typeof obj !== "object") return obj;
+  if (Array.isArray(obj)) return obj.map(redact);
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+    if (SECRET_KEYS.has(k) && typeof v === "string" && v.length > 0) {
+      out[k] = `<redacted:${v.length} chars>`;
+    } else {
+      out[k] = redact(v);
+    }
   }
   return out;
 }
 
+async function redactJsonFile(path: string): Promise<unknown | null> {
+  try {
+    const raw = await readFile(path, "utf-8");
+    return redact(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
 export async function buildTechnicalInfo(snapshot: WebSnapshot) {
-  const rawSettings = await readJsonFile(SETTINGS_FILE);
   return {
     daemon: {
       pid: snapshot.pid,
@@ -91,13 +95,16 @@ export async function buildTechnicalInfo(snapshot: WebSnapshot) {
       uptimeMs: Math.max(0, Date.now() - snapshot.startedAt),
     },
     files: {
-      settingsJson: redactSettings(rawSettings),
-      sessionJson: await readJsonFile(SESSION_FILE),
+      settingsJson: await redactJsonFile(SETTINGS_FILE),
+      sessionJson: await redactJsonFile(SESSION_FILE),
       stateJson: await readJsonFile(STATE_FILE),
     },
     snapshot: {
-      ...snapshot,
-      settings: redactSettings(snapshot.settings) as WebSnapshot["settings"],
+      pid: snapshot.pid,
+      startedAt: snapshot.startedAt,
+      heartbeatNextAt: snapshot.heartbeatNextAt,
+      settings: sanitizeSettings(snapshot.settings),
+      jobs: snapshot.jobs,
     },
   };
 }

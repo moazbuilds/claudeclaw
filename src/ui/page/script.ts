@@ -1,4 +1,37 @@
-export const pageScript = String.raw`    const $ = (id) => document.getElementById(id);
+export const pageScript = String.raw`    // --- Token management (Task 1.1) ---
+    (function() {
+      var stored = sessionStorage.getItem("__claw_tok");
+      var fromUrl = new URL(location.href).searchParams.get("token");
+      if (fromUrl) {
+        stored = fromUrl;
+        sessionStorage.setItem("__claw_tok", stored);
+        var clean = new URL(location.href);
+        clean.searchParams.delete("token");
+        history.replaceState(null, "", clean.toString());
+      }
+      if (!stored) {
+        document.addEventListener("DOMContentLoaded", function() {
+          document.body.innerHTML = '<div style="font-family:monospace;padding:2rem;max-width:480px;margin:4rem auto">' +
+            '<h2 style="margin-bottom:1rem">ClaudeClaw — Auth Required</h2>' +
+            '<p style="margin-bottom:1rem">Paste the token from the daemon log to continue.</p>' +
+            '<input id="tok-input" type="text" placeholder="Token" style="width:100%;padding:.5rem;margin-bottom:.75rem;font-family:monospace;box-sizing:border-box">' +
+            '<button onclick="var t=document.getElementById(\'tok-input\').value.trim();if(t){sessionStorage.setItem(\'__claw_tok\',t);location.reload();}" ' +
+            'style="padding:.5rem 1.25rem;cursor:pointer">Continue</button></div>';
+        });
+        return;
+      }
+      var _origFetch = window.fetch.bind(window);
+      window.fetch = function(input, init) {
+        var url = typeof input === "string" ? input : (input instanceof URL ? input.href : input.url);
+        if (typeof url === "string" && url.startsWith("/api/")) {
+          init = Object.assign({}, init);
+          init.headers = Object.assign({ "Authorization": "Bearer " + stored }, init.headers);
+        }
+        return _origFetch(input, init);
+      };
+    })();
+
+    const $ = (id) => document.getElementById(id);
 
     const clockEl = $("clock");
     const dateEl = $("date");
