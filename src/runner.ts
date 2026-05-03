@@ -260,6 +260,31 @@ function enqueue<T>(fn: () => Promise<T>, threadId?: string): Promise<T> {
   return task;
 }
 
+// Track active main-queue subprocesses so /kill targets them exclusively.
+// Using a Set because per-thread queues run in parallel — multiple main
+// runs can be in-flight at the same time. Fork procs are excluded: they run
+// outside the main queue and must not be killed by /kill.
+const mainActiveProcs = new Set<ReturnType<typeof Bun.spawn>>();
+
+/** Kill all running main-queue claude subprocesses. Returns true if anything was killed. */
+export function killActive(): boolean {
+  if (mainActiveProcs.size === 0) return false;
+  for (const proc of mainActiveProcs) {
+    try { proc.kill(); } catch {}
+  }
+  mainActiveProcs.clear();
+  return true;
+}
+
+// Counter rather than boolean: per-thread queues run in parallel so
+// multiple main runs can be in-flight simultaneously.
+let mainRunCount = 0;
+
+/** True while any main-queue agent is processing a task (excludes fork). */
+export function isMainBusy(): boolean {
+  return mainRunCount > 0;
+}
+
 function extractRateLimitMessage(stdout: string, stderr: string): string | null {
   const candidates = [stdout, stderr];
   for (const text of candidates) {
@@ -386,6 +411,7 @@ async function runClaudeOnce(
     ...(cwd ? { cwd } : {}),
   });
 
+  mainActiveProcs.add(proc);
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeoutId = setTimeout(() => reject(new Error(`Claude session timed out after ${timeoutMs / 1000}s`)), timeoutMs);
@@ -402,6 +428,7 @@ async function runClaudeOnce(
 
     if (timeoutId) clearTimeout(timeoutId);
     await proc.exited;
+    mainActiveProcs.delete(proc);
 
     return {
       rawStdout,
@@ -410,6 +437,7 @@ async function runClaudeOnce(
     };
   } catch (err) {
     if (timeoutId) clearTimeout(timeoutId);
+    mainActiveProcs.delete(proc);
     // Kill the hung process
     try { proc.kill("SIGTERM"); } catch {}
     setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 5000);
@@ -437,7 +465,9 @@ async function runClaudeStream(
   api: string,
   baseEnv: Record<string, string>,
   timeoutMs: number = DEFAULT_SESSION_TIMEOUT_MS,
-  cwd?: string
+  cwd?: string,
+  onChunk?: (text: string) => void,
+  onToolEvent?: (line: string) => void
 ): Promise<{ rawStdout: string; stderr: string; exitCode: number; sessionId?: string }> {
   const args = [...baseArgs];
   const normalizedModel = model.trim().toLowerCase();
@@ -450,9 +480,15 @@ async function runClaudeStream(
     ...(cwd ? { cwd } : {}),
   });
 
+  mainActiveProcs.add(proc);
   let sessionId: string | undefined;
   let resultText = "";
   let stderr = "";
+
+  // Streaming state for onChunk/onToolEvent callbacks
+  let streamDelivered = "";
+  let streamLastMsgId = "";
+  const streamPendingToolCalls = new Map<string, string>();
 
   const readStdout = async () => {
     const reader = proc.stdout.getReader();
@@ -475,6 +511,41 @@ async function runClaudeStream(
           if (event.type === "result" && typeof event.result === "string") {
             resultText = event.result;
           }
+          // Emit streaming callbacks if provided
+          if ((onChunk || onToolEvent) && event.type === "assistant" && (event.message as any)?.content) {
+            const msg = event.message as any;
+            const msgId: string = msg.id ?? "";
+            if (msgId !== streamLastMsgId) {
+              if (onChunk && streamDelivered) onChunk("\n");
+              streamDelivered = "";
+              streamLastMsgId = msgId;
+            }
+            let full = "";
+            for (const block of msg.content) {
+              if (block.type === "text" && typeof block.text === "string") {
+                full += block.text;
+              } else if (block.type === "tool_use" && onToolEvent) {
+                streamPendingToolCalls.set(block.id, block.name);
+                onToolEvent(`● ${formatToolCallSummary(block.name, block.input ?? {})}`);
+              }
+            }
+            if (onChunk && full.length > streamDelivered.length) {
+              onChunk(full.slice(streamDelivered.length));
+              streamDelivered = full;
+            }
+          }
+          if (onToolEvent && event.type === "user") {
+            for (const block of (event.message as any)?.content ?? []) {
+              if (block.type === "tool_result") {
+                const toolName = streamPendingToolCalls.get(block.tool_use_id) ?? "?";
+                streamPendingToolCalls.delete(block.tool_use_id);
+                const text = extractToolResultText(block.content);
+                const firstLine = text.split("\n")[0].slice(0, 80);
+                const summary = block.is_error ? `Error: ${firstLine}` : (firstLine || "done");
+                onToolEvent(`  ⎿  [${toolName}] ${summary}`);
+              }
+            }
+          }
         } catch {}
       }
     }
@@ -496,15 +567,152 @@ async function runClaudeStream(
     ]);
     if (streamJsonTimeoutId) clearTimeout(streamJsonTimeoutId);
     await proc.exited;
+    mainActiveProcs.delete(proc);
     return { rawStdout: resultText, stderr: stderr.trim(), exitCode: proc.exitCode ?? 1, sessionId };
   } catch (err) {
     if (streamJsonTimeoutId) clearTimeout(streamJsonTimeoutId);
+    mainActiveProcs.delete(proc);
     try { proc.kill("SIGTERM"); } catch {}
     setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 5000);
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[${new Date().toLocaleTimeString()}] ${message}`);
     return { rawStdout: "", stderr: message, exitCode: 124, sessionId };
   }
+}
+
+function formatToolCallSummary(name: string, input: Record<string, unknown>): string {
+  const s = (v: unknown, max = 50) => String(v ?? "").slice(0, max);
+  switch (name) {
+    case "Write":
+    case "Edit":
+    case "Read":    return `${name}(${s(input.file_path)})`;
+    case "Bash":    return `Bash(${s(input.command, 60)})`;
+    case "Grep":    return `Grep(${s(input.pattern)} in ${s(input.path ?? ".")})`;
+    case "Glob":    return `Glob(${s(input.pattern)})`;
+    case "WebSearch": return `WebSearch(${s(input.query)})`;
+    case "WebFetch":  return `WebFetch(${s(input.url, 60)})`;
+    default:        return `${name}(...)`;
+  }
+}
+
+function extractToolResultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return (content as Array<{ type?: string; text?: string }>)
+      .filter(b => b.type === "text")
+      .map(b => b.text ?? "")
+      .join("");
+  }
+  return String(content ?? "");
+}
+
+/**
+ * Run claude with --output-format stream-json, emitting text chunks via onChunk
+ * and tool call/result lines via onToolEvent as they arrive.
+ * Session ID and final result come from the result event.
+ * Unlike runClaudeStream, this function is for real-time delivery to external surfaces
+ * (e.g. Telegram streaming) and does NOT use a timeout — callers must handle that.
+ */
+async function runClaudeStreaming(
+  baseArgs: string[],
+  model: string,
+  api: string,
+  baseEnv: Record<string, string>,
+  onChunk?: (text: string) => void,
+  onToolEvent?: (line: string) => void
+): Promise<{ result: string; stderr: string; exitCode: number; sessionId?: string; isRateLimit: boolean }> {
+  const args = [...baseArgs];
+  const normalizedModel = model.trim().toLowerCase();
+  if (model.trim() && normalizedModel !== "glm") args.push("--model", model.trim());
+
+  const proc = Bun.spawn(args, {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: buildChildEnv(baseEnv, model, api),
+  });
+
+  mainActiveProcs.add(proc);
+  const stderrPromise = new Response(proc.stderr).text();
+
+  let finalResult = "";
+  let sessionId: string | undefined;
+  let isRateLimit = false;
+  let delivered = ""; // text already sent to onChunk for the current message
+  let lastMsgId = ""; // reset delivered tracking when a new assistant message starts
+  const pendingToolCalls = new Map<string, string>(); // tool_use_id → tool name
+
+  const reader = proc.stdout.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+
+    let nl: number;
+    while ((nl = buf.indexOf("\n")) !== -1) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+
+      try {
+        const event = JSON.parse(line);
+
+        if (event.type === "assistant" && event.message?.content) {
+          const msgId: string = event.message.id ?? "";
+          if (msgId !== lastMsgId) {
+            // Insert newline separator between assistant messages so text
+            // from successive turns doesn't merge onto one line.
+            if (onChunk && delivered) onChunk("\n");
+            delivered = "";
+            lastMsgId = msgId;
+          }
+          let full = "";
+          for (const block of event.message.content) {
+            if (block.type === "text" && typeof block.text === "string") {
+              full += block.text;
+            } else if (block.type === "tool_use" && onToolEvent) {
+              pendingToolCalls.set(block.id, block.name);
+              onToolEvent(`● ${formatToolCallSummary(block.name, block.input ?? {})}`);
+            }
+          }
+          if (onChunk && full.length > delivered.length) {
+            onChunk(full.slice(delivered.length));
+            delivered = full;
+          }
+        }
+
+        if (event.type === "user" && onToolEvent) {
+          for (const block of event.message?.content ?? []) {
+            if (block.type === "tool_result") {
+              const name = pendingToolCalls.get(block.tool_use_id) ?? "?";
+              pendingToolCalls.delete(block.tool_use_id);
+              const text = extractToolResultText(block.content);
+              const firstLine = text.split("\n")[0].slice(0, 80);
+              const summary = block.is_error ? `Error: ${firstLine}` : (firstLine || "done");
+              onToolEvent(`  ⎿  [${name}] ${summary}`);
+            }
+          }
+        }
+
+        if (event.type === "result") {
+          sessionId = event.session_id;
+          finalResult = typeof event.result === "string" ? event.result : finalResult;
+          isRateLimit = RATE_LIMIT_PATTERN.test(finalResult);
+        }
+      } catch {}
+    }
+  }
+
+  await proc.exited;
+  mainActiveProcs.delete(proc);
+
+  const stderr = await stderrPromise;
+  // Also check stderr for rate limit signals
+  if (!isRateLimit) isRateLimit = RATE_LIMIT_PATTERN.test(stderr);
+
+  return { result: finalResult, stderr, exitCode: proc.exitCode ?? 1, sessionId, isRateLimit };
 }
 
 const PROJECT_DIR = process.cwd();
@@ -776,8 +984,12 @@ async function execClaude(
   modelOverride?: string,
   timeoutMsOverride?: number,
   agentName?: string,
-  timeoutCategory?: string
+  timeoutCategory?: string,
+  onChunk?: (text: string) => void,
+  onToolEvent?: (line: string) => void
 ): Promise<RunResult> {
+  mainRunCount++;
+  try {
   await mkdir(LOGS_DIR, { recursive: true });
 
   // Rotate the global session if thresholds are exceeded (thread/agent sessions are not rotated).
@@ -883,7 +1095,7 @@ async function execClaude(
   const baseEnv = cleanSpawnEnv();
   const spawnCwd = agentName ? await ensureAgentDir(agentName) : undefined;
 
-  let exec = await runClaudeStream(args, primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs, spawnCwd);
+  let exec = await runClaudeStream(args, primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs, spawnCwd, onChunk, onToolEvent);
   const primaryRateLimit = extractRateLimitMessage(exec.rawStdout, exec.stderr);
   let usedFallback = false;
 
@@ -1166,6 +1378,9 @@ async function execClaude(
   }
 
   return result;
+  } finally {
+    mainRunCount--;
+  }
 }
 
 export async function run(
@@ -1175,9 +1390,11 @@ export async function run(
   modelOverride?: string,
   timeoutMs?: number,
   agentName?: string,
-  timeoutCategory?: string
+  timeoutCategory?: string,
+  onChunk?: (text: string) => void,
+  onToolEvent?: (line: string) => void
 ): Promise<RunResult> {
-  return enqueue(() => execClaude(name, prompt, threadId, modelOverride, timeoutMs, agentName, timeoutCategory), threadId);
+  return enqueue(() => execClaude(name, prompt, threadId, modelOverride, timeoutMs, agentName, timeoutCategory, onChunk, onToolEvent), threadId);
 }
 
 async function streamClaude(
@@ -1402,8 +1619,118 @@ function prefixUserMessageWithClock(prompt: string): string {
   }
 }
 
-export async function runUserMessage(name: string, prompt: string, threadId?: string, agentName?: string): Promise<RunResult> {
-  return run(name, prefixUserMessageWithClock(prompt), threadId, undefined, undefined, agentName);
+export async function runUserMessage(
+  name: string,
+  prompt: string,
+  threadId?: string,
+  agentName?: string,
+  onChunk?: (text: string) => void,
+  onToolEvent?: (line: string) => void
+): Promise<RunResult> {
+  return run(name, prefixUserMessageWithClock(prompt), threadId, undefined, undefined, agentName, undefined, onChunk, onToolEvent);
+}
+
+// Path where Claude Code stores session JSONL transcripts for this project
+const CLAUDE_SESSIONS_DIR = join(
+  process.env.HOME ?? "/root",
+  ".claude",
+  "projects",
+  PROJECT_DIR.replace(/\//g, "-")
+);
+
+const FORK_SYSTEM_PROMPT = [
+  "You are a FORK AGENT — a fast, lightweight watcher running in parallel with the main agent.",
+  "",
+  "SPEED IS YOUR PRIORITY. Be brief. Answer in 1-3 sentences. No preamble, no padding.",
+  "Do NOT over-analyze. Do NOT think through edge cases. Just answer and stop.",
+  "",
+  "Your job: answer quick questions and peek at the main agent's progress via its session transcript.",
+  "",
+  "DENY immediately (one sentence explanation) any request that would take more than ~30 seconds:",
+  "• Compiling / building anything (kernels, projects, binaries)",
+  "• Downloads or network fetches",
+  "• Fuzzing, long analysis, heavy computations",
+  "• Anything that would block you and prevent monitoring/killing the main agent",
+  "",
+  "ALLOW:",
+  "• Reading files (especially JSONL transcripts to report main agent progress)",
+  "• Short factual answers",
+  "• Reporting on what the main agent is currently doing",
+  "",
+  `Main session info lives at: /project/.claude/claudeclaw/session.json`,
+  `Session JSONL transcripts dir: ${CLAUDE_SESSIONS_DIR}`,
+  "To peek at main agent progress: read session.json for the session ID, then read the .jsonl file in the transcripts dir.",
+  "Each JSONL line is a turn. The last few lines show what the main agent is currently doing.",
+].join("\n");
+
+const FORK_MODEL = "claude-haiku-4-5-20251001";
+
+// Forks are lightweight watchers — hard-kill after 2 minutes.
+const FORK_TIMEOUT_MS = 120_000;
+
+/**
+ * Run a fork agent — parallel, outside the main serial queue, no main session.
+ *
+ * Spawns directly rather than through runClaudeOnce so the fork proc is never
+ * added to mainActiveProcs — /kill must only target main-queue runs, not forks.
+ * Uses the same collectStream + timeout pattern as the main runner so forks
+ * cannot hang indefinitely or grow memory unbounded.
+ */
+export async function runFork(prompt: string): Promise<RunResult> {
+  const { api } = getSettings();
+  const baseEnv = cleanSpawnEnv();
+
+  const args = [
+    CLAUDE_EXECUTABLE, "-p", prompt,
+    "--output-format", "json",
+    "--dangerously-skip-permissions",
+    "--model", FORK_MODEL,
+    "--append-system-prompt", FORK_SYSTEM_PROMPT,
+  ];
+
+  const proc = Bun.spawn(args, {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: buildChildEnv(baseEnv, FORK_MODEL, api),
+  });
+
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      try { proc.kill(); } catch {}
+      reject(new Error(`Fork timed out after ${FORK_TIMEOUT_MS / 1000}s`));
+    }, FORK_TIMEOUT_MS);
+  });
+
+  let rawStdout: string;
+  let rawStderr: string;
+  let exitCode: number;
+
+  try {
+    [rawStdout, rawStderr] = await Promise.race([
+      Promise.all([
+        collectStream(proc.stdout as ReadableStream<Uint8Array>, MAX_OUTPUT_BYTES),
+        collectStream(proc.stderr as ReadableStream<Uint8Array>, MAX_OUTPUT_BYTES),
+      ]),
+      timeoutPromise,
+    ]) as [string, string];
+    if (timeoutId) clearTimeout(timeoutId);
+    await proc.exited;
+    exitCode = proc.exitCode ?? 1;
+  } catch (err) {
+    if (timeoutId) clearTimeout(timeoutId);
+    return { stdout: "", stderr: String(err), exitCode: 1 };
+  }
+
+  let stdout = rawStdout;
+  if (exitCode === 0) {
+    try {
+      const json = JSON.parse(rawStdout);
+      stdout = json.result ?? rawStdout;
+    } catch {}
+  }
+
+  return { stdout, stderr: rawStderr, exitCode };
 }
 
 /**
