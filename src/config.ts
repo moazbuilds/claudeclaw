@@ -78,7 +78,7 @@ const DEFAULT_SETTINGS: Settings = {
     excludeWindows: [],
     forwardToTelegram: true,
   },
-  telegram: { token: "", allowedUserIds: [], listenChats: [], receiveEnabled: true },
+  telegram: { token: "", allowedUserIds: [], listenChats: [], receiveEnabled: true, dmIsolation: "shared" },
   discord: { token: "", allowedUserIds: [], listenChannels: [], listenGuilds: [], imageOutputRoots: [] },
   slack: { botToken: "", appToken: "", allowedUserIds: [], listenChannels: [] },
   security: { level: "moderate", allowedTools: [], disallowedTools: [] },
@@ -111,6 +111,12 @@ export interface TelegramConfig {
   listenChats: number[];
   /** When false, skip Telegram polling (incoming messages). Useful for send-only instances. Default: true */
   receiveEnabled: boolean;
+  /**
+   * Controls session isolation for Telegram DMs.
+   * - "shared": all DMs share the global session (matches Discord DM behaviour). Default.
+   * - "perUser": each DM user gets their own isolated session.
+   */
+  dmIsolation: "shared" | "perUser";
 }
 
 export interface DiscordConfig {
@@ -327,6 +333,7 @@ function parseSettings(
       allowedUserIds: raw.telegram?.allowedUserIds ?? [],
       listenChats: Array.isArray(raw.telegram?.listenChats) ? raw.telegram.listenChats.map(Number) : [],
       receiveEnabled: raw.telegram?.receiveEnabled !== false,
+      dmIsolation: raw.telegram?.dmIsolation === "perUser" ? "perUser" : "shared",
     },
     discord: {
       token: process.env.DISCORD_TOKEN?.trim() || (typeof raw.discord?.token === "string" ? raw.discord.token.trim() : ""),
