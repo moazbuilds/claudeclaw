@@ -1,8 +1,9 @@
-import { ensureProjectClaudeMd, run, runUserMessage, compactCurrentSession, isRateLimited, getRateLimitResetAt } from "../runner";
+import { ensureProjectClaudeMd, run, runUserMessage, compactCurrentSession, compactCurrentThreadSession, isRateLimited, getRateLimitResetAt } from "../runner";
 import { extractErrorDetail } from "../messaging";
 import { getSettings, loadSettings } from "../config";
 import { transcribeAudioToText } from "../whisper";
 import { resetSession, resetFallbackSession, peekSession } from "../sessions";
+import { peekThreadSession, removeThreadSession } from "../sessionManager";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
@@ -718,6 +719,21 @@ async function handleMyChatMember(update: TelegramMyChatMemberUpdate): Promise<v
   }
 }
 
+function getTelegramSessionKey(
+  chatId: number,
+  threadId: number | undefined,
+  userId: number | undefined,
+  isPrivate: boolean,
+  dmIsolation: "shared" | "perUser",
+): string | undefined {
+  if (isPrivate) {
+    if (dmIsolation === "perUser" && userId !== undefined) return `tg:dm:${userId}`;
+    return undefined;
+  }
+  if (threadId !== undefined) return `tg:${chatId}:${threadId}`;
+  return `tg:${chatId}`;
+}
+
 // --- Message handler ---
 
 async function handleMessage(message: TelegramMessage): Promise<void> {
@@ -732,6 +748,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
   const hasImage = Boolean((message.photo && message.photo.length > 0) || isImageDocument(message.document));
   const hasVoice = Boolean(message.voice || message.audio || isAudioDocument(message.document));
   const hasDocument = Boolean(message.document && isDocumentAttachment(message.document));
+  const sessionKey = getTelegramSessionKey(chatId, threadId, userId, isPrivate, config.dmIsolation);
 
   if (!isPrivate && !isGroup) return;
 
@@ -773,21 +790,29 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
   }
 
   if (command === "/reset") {
-    await resetSession();
-    await resetFallbackSession();
-    await sendMessage(config.token, chatId, "Global session reset. Next message starts fresh.", threadId);
+    if (sessionKey) {
+      await removeThreadSession(sessionKey);
+      await resetFallbackSession(undefined, sessionKey);
+      await sendMessage(config.token, chatId, "Session reset. Next message starts fresh.", threadId);
+    } else {
+      await resetSession();
+      await resetFallbackSession();
+      await sendMessage(config.token, chatId, "Global session reset. Next message starts fresh.", threadId);
+    }
     return;
   }
 
   if (command === "/compact") {
     await sendMessage(config.token, chatId, "⏳ Compacting session...", threadId);
-    const result = await compactCurrentSession();
+    const result = sessionKey
+      ? await compactCurrentThreadSession(sessionKey)
+      : await compactCurrentSession();
     await sendMessage(config.token, chatId, result.message, threadId);
     return;
   }
 
   if (command === "/status") {
-    const session = await peekSession();
+    const session = sessionKey ? await peekThreadSession(sessionKey) : await peekSession();
     const settings = getSettings();
     if (!session) {
       await sendMessage(config.token, chatId, "📊 No active session.", threadId);
@@ -808,7 +833,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
   }
 
   if (command === "/context") {
-    const session = await peekSession();
+    const session = sessionKey ? await peekThreadSession(sessionKey) : await peekSession();
     if (!session) {
       await sendMessage(config.token, chatId, "No active session.", threadId);
       return;
@@ -1012,7 +1037,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
       );
     }
     const prefixedPrompt = promptParts.join("\n");
-    const result = await runUserMessage("telegram", prefixedPrompt);
+    const result = await runUserMessage("telegram", prefixedPrompt, sessionKey);
 
     if (result.exitCode !== 0) {
       const isTimedOut = result.exitCode === 124;
