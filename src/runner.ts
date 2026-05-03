@@ -260,23 +260,29 @@ function enqueue<T>(fn: () => Promise<T>, threadId?: string): Promise<T> {
   return task;
 }
 
-// Active process tracking — allows kill from outside
-let activeProc: ReturnType<typeof Bun.spawn> | null = null;
+// Track active main-queue subprocesses so /kill targets them exclusively.
+// Using a Set because per-thread queues run in parallel — multiple main
+// runs can be in-flight at the same time. Fork procs are excluded: they run
+// outside the main queue and must not be killed by /kill.
+const mainActiveProcs = new Set<ReturnType<typeof Bun.spawn>>();
 
-/** Kill the currently running claude subprocess. Returns true if something was killed. */
+/** Kill all running main-queue claude subprocesses. Returns true if anything was killed. */
 export function killActive(): boolean {
-  if (!activeProc) return false;
-  try { activeProc.kill(); } catch {}
-  activeProc = null;
+  if (mainActiveProcs.size === 0) return false;
+  for (const proc of mainActiveProcs) {
+    try { proc.kill(); } catch {}
+  }
+  mainActiveProcs.clear();
   return true;
 }
 
-// Tracks whether the main serial queue is currently executing
-let mainRunning = false;
+// Counter rather than boolean: per-thread queues run in parallel so
+// multiple main runs can be in-flight simultaneously.
+let mainRunCount = 0;
 
-/** True while the main agent is processing a task (excludes fork). */
+/** True while any main-queue agent is processing a task (excludes fork). */
 export function isMainBusy(): boolean {
-  return mainRunning;
+  return mainRunCount > 0;
 }
 
 function extractRateLimitMessage(stdout: string, stderr: string): string | null {
@@ -405,7 +411,7 @@ async function runClaudeOnce(
     ...(cwd ? { cwd } : {}),
   });
 
-  activeProc = proc;
+  mainActiveProcs.add(proc);
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeoutId = setTimeout(() => reject(new Error(`Claude session timed out after ${timeoutMs / 1000}s`)), timeoutMs);
@@ -422,7 +428,7 @@ async function runClaudeOnce(
 
     if (timeoutId) clearTimeout(timeoutId);
     await proc.exited;
-    if (activeProc === proc) activeProc = null;
+    mainActiveProcs.delete(proc);
 
     return {
       rawStdout,
@@ -431,7 +437,7 @@ async function runClaudeOnce(
     };
   } catch (err) {
     if (timeoutId) clearTimeout(timeoutId);
-    if (activeProc === proc) activeProc = null;
+    mainActiveProcs.delete(proc);
     // Kill the hung process
     try { proc.kill("SIGTERM"); } catch {}
     setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 5000);
@@ -474,7 +480,7 @@ async function runClaudeStream(
     ...(cwd ? { cwd } : {}),
   });
 
-  activeProc = proc;
+  mainActiveProcs.add(proc);
   let sessionId: string | undefined;
   let resultText = "";
   let stderr = "";
@@ -561,11 +567,11 @@ async function runClaudeStream(
     ]);
     if (streamJsonTimeoutId) clearTimeout(streamJsonTimeoutId);
     await proc.exited;
-    if (activeProc === proc) activeProc = null;
+    mainActiveProcs.delete(proc);
     return { rawStdout: resultText, stderr: stderr.trim(), exitCode: proc.exitCode ?? 1, sessionId };
   } catch (err) {
     if (streamJsonTimeoutId) clearTimeout(streamJsonTimeoutId);
-    if (activeProc === proc) activeProc = null;
+    mainActiveProcs.delete(proc);
     try { proc.kill("SIGTERM"); } catch {}
     setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 5000);
     const message = err instanceof Error ? err.message : String(err);
@@ -625,7 +631,7 @@ async function runClaudeStreaming(
     env: buildChildEnv(baseEnv, model, api),
   });
 
-  activeProc = proc;
+  mainActiveProcs.add(proc);
   const stderrPromise = new Response(proc.stderr).text();
 
   let finalResult = "";
@@ -700,7 +706,7 @@ async function runClaudeStreaming(
   }
 
   await proc.exited;
-  if (activeProc === proc) activeProc = null;
+  mainActiveProcs.delete(proc);
 
   const stderr = await stderrPromise;
   // Also check stderr for rate limit signals
@@ -982,7 +988,7 @@ async function execClaude(
   onChunk?: (text: string) => void,
   onToolEvent?: (line: string) => void
 ): Promise<RunResult> {
-  mainRunning = true;
+  mainRunCount++;
   try {
   await mkdir(LOGS_DIR, { recursive: true });
 
@@ -1373,7 +1379,7 @@ async function execClaude(
 
   return result;
   } finally {
-    mainRunning = false;
+    mainRunCount--;
   }
 }
 
@@ -1659,9 +1665,15 @@ const FORK_SYSTEM_PROMPT = [
 
 const FORK_MODEL = "claude-haiku-4-5-20251001";
 
-/** Run a fork agent — parallel, does NOT touch the main serial queue or main session. */
+/**
+ * Run a fork agent — parallel, outside the main serial queue, no main session.
+ *
+ * Spawns directly rather than through runClaudeOnce so the fork proc is never
+ * added to mainActiveProcs — /kill must only target main-queue runs, not forks.
+ */
 export async function runFork(prompt: string): Promise<RunResult> {
   const { api } = getSettings();
+  const baseEnv = cleanSpawnEnv();
 
   const args = [
     CLAUDE_EXECUTABLE, "-p", prompt,
@@ -1671,19 +1683,27 @@ export async function runFork(prompt: string): Promise<RunResult> {
     "--append-system-prompt", FORK_SYSTEM_PROMPT,
   ];
 
-  const baseEnv = cleanSpawnEnv();
+  const proc = Bun.spawn(args, {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: buildChildEnv(baseEnv, FORK_MODEL, api),
+  });
 
-  const exec = await runClaudeOnce(args, FORK_MODEL, api, baseEnv);
+  const [rawStdout, rawStderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  await proc.exited;
 
-  let stdout = exec.rawStdout;
-  if (exec.exitCode === 0) {
+  let stdout = rawStdout;
+  if ((proc.exitCode ?? 1) === 0) {
     try {
-      const json = JSON.parse(exec.rawStdout);
-      stdout = json.result ?? exec.rawStdout;
+      const json = JSON.parse(rawStdout);
+      stdout = json.result ?? rawStdout;
     } catch {}
   }
 
-  return { stdout, stderr: exec.stderr, exitCode: exec.exitCode };
+  return { stdout, stderr: rawStderr, exitCode: proc.exitCode ?? 1 };
 }
 
 /**
