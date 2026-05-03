@@ -1665,11 +1665,16 @@ const FORK_SYSTEM_PROMPT = [
 
 const FORK_MODEL = "claude-haiku-4-5-20251001";
 
+// Forks are lightweight watchers — hard-kill after 2 minutes.
+const FORK_TIMEOUT_MS = 120_000;
+
 /**
  * Run a fork agent — parallel, outside the main serial queue, no main session.
  *
  * Spawns directly rather than through runClaudeOnce so the fork proc is never
  * added to mainActiveProcs — /kill must only target main-queue runs, not forks.
+ * Uses the same collectStream + timeout pattern as the main runner so forks
+ * cannot hang indefinitely or grow memory unbounded.
  */
 export async function runFork(prompt: string): Promise<RunResult> {
   const { api } = getSettings();
@@ -1689,21 +1694,43 @@ export async function runFork(prompt: string): Promise<RunResult> {
     env: buildChildEnv(baseEnv, FORK_MODEL, api),
   });
 
-  const [rawStdout, rawStderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
-  await proc.exited;
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      try { proc.kill(); } catch {}
+      reject(new Error(`Fork timed out after ${FORK_TIMEOUT_MS / 1000}s`));
+    }, FORK_TIMEOUT_MS);
+  });
+
+  let rawStdout: string;
+  let rawStderr: string;
+  let exitCode: number;
+
+  try {
+    [rawStdout, rawStderr] = await Promise.race([
+      Promise.all([
+        collectStream(proc.stdout as ReadableStream<Uint8Array>, MAX_OUTPUT_BYTES),
+        collectStream(proc.stderr as ReadableStream<Uint8Array>, MAX_OUTPUT_BYTES),
+      ]),
+      timeoutPromise,
+    ]) as [string, string];
+    if (timeoutId) clearTimeout(timeoutId);
+    await proc.exited;
+    exitCode = proc.exitCode ?? 1;
+  } catch (err) {
+    if (timeoutId) clearTimeout(timeoutId);
+    return { stdout: "", stderr: String(err), exitCode: 1 };
+  }
 
   let stdout = rawStdout;
-  if ((proc.exitCode ?? 1) === 0) {
+  if (exitCode === 0) {
     try {
       const json = JSON.parse(rawStdout);
       stdout = json.result ?? rawStdout;
     } catch {}
   }
 
-  return { stdout, stderr: rawStderr, exitCode: proc.exitCode ?? 1 };
+  return { stdout, stderr: rawStderr, exitCode };
 }
 
 /**

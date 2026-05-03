@@ -1221,32 +1221,49 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
           console.error(`[Telegram] Failed to send voice ${vp} for ${label}: ${err instanceof Error ? err.message : err}`);
         }
       }
+      // Whether the response is directive-only (attachment is the output, text is empty)
+      const isDirectiveOnly = !cleanedText && (buttonRows || filePaths.length > 0 || voicePaths.length > 0 || hadVoiceDirective);
+
       if (buttonRows) {
-        // Route on buttonRows regardless of whether cleanedText is empty
+        // Delete the stream preview before sending the button message — the
+        // preview shows raw streaming text (or the raw [buttons:] directive)
+        // which would otherwise sit above the button message as a duplicate.
+        if (streamMsgId) {
+          await callApi(config.token, "deleteMessage", {
+            chat_id: chatId, message_id: streamMsgId,
+          }).catch(() => {});
+        }
         await sendMessageWithButtons(config.token, chatId, cleanedText, buttonRows, threadId);
       } else if (streamMsgId) {
-        // Edit the streaming message with final formatted HTML.
-        // editStream() already set the message to the correct plain text content,
-        // so if all edits fail (e.g. "message is not modified"), do NOT send a new
-        // message — the user already sees the correct content and a sendMessage
-        // would create a duplicate.
-        const finalText = cleanedText || "(empty response)";
-        const html = markdownToTelegramHtml(normalizeTelegramText(finalText));
-        await callApi(config.token, "editMessageText", {
-          chat_id: chatId, message_id: streamMsgId,
-          text: html.slice(0, 4096), parse_mode: "HTML",
-        }).catch(() => callApi(config.token, "editMessageText", {
-          chat_id: chatId, message_id: streamMsgId,
-          text: finalText.slice(0, 4096),
-        }).catch(() => {
-          // If all edits fail and the stream message has tool output (verbose),
-          // send the final response as a new message. But if there were no tool
-          // lines, the stream message already shows the correct text — "not
-          // modified" just means it's already right, so don't send a duplicate.
-          if (verbose && hadToolLines) {
-            return sendMessage(config.token, chatId, finalText, threadId);
-          }
-        }));
+        if (isDirectiveOnly) {
+          // The attachment (file / voice) IS the response — delete the stream
+          // preview so the user doesn't see "(empty response)" as a stray message.
+          await callApi(config.token, "deleteMessage", {
+            chat_id: chatId, message_id: streamMsgId,
+          }).catch(() => {});
+        } else {
+          // Normal text response: edit stream with final formatted HTML.
+          // editStream() already set the message to the correct plain text, so if
+          // all edits fail ("message is not modified") do NOT send a new message —
+          // the user already sees the correct content and a sendMessage would duplicate.
+          const finalText = cleanedText || "(empty response)";
+          const html = markdownToTelegramHtml(normalizeTelegramText(finalText));
+          await callApi(config.token, "editMessageText", {
+            chat_id: chatId, message_id: streamMsgId,
+            text: html.slice(0, 4096), parse_mode: "HTML",
+          }).catch(() => callApi(config.token, "editMessageText", {
+            chat_id: chatId, message_id: streamMsgId,
+            text: finalText.slice(0, 4096),
+          }).catch(() => {
+            // If all edits fail and the stream message has tool output (verbose),
+            // send the final response as a new message. But if there were no tool
+            // lines, the stream message already shows the correct text — "not
+            // modified" just means it's already right, so don't send a duplicate.
+            if (verbose && hadToolLines) {
+              return sendMessage(config.token, chatId, finalText, threadId);
+            }
+          }));
+        }
       } else if (cleanedText) {
         await sendMessage(config.token, chatId, cleanedText, threadId);
       }
