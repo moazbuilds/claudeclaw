@@ -1,4 +1,5 @@
 import { ensureProjectClaudeMd, run, runUserMessage, compactCurrentSession, compactCurrentThreadSession, agentDirKey } from "../runner";
+import { wrapUntrusted } from "../prompt-safety";
 import { extractErrorDetail } from "../messaging";
 import { loadPendingResume } from "../pending-resume";
 import { getSettings, loadSettings, DEFAULT_IMAGE_OUTPUT_ROOT } from "../config";
@@ -772,7 +773,7 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
   );
 
   // Authorization check
-  if (config.allowedUserIds.length > 0 && !config.allowedUserIds.includes(userId)) {
+  if (config.allowedUserIds.length === 0 || !config.allowedUserIds.includes(userId)) {
     if (isDM) {
       await sendMessage(config.token, channelId, "Unauthorized.");
     } else {
@@ -888,7 +889,7 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
         const resp = await fetch(textAttachments[0].url);
         if (resp.ok) {
           const raw = await resp.text();
-          textContent = raw.length > 51200 ? raw.slice(0, 51200) + "\n...[truncated]" : raw;
+          textContent = raw.length > 2048 ? raw.slice(0, 2048) + "\n...[truncated]" : raw;
         }
       } catch (err) {
         console.error(`[Discord] Failed to fetch text attachment for ${label}: ${err instanceof Error ? err.message : err}`);
@@ -983,9 +984,9 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
       const args = cleanContent.trim().slice(command!.length).trim();
       promptParts.push(`<command-name>${command}</command-name>`);
       promptParts.push(skillContext);
-      if (args) promptParts.push(`User arguments: ${args}`);
+      if (args) promptParts.push(`User arguments: ${wrapUntrusted("skill-arguments", args)}`);
     } else if (cleanContent.trim()) {
-      promptParts.push(`Message: ${cleanContent}`);
+      promptParts.push(`Message: ${wrapUntrusted("user-message", cleanContent)}`);
     }
     if (imagePath) {
       promptParts.push(`Image path: ${imagePath}`);
@@ -994,7 +995,7 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
       promptParts.push("The user attached an image, but downloading it failed. Respond and ask them to resend.");
     }
     if (voiceTranscript) {
-      promptParts.push(`Voice transcript: ${voiceTranscript}`);
+      promptParts.push(`Voice transcript: ${wrapUntrusted("voice-transcript", voiceTranscript, 2000)}`);
       promptParts.push("The user attached voice audio. Use the transcript as their spoken message.");
     } else if (hasVoice) {
       promptParts.push(
@@ -1002,7 +1003,7 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
       );
     }
     if (textContent) {
-      promptParts.push(`Attached text file (${textAttachments[0].filename}):\n${textContent}`);
+      promptParts.push(`Attached text file (${textAttachments[0].filename}):\n${wrapUntrusted("user-attachment", textContent, 2000)}`);
     } else if (hasText) {
       promptParts.push("The user attached a text file, but downloading it failed. Ask them to resend.");
     }
@@ -1095,7 +1096,7 @@ async function handleInteractionCreate(token: string, interaction: DiscordIntera
   const config = getSettings().discord;
   const actorId = interaction.member?.user?.id ?? interaction.user?.id;
 
-  if (config.allowedUserIds.length > 0 && (!actorId || !config.allowedUserIds.includes(actorId))) {
+  if (config.allowedUserIds.length === 0 || !actorId || !config.allowedUserIds.includes(actorId)) {
     await respondToInteraction(interaction, { content: "Unauthorized.", flags: 64 });
     return;
   }
@@ -1291,6 +1292,12 @@ async function handleGuildCreate(token: string, guild: DiscordGuild): Promise<vo
   // Skip guilds we were already in at READY time
   if (readyGuildIds?.has(guild.id)) return;
 
+  // Only post a welcome message if the guild is in the allowedGuilds list
+  if (config.allowedGuilds.length === 0 || !config.allowedGuilds.includes(guild.id)) {
+    console.log(`[Discord] Joined guild ${guild.id} (${guild.name}) but not in allowedGuilds; staying quiet.`);
+    return;
+  }
+
   const channelId = guild.system_channel_id;
   if (!channelId) return;
 
@@ -1298,7 +1305,7 @@ async function handleGuildCreate(token: string, guild: DiscordGuild): Promise<vo
 
   const eventPrompt =
     `[Discord system event] I was added to a guild.\n` +
-    `Guild name: ${guild.name}\n` +
+    `Guild name: ${wrapUntrusted("guild-name", guild.name)}\n` +
     `Guild id: ${guild.id}\n` +
     "Write a short first message for the server. Confirm I was added and explain how to trigger me (mention or reply).";
 

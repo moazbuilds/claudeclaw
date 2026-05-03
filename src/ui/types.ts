@@ -19,6 +19,7 @@ export interface WebServerHandle {
 export interface StartWebUiOptions {
   host: string;
   port: number;
+  token: string;
   getSnapshot: () => WebSnapshot;
   onHeartbeatEnabledChanged?: (enabled: boolean) => void | Promise<void>;
   onHeartbeatSettingsChanged?: (patch: {
