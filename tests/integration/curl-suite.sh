@@ -35,8 +35,22 @@ echo_test "bad Host → 421"
 code=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $TOKEN" -H "Host: evil.com" "$BASE/api/state")
 assert_eq "$code" "421"; echo "OK"
 
+echo "Health check tests"
+echo_test "/api/health works without auth"
+code=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/api/health")
+assert_eq "$code" "200"; echo "OK"
+
 echo "Origin tests"
-echo_test "POST with cross-origin Origin → 403"
+echo_test "POST with cross-origin http Origin → 403"
+code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Origin: http://evil.com" \
+  -H "Content-Type: application/json" \
+  -d '{"time":"00:00","prompt":"x"}' \
+  "$BASE/api/jobs/quick")
+assert_eq "$code" "403"; echo "OK"
+
+echo_test "POST with cross-origin https Origin → 403"
 code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
   -H "Authorization: Bearer $TOKEN" \
   -H "Origin: https://evil.com" \
@@ -44,6 +58,15 @@ code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
   -d '{"time":"00:00","prompt":"x"}' \
   "$BASE/api/jobs/quick")
 assert_eq "$code" "403"; echo "OK"
+
+echo_test "POST with same-origin https Origin → 200"
+code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Origin: https://127.0.0.1:${PORT}" \
+  -H "Content-Type: application/json" \
+  -d '{"time":"00:00","prompt":"x"}' \
+  "$BASE/api/jobs/quick")
+assert_eq "$code" "200"; echo "OK"
 
 echo_test "POST with no Origin → 200 (curl-style access)"
 code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \

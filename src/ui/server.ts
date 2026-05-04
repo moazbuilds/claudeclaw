@@ -38,12 +38,13 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
         }
       }
 
-      // Task 1.3: CSRF defense — reject cross-origin requests for state-changing methods
+      // Task 1.3: CSRF defense — reject cross-origin requests for state-changing methods.
+      // Accept both http and https origins for validated hosts.
       if (req.method === "POST" || req.method === "DELETE") {
         const origin = req.headers.get("origin");
         if (origin) {
-          const expectedOrigin = `http://${host}`;
-          if (origin !== expectedOrigin) {
+          const allowedOrigins = new Set([`http://${host}`, `https://${host}`]);
+          if (!allowedOrigins.has(origin)) {
             return new Response("Bad Origin", { status: 403 });
           }
         }
@@ -53,6 +54,11 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
         return new Response(htmlPage(), {
           headers: { "Content-Type": "text/html; charset=utf-8" },
         });
+      }
+
+      // Health check is intentionally pre-auth so monitors and load balancers work unauthenticated.
+      if (url.pathname === "/api/health") {
+        return json({ ok: true, now: Date.now() });
       }
 
       // Task 1.1: Require bearer token for all /api/* routes.
@@ -68,10 +74,6 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
             headers: { "Content-Type": "application/json" },
           });
         }
-      }
-
-      if (url.pathname === "/api/health") {
-        return json({ ok: true, now: Date.now() });
       }
 
       if (url.pathname === "/api/state") {

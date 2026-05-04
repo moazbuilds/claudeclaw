@@ -70,6 +70,25 @@ bun run bump:marketplace-version
 
 Docs-only and other non-shipped changes do not require these bumps.
 
+## Upgrading
+
+### v1.0.26 — Allowlist behavior change (Telegram & Discord)
+
+Prior to this release, an empty `allowedUserIds` list meant **allow everyone**. That was a potential security vulnerability; any Telegram or Discord user could drive the daemon.
+
+**New behavior:** an empty list means **block everyone**. The daemon will refuse to start if a bot token is configured without at least one allowed user ID.
+
+**Migration:** add your user ID(s) to `settings.json` before upgrading:
+
+```json
+"telegram": { "allowedUserIds": [123456789] },
+"discord":  { "allowedUserIds": ["987654321012345678"] }
+```
+
+Run `claudeclaw config` for guided setup if you're unsure of your user ID.
+
+---
+
 ## What Would Be Built Next?
 
 > **Mega Post:** Help shape the next ClaudeClaw features.

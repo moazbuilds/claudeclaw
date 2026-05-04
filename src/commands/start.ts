@@ -580,17 +580,22 @@ export async function start(args: string[] = []) {
     throw lastError;
   }
 
-  // Task 1.5: Refuse to start if Telegram token is set but allowlist is empty
+  // Allowlists are now fail-closed: an empty list blocks all users rather than allowing all.
+  // Deployments that previously relied on an empty allowedUserIds meaning "allow everyone"
+  // must add explicit IDs to continue working.
   if (currentSettings.telegram.token && currentSettings.telegram.allowedUserIds.length === 0) {
     console.error("Refusing to start: telegram.token is set but telegram.allowedUserIds is empty.");
-    console.error("Add at least one allowed user ID to .claude/claudeclaw/settings.json or remove the token.");
+    console.error("The allowlist is now fail-closed; an empty list blocks all users.");
+    console.error("Add your Telegram user ID(s) to telegram.allowedUserIds in .claude/claudeclaw/settings.json.");
+    console.error("Run `claudeclaw config` for guided setup, or see the README for migration steps.");
     process.exit(1);
   }
 
-  // Task 1.6: Refuse to start if Discord token is set but allowlist is empty
   if (currentSettings.discord.token && currentSettings.discord.allowedUserIds.length === 0) {
     console.error("Refusing to start: discord.token is set but discord.allowedUserIds is empty.");
-    console.error("Add at least one allowed user ID to .claude/claudeclaw/settings.json or remove the token.");
+    console.error("The allowlist is now fail-closed; an empty list blocks all users.");
+    console.error("Add your Discord user ID(s) to discord.allowedUserIds in .claude/claudeclaw/settings.json.");
+    console.error("Run `claudeclaw config` for guided setup, or see the README for migration steps.");
     process.exit(1);
   }
 
