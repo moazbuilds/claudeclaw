@@ -624,7 +624,8 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
   const hasVoice = voiceAttachments.length > 0;
   const hasText = textAttachments.length > 0;
 
-  if (!content.trim() && !hasImage && !hasVoice && !hasText) return;
+  const hasForwardedContent = !!message.message_snapshots?.[0]?.message?.content;
+  if (!content.trim() && !hasImage && !hasVoice && !hasText && !hasForwardedContent) return;
 
   // Strip bot mention from content for cleaner prompt
   let cleanContent = content;
