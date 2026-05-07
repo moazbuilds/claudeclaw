@@ -756,6 +756,9 @@ export async function start(args: string[] = []) {
           name: job.name,
           nextAt: nextCronMatch(job.schedule, now, currentSettings.timezoneOffsetMinutes).getTime(),
           ...(last ? { lastResult: last.result, lastRanAt: last.ranAt } : {}),
+          ...(jobRetryState.get(job.name)
+            ? { failCount: jobRetryState.get(job.name)!.failCount, retryAt: jobRetryState.get(job.name)!.retryAt }
+            : {}),
         };
       }),
       security: currentSettings.security.level,
