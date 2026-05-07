@@ -12,6 +12,10 @@ export interface StateData {
     lastResult?: "ok" | "error" | "skipped";
     /** Unix timestamp (ms) of the most recent completion. Absent until first run. */
     lastRanAt?: number;
+    /** Number of consecutive failures since last success. Present only while retrying. */
+    failCount?: number;
+    /** Unix timestamp (ms) when the next retry fires. Present only while retrying. */
+    retryAt?: number;
   }[];
   security: string;
   telegram: boolean;
