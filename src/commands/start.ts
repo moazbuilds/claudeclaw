@@ -752,13 +752,12 @@ export async function start(args: string[] = []) {
         : undefined,
       jobs: currentJobs.map((job) => {
         const last = jobLastResult.get(job.name);
+        const retryState = jobRetryState.get(job.name);
         return {
           name: job.name,
           nextAt: nextCronMatch(job.schedule, now, currentSettings.timezoneOffsetMinutes).getTime(),
           ...(last ? { lastResult: last.result, lastRanAt: last.ranAt } : {}),
-          ...(jobRetryState.get(job.name)
-            ? { failCount: jobRetryState.get(job.name)!.failCount, retryAt: jobRetryState.get(job.name)!.retryAt }
-            : {}),
+          ...(retryState ? { failCount: retryState.failCount, retryAt: retryState.retryAt } : {}),
         };
       }),
       security: currentSettings.security.level,
