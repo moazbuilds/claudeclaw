@@ -219,6 +219,7 @@ export async function start(args: string[] = []) {
   let hasTriggerFlag = false;
   let telegramFlag = false;
   let discordFlag = false;
+  let slackFlag = false;
   let debugFlag = false;
   let webFlag = false;
   let replaceExistingFlag = false;
@@ -235,6 +236,8 @@ export async function start(args: string[] = []) {
       telegramFlag = true;
     } else if (arg === "--discord") {
       discordFlag = true;
+    } else if (arg === "--slack") {
+      slackFlag = true;
     } else if (arg === "--debug") {
       debugFlag = true;
     } else if (arg === "--web") {
@@ -260,7 +263,7 @@ export async function start(args: string[] = []) {
   }
   const payload = payloadParts.join(" ").trim();
   if (hasPromptFlag && !payload) {
-    console.error("Usage: claudeclaw start --prompt <prompt> [--trigger] [--telegram] [--discord] [--debug] [--web] [--web-port <port>] [--replace-existing]");
+    console.error("Usage: claudeclaw start --prompt <prompt> [--trigger] [--telegram] [--discord] [--slack] [--debug] [--web] [--web-port <port>] [--replace-existing]");
     process.exit(1);
   }
   if (!hasPromptFlag && payload) {
@@ -273,6 +276,10 @@ export async function start(args: string[] = []) {
   }
   if (discordFlag && !hasTriggerFlag) {
     console.error("`--discord` with `start` requires `--trigger`.");
+    process.exit(1);
+  }
+  if (slackFlag && !hasTriggerFlag) {
+    console.error("`--slack` with `start` requires `--trigger`.");
     process.exit(1);
   }
   if (hasPromptFlag && !hasTriggerFlag && (webFlag || webPortFlag !== null)) {
@@ -337,6 +344,7 @@ export async function start(args: string[] = []) {
   await writePidFile();
   let web: WebServerHandle | null = null;
   let discordStopGateway: (() => void) | null = null;
+  let slackStopFn: (() => void) | null = null;
 
   // Plugin system — initialize before gateway start
   const pluginManager = new PluginManager(process.cwd());
@@ -349,6 +357,7 @@ export async function start(args: string[] = []) {
     await pluginManager.stopServices();
     setPluginManager(null);
     if (discordStopGateway) discordStopGateway();
+    if (slackStopFn) slackStopFn();
     if (web) web.stop();
     await teardownStatusline();
     await cleanupPidFile();
@@ -434,6 +443,31 @@ export async function start(args: string[] = []) {
 
   await initDiscord(currentSettings.discord.token);
   if (!discordToken) console.log("  Discord: not configured");
+
+  // --- Slack ---
+  let slackSendToUser: ((userId: string, text: string) => Promise<void>) | null = null;
+  let slackBotToken = "";
+
+  async function initSlack(botToken: string, appToken: string) {
+    if (botToken && appToken && botToken !== slackBotToken) {
+      const { startSlack, sendMessageToUser: slackSend, stopSlack } = await import("./slack");
+      if (slackBotToken) stopSlack();
+      startSlack(debugFlag);
+      slackStopFn = stopSlack;
+      slackSendToUser = (userId, text) => slackSend(botToken, userId, text);
+      slackBotToken = botToken;
+      console.log(`[${ts()}] Slack: enabled`);
+    } else if ((!botToken || !appToken) && slackBotToken) {
+      if (slackStopFn) slackStopFn();
+      slackStopFn = null;
+      slackSendToUser = null;
+      slackBotToken = "";
+      console.log(`[${ts()}] Slack: disabled`);
+    }
+  }
+
+  await initSlack(currentSettings.slack.botToken, currentSettings.slack.appToken);
+  if (!slackBotToken) console.log("  Slack: not configured");
 
   // Wire channel senders into plugin runtime so plugins can send messages
   if (pluginManager.hasPlugins) {
@@ -738,6 +772,9 @@ export async function start(args: string[] = []) {
 
       // Discord changes
       await initDiscord(newSettings.discord.token);
+
+      // Slack changes
+      await initSlack(newSettings.slack.botToken, newSettings.slack.appToken);
     } catch (err) {
       console.error(`[${ts()}] Hot-reload error:`, err);
     }

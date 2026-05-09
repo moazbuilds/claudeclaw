@@ -5,6 +5,7 @@ import { extractErrorDetail } from "../messaging";
 import { listThreadSessions, peekThreadSession, removeThreadSession } from "../sessionManager";
 import { transcribeAudioToText } from "../whisper";
 import { resolveSkillPrompt } from "../skills";
+import { isWizardTrigger, hasActiveWizard, handleWizardInput } from "./plugin-wizard";
 import { mkdir, realpath } from "node:fs/promises";
 import { extname, join, resolve, isAbsolute, sep } from "node:path";
 import { existsSync } from "node:fs";
@@ -972,6 +973,15 @@ async function handleMessage(event: SlackMessage): Promise<void> {
           console.error(`[Slack] Failed to download doc: ${err instanceof Error ? err.message : err}`);
         }
       }
+    }
+
+    // Plugin wizard intercept — /plugin and /claudeclaw:plugin are handled here, not by Claude
+    const wizardCtx = { iface: "slack" as const, scopeId: channelId };
+    const firstWord = cleanText.trim().split(/\s+/, 1)[0].toLowerCase();
+    if ((cleanText.trim().startsWith("/") && isWizardTrigger(firstWord)) || hasActiveWizard(wizardCtx)) {
+      const reply = await handleWizardInput(wizardCtx, cleanText.trim());
+      await sendMessage(config.botToken, channelId, reply, replyThreadTs);
+      return;
     }
 
     // Skill routing

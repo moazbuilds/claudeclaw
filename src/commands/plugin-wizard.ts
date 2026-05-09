@@ -7,7 +7,7 @@ const WIZARD_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const TRIGGER_COMMANDS = new Set(["/plugin", "/claudeclaw:plugin"]);
 
 export interface WizardContext {
-  iface: "discord" | "telegram" | "web";
+  iface: "discord" | "telegram" | "web" | "slack";
   scopeId: string;
   agentName?: string; // recorded for Phase 2 per-agent scoping
 }
