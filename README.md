@@ -87,6 +87,24 @@ Prior to this release, an empty `allowedUserIds` list meant **allow everyone**. 
 
 Run `claudeclaw config` for guided setup if you're unsure of your user ID.
 
+### v1.1.0 — Web UI bearer token gate
+
+All `/api/*` routes (except `/api/health`) now require an `Authorization: Bearer <token>` header. The token is auto-generated on first start and written to `.claude/claudeclaw/web.token`. The daemon also prints the full URL with the token embedded when the web UI starts.
+
+**Migration:** update any scripts that call `/api/state` or other API routes to pass the token:
+
+```
+Authorization: Bearer <contents of .claude/claudeclaw/web.token>
+```
+
+Existing `/api/inject` users who configured `settings.apiToken` are unaffected; that fallback still works.
+
+### v1.1.0 — Discord text-attachment truncation limit reduced
+
+Text attachments sent to the Discord bot are now truncated at **2,048 bytes** (previously 51,200). Payloads over that limit have `…[truncated]` appended silently; there is no config knob to restore the old limit.
+
+**Migration:** if you rely on passing large text files through Discord attachments, switch to gists or another file-sharing mechanism and paste the URL instead.
+
 ---
 
 ## What Would Be Built Next?
