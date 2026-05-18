@@ -6,7 +6,7 @@ export function wrapUntrusted(label: string, content: string, maxLen = 8000): st
   // Defang any opening or closing tag for this label (any ID) inside the content,
   // so attackers cannot inject structure that breaks the wrapper boundary.
   const safe = truncated.replace(
-    new RegExp(`</?untrusted-${label}-[a-z0-9]+>`, "g"),
+    new RegExp(`</?untrusted-${label}-[a-zA-Z0-9_-]+>`, "g"),
     "[redacted-tag]"
   );
   return `<untrusted-${label}-${id}>\n${safe}\n</untrusted-${label}-${id}>`;
