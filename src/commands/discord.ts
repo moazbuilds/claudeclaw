@@ -1,5 +1,6 @@
 import { ensureProjectClaudeMd, run, runUserMessage, compactCurrentSession, compactCurrentThreadSession, agentDirKey } from "../runner";
 import { wrapUntrusted } from "../prompt-safety";
+import { isAllowed } from "../allowlist";
 import { extractErrorDetail } from "../messaging";
 import { loadPendingResume } from "../pending-resume";
 import { getSettings, loadSettings, DEFAULT_IMAGE_OUTPUT_ROOT } from "../config";
@@ -773,7 +774,7 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
   );
 
   // Authorization check
-  if (config.allowedUserIds.length === 0 || !config.allowedUserIds.includes(userId)) {
+  if (!isAllowed(userId, config.allowedUserIds)) {
     if (isDM) {
       await sendMessage(config.token, channelId, "Unauthorized.");
     } else {
@@ -1096,7 +1097,7 @@ async function handleInteractionCreate(token: string, interaction: DiscordIntera
   const config = getSettings().discord;
   const actorId = interaction.member?.user?.id ?? interaction.user?.id;
 
-  if (config.allowedUserIds.length === 0 || !actorId || !config.allowedUserIds.includes(actorId)) {
+  if (!isAllowed(actorId, config.allowedUserIds)) {
     await respondToInteraction(interaction, { content: "Unauthorized.", flags: 64 });
     return;
   }

@@ -1,5 +1,6 @@
 import { ensureProjectClaudeMd, run, runUserMessage, runFork, killActive, isMainBusy, compactCurrentSession, compactCurrentThreadSession, isRateLimited, getRateLimitResetAt, getPermissionMode, setPermissionMode, type PermissionMode } from "../runner";
 import { wrapUntrusted } from "../prompt-safety";
+import { isAllowed } from "../allowlist";
 import { extractErrorDetail } from "../messaging";
 import { loadPendingResume } from "../pending-resume";
 import { getSettings, loadSettings } from "../config";
@@ -826,7 +827,7 @@ async function handleMyChatMember(update: TelegramMyChatMemberUpdate): Promise<v
   if (!isGroup || !wasOut || !isIn) return;
 
   const adderId = update.from.id;
-  if (config.allowedUserIds.length === 0 || !config.allowedUserIds.includes(adderId)) {
+  if (!isAllowed(adderId, config.allowedUserIds)) {
     console.log(`[Telegram] Unauthorized add to ${chat.id} by ${adderId}; leaving.`);
     await callApi(config.token, "leaveChat", { chat_id: chat.id }).catch(() => {});
     return;
@@ -900,7 +901,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     `Handle message chat=${chatId} type=${chatType} from=${userId ?? "unknown"} reason=${triggerReason} text="${(text ?? "").slice(0, 80)}"`
   );
 
-  if (config.allowedUserIds.length === 0 || !userId || !config.allowedUserIds.includes(userId)) {
+  if (!isAllowed(userId, config.allowedUserIds)) {
     if (isPrivate) {
       await sendMessage(config.token, chatId, "Unauthorized.");
     } else {
@@ -1421,7 +1422,7 @@ async function handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> 
 
   // Enforce allowlist on callback queries (same policy as regular messages)
   const callbackUserId = query.from.id;
-  if (config.allowedUserIds.length === 0 || !config.allowedUserIds.includes(callbackUserId)) {
+  if (!isAllowed(callbackUserId, config.allowedUserIds)) {
     await callApi(config.token, "answerCallbackQuery", {
       callback_query_id: query.id,
       text: "Unauthorized.",

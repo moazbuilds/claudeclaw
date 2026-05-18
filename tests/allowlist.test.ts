@@ -1,8 +1,5 @@
 import { test, expect } from "bun:test";
-
-function isAllowed(userId: number | undefined, allowed: number[]): boolean {
-  return !!userId && allowed.length > 0 && allowed.includes(userId);
-}
+import { isAllowed } from "../src/allowlist";
 
 test("empty allowlist denies everything", () => {
   expect(isAllowed(123, [])).toBe(false);
