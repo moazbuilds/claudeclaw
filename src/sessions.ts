@@ -103,6 +103,21 @@ export async function markCompactWarned(agentName?: string): Promise<void> {
   await saveSession(existing, agentName);
 }
 
+/**
+ * Reset turn-tracking state after a successful compact. The Claude
+ * session ID is preserved (compact happens server-side inside the same
+ * session), but its in-memory turn count and the one-shot
+ * `compactWarned` flag should restart so the auto-compact threshold
+ * doesn't fire again on the very next turn.
+ */
+export async function resetTurnTracking(agentName?: string): Promise<void> {
+  const existing = await loadSession(agentName);
+  if (!existing) return;
+  existing.turnCount = 0;
+  existing.compactWarned = false;
+  await saveSession(existing, agentName);
+}
+
 export async function resetSession(agentName?: string): Promise<void> {
   if (!agentName) current = null;
   try {

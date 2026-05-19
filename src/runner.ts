@@ -8,6 +8,7 @@ import {
   resetSession,
   incrementTurn,
   markCompactWarned,
+  resetTurnTracking,
   getFallbackSession,
   createFallbackSession,
   resetFallbackSession,
@@ -23,6 +24,7 @@ import {
   removeThreadSession,
   incrementThreadTurn,
   markThreadCompactWarned,
+  resetThreadTurnTracking,
 } from "./sessionManager";
 import { getSettings, DEFAULT_SESSION_TIMEOUT_MS, type ModelConfig, type SecurityConfig } from "./config";
 import { buildClockPromptPrefix } from "./timezone";
@@ -122,7 +124,9 @@ export type CompactEvent =
   | { type: "warn"; turnCount: number }
   | { type: "auto-compact-start" }
   | { type: "auto-compact-done"; success: boolean }
-  | { type: "auto-compact-retry"; success: boolean; stdout: string; stderr: string; exitCode: number };
+  | { type: "auto-compact-retry"; success: boolean; stdout: string; stderr: string; exitCode: number }
+  | { type: "auto-compact-by-turns-start"; turnCount: number; threshold: number }
+  | { type: "auto-compact-by-turns-done"; success: boolean; turnCount: number };
 
 type CompactEventListener = (event: CompactEvent) => void;
 const compactListeners: CompactEventListener[] = [];
@@ -1417,6 +1421,53 @@ async function execClaude(
         await markCompactWarned(agentName);
       }
       emitCompactEvent({ type: "warn", turnCount });
+    }
+
+    // --- Auto-compact on turn-count threshold ---
+    // Long-lived sessions (e.g. Telegram threads the daemon resumes for
+    // weeks) accumulate the full transcript on every turn, so a 600-turn
+    // session pays the input-token cost of 600 prior turns for every new
+    // prompt. The plan's rolling window hits its cap and Claude returns
+    // "Credit balance is too low". Auto-compact keeps the running cost
+    // bounded: after the threshold, fire one /compact, reset the turn
+    // counter, and the next prompt starts back at baseline. The user
+    // gets a notification via the existing compact event channel.
+    const autoCompact = settings.autoCompact;
+    if (
+      autoCompact?.enabled &&
+      autoCompact.threshold > 0 &&
+      turnCount >= autoCompact.threshold &&
+      existing &&
+      primaryConfig
+    ) {
+      emitCompactEvent({
+        type: "auto-compact-by-turns-start",
+        turnCount,
+        threshold: autoCompact.threshold,
+      });
+      console.log(
+        `[${new Date().toLocaleTimeString()}] Auto-compact: turn ${turnCount} >= threshold ${autoCompact.threshold}`
+      );
+      const compactOk = await runCompact(
+        existing.sessionId,
+        primaryConfig.model,
+        primaryConfig.api,
+        baseEnv,
+        securityArgs,
+        timeoutMs
+      );
+      if (compactOk) {
+        if (threadId) {
+          await resetThreadTurnTracking(threadId);
+        } else {
+          await resetTurnTracking(agentName);
+        }
+      }
+      emitCompactEvent({
+        type: "auto-compact-by-turns-done",
+        success: compactOk,
+        turnCount,
+      });
     }
   }
 
