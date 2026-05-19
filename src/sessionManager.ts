@@ -97,6 +97,17 @@ export async function markThreadCompactWarned(threadId: string): Promise<void> {
   await saveSessions(data);
 }
 
+/** Reset turn-tracking state for a thread session after a successful
+ *  compact. Mirrors resetTurnTracking() in sessions.ts. */
+export async function resetThreadTurnTracking(threadId: string): Promise<void> {
+  const data = await loadSessions();
+  const session = data.threads[threadId];
+  if (!session) return;
+  session.turnCount = 0;
+  session.compactWarned = false;
+  await saveSessions(data);
+}
+
 /** List all active thread sessions. */
 export async function listThreadSessions(): Promise<ThreadSession[]> {
   const data = await loadSessions();

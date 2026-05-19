@@ -88,6 +88,7 @@ const DEFAULT_SETTINGS: Settings = {
   timeouts: { telegram: 5, heartbeat: 15, job: 30, default: 5 },
   watchdog: { maxConsecutiveTimeouts: null, maxRuntimeSeconds: null },
   session: { autoRotate: false, maxMessages: 50, maxAgeHours: 24, summaryPath: "" },
+  autoCompact: { enabled: true, threshold: 100 },
   plugins: {},
 };
 
@@ -185,7 +186,27 @@ export interface Settings {
   watchdog: WatchdogSettings;
   plugins: Record<string, PluginEntry>;
   session: SessionConfig;
+  autoCompact: AutoCompactConfig;
   jobsDir?: string;
+}
+
+/**
+ * Controls the automatic /compact invoked by the runner when a resumed
+ * session crosses a turn-count threshold. Without auto-compact,
+ * long-lived sessions (e.g. ones the daemon resumes across days of
+ * Telegram messages) accumulate the full transcript on every turn, so
+ * each new prompt costs the input tokens for hundreds of prior turns.
+ * Hitting the plan's rolling-window limit becomes a matter of time.
+ */
+export interface AutoCompactConfig {
+  /** Master switch. Default: true. */
+  enabled: boolean;
+  /**
+   * Auto-compact fires after a successful turn pushes turnCount to this
+   * value or higher. Default: 100. Setting to 0 or a value <=
+   * COMPACT_WARN_THRESHOLD (25) effectively disables the trigger.
+   */
+  threshold: number;
 }
 
 
@@ -413,6 +434,13 @@ function parseSettings(
       maxMessages: Number.isFinite(raw.session?.maxMessages) ? Number(raw.session.maxMessages) : 50,
       maxAgeHours: Number.isFinite(raw.session?.maxAgeHours) ? Number(raw.session.maxAgeHours) : 24,
       summaryPath: typeof raw.session?.summaryPath === "string" ? raw.session.summaryPath.trim() : "",
+    },
+    autoCompact: {
+      enabled: typeof raw.autoCompact?.enabled === "boolean" ? raw.autoCompact.enabled : true,
+      threshold:
+        Number.isFinite(raw.autoCompact?.threshold) && Number(raw.autoCompact.threshold) > 0
+          ? Math.floor(Number(raw.autoCompact.threshold))
+          : 100,
     },
     apiToken: typeof raw.apiToken === "string" && raw.apiToken.trim() ? raw.apiToken.trim() : undefined,
     ...(typeof raw.jobsDir === "string" && raw.jobsDir.trim() ? { jobsDir: raw.jobsDir.trim() } : {}),

@@ -1,4 +1,4 @@
-import { ensureProjectClaudeMd, run, runUserMessage, runFork, killActive, isMainBusy, compactCurrentSession, compactCurrentThreadSession, isRateLimited, getRateLimitResetAt, getPermissionMode, setPermissionMode, type PermissionMode } from "../runner";
+import { ensureProjectClaudeMd, run, runUserMessage, runFork, killActive, isMainBusy, compactCurrentSession, compactCurrentThreadSession, isRateLimited, getRateLimitResetAt, getPermissionMode, setPermissionMode, onCompactEvent, type PermissionMode } from "../runner";
 import { extractErrorDetail } from "../messaging";
 import { loadPendingResume } from "../pending-resume";
 import { getSettings, loadSettings } from "../config";
@@ -1692,11 +1692,58 @@ async function runPendingResumeTelegram(): Promise<void> {
 }
 
 /** Start polling in-process (called by start.ts when token is configured) */
+/**
+ * Subscribe to runner compact events and forward user-relevant ones to
+ * the first allowed Telegram user. The runner emits compact events
+ * regardless of which surface initiated the underlying message. We
+ * only DM the warn + auto-compact-by-turns events: the timeout-driven
+ * auto-compact happens silently because the user is mid-retry and
+ * shouldn't be interrupted.
+ */
+let compactListenerRegistered = false;
+function ensureCompactNotifier(): void {
+  if (compactListenerRegistered) return;
+  compactListenerRegistered = true;
+  onCompactEvent(async (event) => {
+    const config = getSettings().telegram;
+    const recipient = config.allowedUserIds?.[0];
+    if (!config.token || !recipient) return;
+    try {
+      if (event.type === "warn") {
+        await sendMessage(
+          config.token,
+          recipient,
+          `⚠️ Session context is getting large (turn ${event.turnCount}). Auto-compact will fire at the configured threshold; you can also send /compact now.`
+        );
+      } else if (event.type === "auto-compact-by-turns-start") {
+        await sendMessage(
+          config.token,
+          recipient,
+          `🧹 Auto-compacting session (turn ${event.turnCount} ≥ ${event.threshold}). One moment…`
+        );
+      } else if (event.type === "auto-compact-by-turns-done") {
+        await sendMessage(
+          config.token,
+          recipient,
+          event.success
+            ? `✅ Auto-compact complete. Turn counter reset; next message starts at baseline cost.`
+            : `❌ Auto-compact failed at turn ${event.turnCount}. Try /compact manually.`
+        );
+      }
+    } catch (err) {
+      console.error(
+        `[Telegram] Compact notifier failed: ${err instanceof Error ? err.message : err}`
+      );
+    }
+  });
+}
+
 export function startPolling(debug = false): void {
   if (isPolling) return;
   running = true;
   isPolling = true;
   telegramDebug = debug;
+  ensureCompactNotifier();
   const gen = ++pollingGeneration;
   (async () => {
     await ensureProjectClaudeMd();
