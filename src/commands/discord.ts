@@ -1664,7 +1664,7 @@ export function startGateway(debug = false): void {
   if (ws) stopGateway();
   running = true;
   console.log("Discord bot started (gateway)");
-  console.log(`  Allowed users: ${config.allowedUserIds.length === 0 ? "all" : config.allowedUserIds.join(", ")}`);
+  console.log(`  Allowed users: ${config.allowedUserIds.length === 0 ? "none (deny all)" : config.allowedUserIds.join(", ")}`);
   if (config.listenChannels.length > 0) {
     console.log(`  Listen channels: ${config.listenChannels.join(", ")}`);
   }
@@ -1693,7 +1693,7 @@ export async function discord() {
   }
 
   console.log("Discord bot started (gateway, standalone)");
-  console.log(`  Allowed users: ${config.allowedUserIds.length === 0 ? "all" : config.allowedUserIds.join(", ")}`);
+  console.log(`  Allowed users: ${config.allowedUserIds.length === 0 ? "none (deny all)" : config.allowedUserIds.join(", ")}`);
   if (discordDebug) console.log("  Debug: enabled");
 
   connectGateway(config.token);

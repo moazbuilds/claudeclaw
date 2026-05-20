@@ -1613,7 +1613,7 @@ async function poll(generation: number): Promise<void> {
   }
 
   console.log("Telegram bot started (long polling)");
-  console.log(`  Allowed users: ${config.allowedUserIds.length === 0 ? "all" : config.allowedUserIds.join(", ")}`);
+  console.log(`  Allowed users: ${config.allowedUserIds.length === 0 ? "none (deny all)" : config.allowedUserIds.join(", ")}`);
   if (telegramDebug) console.log("  Debug: enabled");
 
   // Register available skills as bot command menu (non-blocking)
