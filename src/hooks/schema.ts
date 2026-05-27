@@ -28,12 +28,24 @@ export interface PrRule {
   draft: boolean | "any";
 }
 
+export interface CommentRule {
+  /** Glob list (include/exclude semantics same as PrRule.user) matched
+   *  against the commenter's GitHub login. */
+  user: string[];
+}
+
 export interface HookConfig {
   pr: PrRule[];
-  /** Shorthand: fire on any review/comment/suggestion event across the
-   *  whole tailnet's repos. Triggers on `issue_comment`,
-   *  `pull_request_review`, and `pull_request_review_comment`. */
-  comments?: boolean;
+  /** Fire on review/comment/suggestion events across the whole tailnet's
+   *  repos. Triggers on `issue_comment`, `pull_request_review`, and
+   *  `pull_request_review_comment`.
+   *
+   *  - `true` (or `{ user: ["*"] }`) → any commenter, including bots
+   *  - `{ user: ["*", "!*[bot]"] }` → humans only
+   *  - `{ user: ["*[bot]"] }`       → bots only
+   *  - `false` / unset              → don't fire on comments
+   */
+  comments?: boolean | CommentRule;
 }
 
 /**
@@ -52,15 +64,15 @@ export function parseHookConfig(raw: unknown): HookConfig | null {
   const obj = raw as Record<string, unknown>;
 
   // Top-level shorthands.
-  const comments = obj.comments === true || obj.comments === "true";
+  const comments = parseComments(obj.comments);
 
   // `prs: true` desugars to a single rule that matches any PR not
   // targeting main (skips release/landing PRs, which are usually noise
   // for code-review automation).
   if (obj.prs === true || obj.prs === "true") {
     const cfg: HookConfig = { pr: [fullyOpenPrRule()] };
-    if (comments) {
-      cfg.comments = true;
+    if (comments !== false) {
+      cfg.comments = comments;
     }
     return cfg;
   }
@@ -79,10 +91,33 @@ export function parseHookConfig(raw: unknown): HookConfig | null {
     }
   }
   const cfg: HookConfig = { pr: prRules };
-  if (comments) {
-    cfg.comments = true;
+  if (comments !== false) {
+    cfg.comments = comments;
   }
   return cfg;
+}
+
+/** Normalize the `on.comments` field. Accepts:
+ *  - `true` / `"true"`     → all commenters (treat as boolean true)
+ *  - `false` / unset       → off (return false)
+ *  - `{ user: [...] }`     → filter by user globs
+ *  Returns `false` for off, `true` for unfiltered, or a CommentRule. */
+function parseComments(raw: unknown): boolean | CommentRule {
+  if (raw === true || raw === "true") {
+    return true;
+  }
+  if (raw === false || raw === "false" || raw === null || raw === undefined) {
+    return false;
+  }
+  if (typeof raw === "object" && !Array.isArray(raw)) {
+    const obj = raw as Record<string, unknown>;
+    const user = asList(obj.user);
+    if (user.length === 0) {
+      throw new Error("`on.comments.user` must list at least one glob");
+    }
+    return { user };
+  }
+  throw new Error(`\`on.comments\` must be a boolean or { user: [...] }, got ${typeName(raw)}`);
 }
 
 function fullyOpenPrRule(): PrRule {

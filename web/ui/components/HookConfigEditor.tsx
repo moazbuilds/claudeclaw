@@ -304,6 +304,91 @@ function RuleCard({
   );
 }
 
+type DraftPreset = "open" | "draft" | "any";
+type CommenterPreset = "human" | "bot" | "any";
+
+/** Build a permissive PR rule that fires on every push to every PR
+ *  (opened + synchronize + reopened) on any repo, with the chosen draft
+ *  filter. Used by the "On all PR commits" presets. */
+function prCommitsPreset(d: DraftPreset): PrRule {
+  return {
+    repo: "*/*",
+    user: ["*"],
+    action: ["opened", "synchronize", "reopened"],
+    branch: ["!main"],
+    labels: [],
+    draft: d === "any" ? "any" : d === "draft",
+  };
+}
+
+/** Comment-event filter by author class. */
+function commentsPreset(c: CommenterPreset): boolean | { user: string[] } {
+  if (c === "any") {
+    return true;
+  }
+  if (c === "human") {
+    return { user: ["*", "!*[bot]"] };
+  }
+  return { user: ["*[bot]"] };
+}
+
+/** What's currently active for each preset row, so the right pill is
+ *  highlighted. Returns null if nothing matches the preset shape. */
+function activePrPreset(rules: PrRule[]): DraftPreset | null {
+  if (rules.length !== 1) {
+    return null;
+  }
+  const r = rules[0];
+  if (!r) {
+    return null;
+  }
+  const repo = Array.isArray(r.repo) ? r.repo.join(",") : r.repo;
+  const actionMatch =
+    r.action.length === 3 &&
+    r.action.includes("opened") &&
+    r.action.includes("synchronize") &&
+    r.action.includes("reopened");
+  if (
+    repo !== "*/*" ||
+    r.user.length !== 1 ||
+    r.user[0] !== "*" ||
+    !actionMatch ||
+    r.labels.length !== 0
+  ) {
+    return null;
+  }
+  if (r.draft === false) {
+    return "open";
+  }
+  if (r.draft === true) {
+    return "draft";
+  }
+  if (r.draft === "any") {
+    return "any";
+  }
+  return null;
+}
+
+function activeCommentPreset(c: HookConfig["comments"]): CommenterPreset | null {
+  if (c === true) {
+    return "any";
+  }
+  if (typeof c !== "object" || c === null) {
+    return null;
+  }
+  const u = c.user;
+  if (u.length === 2 && u[0] === "*" && u[1] === "!*[bot]") {
+    return "human";
+  }
+  if (u.length === 1 && u[0] === "*[bot]") {
+    return "bot";
+  }
+  if (u.length === 1 && u[0] === "*") {
+    return "any";
+  }
+  return null;
+}
+
 export function HookConfigEditor({
   value,
   onChange,
@@ -312,13 +397,14 @@ export function HookConfigEditor({
   onChange: (next: HookConfig | null) => void;
 }) {
   const rules = value?.pr ?? [];
-  const commentsOn = value?.comments === true;
+  const comments = value?.comments ?? false;
+  const prPreset = activePrPreset(rules);
+  const commentPreset = activeCommentPreset(comments);
 
-  // Helper: emit `null` when both the rule list and the comments toggle
-  // are empty so the parent strips the whole `on:` block from the
-  // frontmatter — otherwise we'd leave behind a dangling `on:` line.
   function emit(next: HookConfig): void {
-    if (next.pr.length === 0 && next.comments !== true) {
+    const commentsActive =
+      next.comments === true || (typeof next.comments === "object" && next.comments !== null);
+    if (next.pr.length === 0 && !commentsActive) {
       onChange(null);
       return;
     }
@@ -329,7 +415,7 @@ export function HookConfigEditor({
     emit({
       ...value,
       pr: rules.map((r, i) => (i === idx ? next : r)),
-      ...(commentsOn ? { comments: true } : {}),
+      ...(comments === false ? {} : { comments }),
     });
   }
 
@@ -337,7 +423,7 @@ export function HookConfigEditor({
     emit({
       ...value,
       pr: [...rules, defaultPrRule()],
-      ...(commentsOn ? { comments: true } : {}),
+      ...(comments === false ? {} : { comments }),
     });
   }
 
@@ -345,33 +431,55 @@ export function HookConfigEditor({
     emit({
       ...value,
       pr: rules.filter((_, i) => i !== idx),
-      ...(commentsOn ? { comments: true } : {}),
+      ...(comments === false ? {} : { comments }),
     });
   }
 
-  function setComments(on: boolean) {
-    emit({ pr: rules, ...(on ? { comments: true } : {}) });
+  function pickPrPreset(d: DraftPreset) {
+    // Replace the rule list with the single permissive rule. If the user
+    // had bespoke rules they're surfaced in the cards below; preset
+    // toggles a one-shot replace, not a stacked rule.
+    emit({
+      pr: [prCommitsPreset(d)],
+      ...(comments === false ? {} : { comments }),
+    });
+  }
+
+  function pickCommentPreset(c: CommenterPreset) {
+    emit({ pr: rules, comments: commentsPreset(c) });
+  }
+
+  function clearCommentPreset() {
+    emit({ pr: rules });
   }
 
   return (
     <div className="space-y-3">
-      <label className="flex items-center gap-3 cursor-pointer rounded-box border border-base-300 p-3">
-        <input
-          type="checkbox"
-          className="toggle toggle-primary"
-          checked={commentsOn}
-          onChange={(e) => setComments(e.target.checked)}
+      {/* Quick presets — the common cases the user-facing docs talk about. */}
+      <div className="rounded-box border border-base-300 p-3 space-y-2">
+        <div className="text-sm font-medium">Quick presets</div>
+        <PresetRow
+          label="On all PR commits"
+          options={[
+            { id: "open", label: "open" },
+            { id: "draft", label: "draft" },
+            { id: "any", label: "any" },
+          ]}
+          active={prPreset}
+          onPick={(id) => pickPrPreset(id as DraftPreset)}
         />
-        <div className="min-w-0">
-          <div className="text-sm font-medium">Comments &amp; feedback</div>
-          <div className="text-xs text-base-content/60">
-            Fire on any review, inline suggestion, or PR/issue comment across all repos (covers{" "}
-            <code className="font-mono">issue_comment</code>,{" "}
-            <code className="font-mono">pull_request_review</code>, and{" "}
-            <code className="font-mono">pull_request_review_comment</code>).
-          </div>
-        </div>
-      </label>
+        <PresetRow
+          label="All comments left on PRs"
+          options={[
+            { id: "human", label: "human" },
+            { id: "bot", label: "bot" },
+            { id: "any", label: "any" },
+          ]}
+          active={commentPreset}
+          onPick={(id) => pickCommentPreset(id as CommenterPreset)}
+          onClear={commentPreset === null ? undefined : clearCommentPreset}
+        />
+      </div>
 
       {rules.length === 0 ? (
         <button type="button" className="btn btn-sm btn-outline" onClick={addRule}>
@@ -393,6 +501,50 @@ export function HookConfigEditor({
             <Plus size={14} /> Add rule
           </button>
         </>
+      )}
+    </div>
+  );
+}
+
+function PresetRow({
+  label,
+  options,
+  active,
+  onPick,
+  onClear,
+}: {
+  label: string;
+  options: { id: string; label: string }[];
+  active: string | null;
+  onPick: (id: string) => void;
+  onClear?: (() => void) | undefined;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-xs text-base-content/70 mr-1">{label}:</span>
+      <div role="radiogroup" className="join">
+        {options.map((opt) => (
+          <button
+            key={opt.id}
+            type="button"
+            aria-pressed={active === opt.id}
+            onClick={() => onPick(opt.id)}
+            className={`btn btn-xs join-item ${active === opt.id ? "btn-primary" : "btn-ghost border-base-300"}`}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+      {onClear && (
+        <button
+          type="button"
+          onClick={onClear}
+          className="btn btn-ghost btn-xs"
+          aria-label="Clear preset"
+          title="Turn off"
+        >
+          ×
+        </button>
       )}
     </div>
   );

@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { Job } from "../jobs";
 import { type Delivery, recordDelivery, summarize } from "./deliveries";
-import { matchPrRule, readPrPayload } from "./match";
+import { matchPatternList, matchPrRule, readPrPayload } from "./match";
 
 /**
  * GitHub webhook receiver. Verifies HMAC-SHA256 signature using a secret
@@ -108,10 +108,20 @@ export async function handleWebhook(req: Request, deps: WebhookDeps = {}): Promi
           }
         }
       } else if (COMMENT_EVENTS.has(event)) {
+        const commenter = readCommenterLogin(event, payload);
         for (const job of jobs) {
-          if (job.hookConfig?.comments === true) {
+          const cfg = job.hookConfig?.comments;
+          if (cfg === true) {
+            // No filter — fire on every commenter.
             delivery.matched.push(job.name);
             void deps.onHookFire(job.name, event, id, payload);
+          } else if (cfg && typeof cfg === "object") {
+            // User-filtered comments. If we can't read the login, skip
+            // the rule rather than risk firing on the wrong commenter.
+            if (commenter && matchPatternList(cfg.user, commenter)) {
+              delivery.matched.push(job.name);
+              void deps.onHookFire(job.name, event, id, payload);
+            }
           }
         }
       }
@@ -165,4 +175,28 @@ function recordAttempt(req: Request, body: string, status: Delivery["status"]): 
     matched: [],
     payloadSnippet: body.slice(0, 2048),
   });
+}
+
+/**
+ * Find the commenter's GitHub login across the three comment-class
+ * webhook event shapes. `issue_comment` and `pull_request_review_comment`
+ * carry it under `comment.user.login`; `pull_request_review` uses
+ * `review.user.login`. Returns null if the path doesn't resolve to a
+ * string — caller falls back to "skip the rule rather than misfire".
+ */
+function readCommenterLogin(event: string, payload: unknown): string | null {
+  if (typeof payload !== "object" || payload === null) {
+    return null;
+  }
+  const root = payload as Record<string, unknown>;
+  const carrier = event === "pull_request_review" ? root.review : (root.comment ?? root.review);
+  if (typeof carrier !== "object" || carrier === null) {
+    return null;
+  }
+  const user = (carrier as Record<string, unknown>).user;
+  if (typeof user !== "object" || user === null) {
+    return null;
+  }
+  const login = (user as Record<string, unknown>).login;
+  return typeof login === "string" ? login : null;
 }

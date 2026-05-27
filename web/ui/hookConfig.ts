@@ -20,11 +20,21 @@ export interface PrRule {
   draft: DraftValue;
 }
 
+export interface CommentRule {
+  /** Glob list matched against the commenter's login. Include/exclude
+   *  via `!`-prefix mirrors PrRule.user. */
+  user: string[];
+}
+
 export interface HookConfig {
   pr: PrRule[];
-  /** Shorthand for "fire on any review/comment/suggestion event across
-   *  all repos". Backed by `on.comments: true` in the YAML. */
-  comments?: boolean;
+  /** Fire on review/comment/suggestion events.
+   *  - `true`              → any commenter (including bots)
+   *  - `{ user: ["*"] }`   → same as `true`, in explicit form
+   *  - `{ user: ["*", "!*[bot]"] }` → humans only
+   *  - `{ user: ["*[bot]"] }`       → bots only
+   */
+  comments?: boolean | CommentRule;
 }
 
 export const DEFAULT_PR_ACTIONS = ["opened", "synchronize", "reopened"];
@@ -85,15 +95,15 @@ export function parseOnBlock(content: string): HookConfig | null {
     return null;
   }
   const onObj = on as Record<string, unknown>;
-  const comments = onObj.comments === true || onObj.comments === "true";
+  const comments = parseComments(onObj.comments);
 
   // Shorthand: `prs: true` means "any PR from any user on any repo,
   // default actions, but skip PRs targeting main" — release/landing
   // PRs are usually noise for code-review automation.
   if (onObj.prs === true || onObj.prs === "true") {
     const cfg: HookConfig = { pr: [fullyOpenPrRule()] };
-    if (comments) {
-      cfg.comments = true;
+    if (comments !== false) {
+      cfg.comments = comments;
     }
     return cfg;
   }
@@ -110,10 +120,28 @@ export function parseOnBlock(content: string): HookConfig | null {
     }
   }
   const cfg: HookConfig = { pr: rules };
-  if (comments) {
-    cfg.comments = true;
+  if (comments !== false) {
+    cfg.comments = comments;
   }
   return cfg;
+}
+
+function parseComments(raw: unknown): boolean | CommentRule {
+  if (raw === true || raw === "true") {
+    return true;
+  }
+  if (raw === false || raw === "false" || raw === null || raw === undefined) {
+    return false;
+  }
+  if (typeof raw === "object" && !Array.isArray(raw)) {
+    const obj = raw as Record<string, unknown>;
+    const user = asList(obj.user);
+    if (user.length === 0) {
+      return false;
+    }
+    return { user };
+  }
+  return false;
 }
 
 /** Shorthand-expanded "match any PR" rule. Stays in sync with the

@@ -387,15 +387,20 @@ function isDefaultList(value: string[], def: string[]): boolean {
  * parsers accept and round-trip cleanly.
  */
 function renderOnBlock(cfg: import("./hookConfig").HookConfig): string[] {
-  const comments = cfg.comments === true;
+  const commentsActive =
+    cfg.comments === true || (typeof cfg.comments === "object" && cfg.comments !== null);
 
-  if (cfg.pr.length === 0 && !comments) {
+  if (cfg.pr.length === 0 && !commentsActive) {
     return ["on:"];
   }
 
   const head: string[] = ["on:"];
-  if (comments) {
+  if (cfg.comments === true) {
     head.push("  comments: true");
+  } else if (typeof cfg.comments === "object" && cfg.comments !== null) {
+    // Expanded form: comments:\n    user: [...]
+    head.push("  comments:");
+    head.push(`    user: ${renderList(cfg.comments.user)}`);
   }
 
   // Shorthand: a single permissive rule (any repo, anyone, defaults but
