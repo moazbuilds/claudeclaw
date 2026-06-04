@@ -8,6 +8,7 @@ import { resetSession, resetFallbackSession, peekSession } from "../sessions";
 import { listThreadSessions, removeThreadSession, peekThreadSession } from "../sessionManager";
 import { readFile } from "node:fs/promises";
 import { existsSync, realpathSync, statSync } from "node:fs";
+import { findSessionJsonlPath } from "../sessionFiles";
 import { homedir } from "node:os";
 import { transcribeAudioToText } from "../whisper";
 import { resolveSkillPrompt } from "../skills";
@@ -1188,10 +1189,8 @@ async function handleInteractionCreate(token: string, interaction: DiscordIntera
         await respondToInteraction(interaction, { content: "No active session." });
         return;
       }
-      const home = homedir();
-      const projectSlug = process.cwd().replace(/\//g, "-");
-      const jsonlPath = `${home}/.claude/projects/${projectSlug}/${session.sessionId}.jsonl`;
-      if (!existsSync(jsonlPath)) {
+      const jsonlPath = findSessionJsonlPath(session.sessionId);
+      if (!jsonlPath) {
         await respondToInteraction(interaction, { content: "Conversation file not found." });
         return;
       }
