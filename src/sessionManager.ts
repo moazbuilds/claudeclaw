@@ -1,4 +1,5 @@
 import { join } from "path";
+import { hasValidSessionId } from "./sessionValidate";
 
 const HEARTBEAT_DIR = join(process.cwd(), ".claude", "claudeclaw");
 const SESSIONS_FILE = join(HEARTBEAT_DIR, "sessions.json");
@@ -40,7 +41,7 @@ export async function getThreadSession(
 ): Promise<{ sessionId: string; turnCount: number; compactWarned: boolean } | null> {
   const data = await loadSessions();
   const session = data.threads[threadId];
-  if (!session) return null;
+  if (!hasValidSessionId(session)) return null;
 
   if (typeof session.turnCount !== "number") session.turnCount = 0;
   if (typeof session.compactWarned !== "boolean") session.compactWarned = false;

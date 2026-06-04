@@ -1050,7 +1050,7 @@ async function execClaude(
   const existing = threadId
     ? await getThreadSession(threadId)
     : await getSession(agentName);
-  const isNew = !existing;
+  const isNew = !existing?.sessionId;
   // Start the watchdog clock for resumed sessions (we know the ID immediately).
   if (existing) startSession(existing.sessionId);
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
