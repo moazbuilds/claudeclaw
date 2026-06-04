@@ -79,6 +79,12 @@ interface DiscordMessage {
   type: number;
 }
 
+const enum DiscordMessageType {
+  Default = 0,
+  Reply = 19,
+  ThreadCreated = 18,
+}
+
 interface DiscordInteraction {
   id: string;
   type: number; // 2=APPLICATION_COMMAND, 3=MESSAGE_COMPONENT
@@ -739,6 +745,10 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
 
   // Ignore bot messages
   if (message.author.bot) return;
+
+  // Ignore system message types (thread creation recap, pins, etc.) — only process
+  // regular messages (0) and replies (19) to avoid spurious prompts on the parent channel.
+  if (message.type !== DiscordMessageType.Default && message.type !== DiscordMessageType.Reply) return;
 
   const userId = message.author.id;
   const channelId = message.channel_id;
