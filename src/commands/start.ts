@@ -14,6 +14,9 @@ import { getOrCreateWebToken } from "../ui/auth";
 import type { Job } from "../jobs";
 import { isWizardTrigger, hasActiveWizard, handleWizardInput } from "./plugin-wizard";
 import { PluginManager, setPluginManager } from "../plugins";
+import { searchMemories, addMemory, formatMemoryBlock, extractRememberDirectives } from "../memory";
+
+const DEFAULT_MEMORY_USER = process.env.CLAW_DEFAULT_USER || "aymen";
 
 const CLAUDE_DIR = join(process.cwd(), ".claude");
 const HEARTBEAT_DIR = join(CLAUDE_DIR, "claudeclaw");
@@ -709,16 +712,39 @@ export async function start(args: string[] = []) {
         resolvePrompt(currentSettings.heartbeat.prompt),
         loadHeartbeatPromptTemplate(),
       ])
-        .then(([prompt, template]) => {
+        .then(async ([prompt, template]) => {
           const userPromptSection = prompt.trim()
             ? `User custom heartbeat prompt:\n${prompt.trim()}`
             : "";
-          const mergedPrompt = [template.trim(), userPromptSection]
+          const hits = await searchMemories(
+            DEFAULT_MEMORY_USER,
+            `Aktueller Kontext, Tagesstand, Coaching-Situation für ${DEFAULT_MEMORY_USER}`,
+            5,
+          );
+          const memoryBlock = formatMemoryBlock(hits);
+          const mergedPrompt = [template.trim(), memoryBlock, userPromptSection]
             .filter((part) => part.length > 0)
             .join("\n\n");
           if (!mergedPrompt) return null;
           const clock = buildClockPromptPrefix(new Date(), currentSettings.timezoneOffsetMinutes);
           return run("heartbeat", `${clock}\n${mergedPrompt}`);
+        })
+        .then(async (r) => {
+          if (!r) return r;
+          const { cleaned, remembered } = extractRememberDirectives(r.stdout);
+          if (remembered.length > 0) {
+            const now = Date.now();
+            await Promise.all(
+              remembered.map((text, i) =>
+                addMemory(DEFAULT_MEMORY_USER, `hb-${now}-${i}`, text, {
+                  source: "heartbeat",
+                  ts: new Date(now).toISOString(),
+                }),
+              ),
+            );
+            r = { ...r, stdout: cleaned };
+          }
+          return r;
         })
         .then((r) => {
           if (!r) return;
