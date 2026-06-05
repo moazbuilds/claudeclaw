@@ -1453,23 +1453,18 @@ async function streamClaude(
 ): Promise<void> {
   await mkdir(LOGS_DIR, { recursive: true });
 
-  // Rotate the global session if thresholds are exceeded (mirrors the check in execClaude).
-  let streamRotationSummary: string | null = null;
-  const { session: streamSessionConfig } = getSettings();
-  if (streamSessionConfig.autoRotate) {
-    const streamPeeked = await peekSession();
-    if (streamPeeked && needsRotation(streamPeeked, streamSessionConfig)) {
-      streamRotationSummary = await rotateSession(streamSessionConfig);
-    }
-  }
-
-  const existing = await getSession();
+  // Web chat is per-user: `name` is the thread id (e.g. "aymen" / "maren"), so
+  // each person keeps an isolated Claude session + history instead of sharing
+  // the global (Telegram) session. Thread sessions are resolved + persisted via
+  // the thread store and do not rotate the global session.
+  const streamRotationSummary: string | null = null;
+  const existing = await getThreadSession(name);
   const { security, model, api } = getSettings();
   const securityArgs = buildSecurityArgs(security);
 
   // Plugins: before_agent_start
   const streamPm = getPluginManager();
-  const streamCtx = pluginCtx();
+  const streamCtx = pluginCtx(name);
   if (streamPm) await streamPm.emit("before_agent_start", { prompt }, streamCtx);
 
   // stream-json gives us events as they happen — text before tool calls,
@@ -1553,8 +1548,8 @@ async function streamClaude(
           // Capture session ID for new sessions
           const sid = event.session_id as string | undefined;
           if (sid && !existing) {
-            await createSession(sid);
-            console.log(`[${new Date().toLocaleTimeString()}] Session created (stream-json): ${sid}`);
+            await createThreadSession(name, sid);
+            console.log(`[${new Date().toLocaleTimeString()}] Thread session created (stream-json): ${name} → ${sid}`);
           }
         } else if (event.type === "assistant") {
           // Text and tool_use blocks from the assistant
