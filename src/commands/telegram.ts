@@ -1444,24 +1444,22 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
       );
     }
     const prefixedPrompt = promptParts.join("\n");
-    // Per-thread busy check: only reject if THIS topic's queue (or the global
-    // session for non-topic chats) is mid-run. Different topics run in parallel.
+    // Per-thread queue: if THIS topic (or the global session for non-topic
+    // chats) is mid-run, the message queues behind the current run — like
+    // Claude Code — instead of being rejected. run() serializes per thread,
+    // so queued messages execute in order with full session context. React
+    // 👀 so the user knows the message was received and is waiting its turn.
     const busy = sessionKey ? isThreadBusy(sessionKey) : isGlobalBusy();
+    if (busy) {
+      await sendReaction(config.token, chatId, message.message_id, "👀").catch(() => {});
+    }
     const verbose = verboseChats.has(chatId);
     const modelOverride = chatModels.get(chatId);
-    let result;
-    let streamMsgId: number | null = null;
-    let hadToolLines = false;
-    if (busy) {
-      await sendMessage(config.token, chatId, "Claude is still working on the previous message in this topic — try again in a moment, or use /fork for a quick parallel task.", threadId);
-      return;
-    } else {
-      const stream = makeStreamCallback(config.token, chatId, threadId, { verbose });
-      result = await runUserMessage("telegram", prefixedPrompt, sessionKey, undefined, stream.onChunk, stream.onToolEvent, modelOverride);
-      const streamResult = await stream.waitForStreamMsg();
-      streamMsgId = streamResult.msgId;
-      hadToolLines = streamResult.hadToolLines;
-    }
+    const stream = makeStreamCallback(config.token, chatId, threadId, { verbose });
+    const result = await runUserMessage("telegram", prefixedPrompt, sessionKey, undefined, stream.onChunk, stream.onToolEvent, modelOverride);
+    const streamResult = await stream.waitForStreamMsg();
+    const streamMsgId: number | null = streamResult.msgId;
+    const hadToolLines = streamResult.hadToolLines;
 
     if (result.exitCode !== 0) {
       const isTimedOut = result.exitCode === 124;
