@@ -109,3 +109,66 @@ export function extractRememberDirectives(reply: string): {
   }).trim();
   return { cleaned, remembered };
 }
+
+const REMEMBER_TOKEN = "[remember:";
+
+/** True if `tail` could be the beginning of an unclosed `[remember:` directive. */
+function isPartialRememberPrefix(tail: string): boolean {
+  const t = tail.toLowerCase();
+  if (tail.length <= REMEMBER_TOKEN.length) {
+    return REMEMBER_TOKEN.startsWith(t);
+  }
+  // Already past the token length and still no closing `]` (complete ones are
+  // stripped before this check) → it's an in-progress directive, hold it back.
+  return t.startsWith(REMEMBER_TOKEN);
+}
+
+/**
+ * Streaming-safe stripper for `[remember: ...]` directives.
+ *
+ * Wraps a chunk sink so the directives never reach the user, even when split
+ * across chunk boundaries, while collecting the remembered texts. Call
+ * `flush()` once the stream ends to emit any trailing text and read the
+ * collected memories.
+ */
+export function createRememberStripper(emit: (text: string) => void): {
+  push: (chunk: string) => void;
+  flush: () => string[];
+} {
+  let buffer = "";
+  const remembered: string[] = [];
+
+  const drainComplete = () => {
+    const pattern = /\[remember:\s*([^\]]+)\]/gi;
+    buffer = buffer.replace(pattern, (_m, text: string) => {
+      const trimmed = text.trim();
+      if (trimmed) remembered.push(trimmed);
+      return "";
+    });
+  };
+
+  return {
+    push(chunk: string) {
+      buffer += chunk;
+      drainComplete();
+      // Hold back a tail only if it might be the start of a directive.
+      const lastOpen = buffer.lastIndexOf("[");
+      if (lastOpen !== -1 && isPartialRememberPrefix(buffer.slice(lastOpen))) {
+        const safe = buffer.slice(0, lastOpen);
+        buffer = buffer.slice(lastOpen);
+        if (safe) emit(safe);
+      } else {
+        if (buffer) emit(buffer);
+        buffer = "";
+      }
+    },
+    flush() {
+      drainComplete();
+      if (buffer) {
+        emit(buffer);
+        buffer = "";
+      }
+      return remembered;
+    },
+  };
+}

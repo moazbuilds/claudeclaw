@@ -14,7 +14,7 @@ import { getOrCreateWebToken } from "../ui/auth";
 import type { Job } from "../jobs";
 import { isWizardTrigger, hasActiveWizard, handleWizardInput } from "./plugin-wizard";
 import { PluginManager, setPluginManager } from "../plugins";
-import { searchMemories, addMemory, formatMemoryBlock, extractRememberDirectives } from "../memory";
+import { searchMemories, addMemory, formatMemoryBlock, extractRememberDirectives, createRememberStripper } from "../memory";
 
 const DEFAULT_MEMORY_USER = process.env.CLAW_DEFAULT_USER || "aymen";
 
@@ -573,7 +573,36 @@ export async function start(args: string[] = []) {
               onChunk(await handleWizardInput(wizardCtx, message));
               return;
             }
-            await streamUserMessage(sessionName, message, onChunk, onUnblock, onAgentEvent);
+            // Per-user semantic memory. user_id = session name, so each person's
+            // memories live in their own collection and never cross over.
+            const memoryUser = sessionName;
+            const hits = await searchMemories(memoryUser, message, 5);
+            const memoryBlock = formatMemoryBlock(hits);
+            const enrichedMessage = memoryBlock
+              ? `${memoryBlock}\n\n---\n\n${message}`
+              : message;
+            // Strip [remember: ...] directives from the stream (organic save),
+            // even when split across chunk boundaries, then persist them.
+            const stripper = createRememberStripper(onChunk);
+            await streamUserMessage(
+              sessionName,
+              enrichedMessage,
+              (chunk) => stripper.push(chunk),
+              onUnblock,
+              onAgentEvent,
+            );
+            const remembered = stripper.flush();
+            if (remembered.length > 0) {
+              const now = Date.now();
+              await Promise.all(
+                remembered.map((text, i) =>
+                  addMemory(memoryUser, `chat-${now}-${i}`, text, {
+                    source: "chat",
+                    ts: new Date(now).toISOString(),
+                  }),
+                ),
+              );
+            }
           },
           // Stop button: kill any in-flight main-queue run. The runner serializes all
           // main runs, so killActive() stops whatever is currently executing.
