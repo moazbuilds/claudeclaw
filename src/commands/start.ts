@@ -14,7 +14,8 @@ import { getOrCreateWebToken } from "../ui/auth";
 import type { Job } from "../jobs";
 import { isWizardTrigger, hasActiveWizard, handleWizardInput } from "./plugin-wizard";
 import { PluginManager, setPluginManager } from "../plugins";
-import { searchMemories, addMemory, formatMemoryBlock, extractRememberDirectives, createRememberStripper } from "../memory";
+import { searchMemories, addMemory, removeMemory, formatMemoryBlock, extractRememberDirectives, createRememberStripper, listMemories, MEMORY_DIRECTIVE_HINT } from "../memory";
+import { removeThreadSession } from "../sessionManager";
 
 const DEFAULT_MEMORY_USER = process.env.CLAW_DEFAULT_USER || "aymen";
 
@@ -576,13 +577,40 @@ export async function start(args: string[] = []) {
             // Per-user semantic memory. user_id = session name, so each person's
             // memories live in their own collection and never cross over.
             const memoryUser = sessionName;
+
+            // Emoji shortcuts — only true state-changing actions get a symbol.
+            const trimmed = message.trim();
+            if (trimmed === "🧹") {
+              // Fresh chat: drop the Claude session/context for this user.
+              // Semantic memories are a separate store and are kept.
+              await removeThreadSession(sessionName);
+              onChunk("🧹 Aufgeräumt — frischer Chat. Was ich über dich weiß, hab ich behalten.");
+              return;
+            }
+            if (trimmed === "🧠") {
+              const entries = await listMemories(memoryUser);
+              if (entries.length === 0) {
+                onChunk("🧠 Noch nichts gespeichert. Sobald wir reden, merk ich mir das Wichtige.");
+                return;
+              }
+              const lines = entries.map((e, i) => `${i + 1}. ${e.text}`);
+              onChunk(
+                `🧠 Das hab ich mir über dich gemerkt (${entries.length}):\n\n${lines.join("\n")}\n\nSag z.B. „vergiss Nr. 3" oder „vergiss dass …", dann lösch ich's.`,
+              );
+              return;
+            }
             const hits = await searchMemories(memoryUser, message, 5);
             const memoryBlock = formatMemoryBlock(hits);
-            const enrichedMessage = memoryBlock
-              ? `${memoryBlock}\n\n---\n\n${message}`
-              : message;
-            // Strip [remember: ...] directives from the stream (organic save),
-            // even when split across chunk boundaries, then persist them.
+            const enrichedMessage = [
+              memoryBlock,
+              MEMORY_DIRECTIVE_HINT,
+              "---",
+              message,
+            ]
+              .filter((p) => p.length > 0)
+              .join("\n\n");
+            // Strip [remember:]/[forget:] directives from the stream (organic
+            // save/forget), even across chunk boundaries, then apply them.
             const stripper = createRememberStripper(onChunk);
             await streamUserMessage(
               sessionName,
@@ -591,9 +619,9 @@ export async function start(args: string[] = []) {
               onUnblock,
               onAgentEvent,
             );
-            const remembered = stripper.flush();
+            const { remembered, forgotten } = stripper.flush();
+            const now = Date.now();
             if (remembered.length > 0) {
-              const now = Date.now();
               await Promise.all(
                 remembered.map((text, i) =>
                   addMemory(memoryUser, `chat-${now}-${i}`, text, {
@@ -601,6 +629,17 @@ export async function start(args: string[] = []) {
                     ts: new Date(now).toISOString(),
                   }),
                 ),
+              );
+            }
+            if (forgotten.length > 0) {
+              // Resolve each forget term to the closest stored memory and drop it.
+              await Promise.all(
+                forgotten.map(async (term) => {
+                  const matches = await searchMemories(memoryUser, term, 1);
+                  if (matches.length > 0 && matches[0].score >= 0.45) {
+                    await removeMemory(memoryUser, matches[0].memory_id);
+                  }
+                }),
               );
             }
           },

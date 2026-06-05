@@ -80,6 +80,21 @@ export async function memoryHealthy(): Promise<boolean> {
   return !!res?.ok;
 }
 
+export interface MemoryEntry {
+  memory_id: string;
+  text: string;
+  metadata: Record<string, unknown>;
+}
+
+export async function listMemories(userId: string): Promise<MemoryEntry[]> {
+  const res = await call<{ ok: boolean; memories: MemoryEntry[] }>(
+    `/memories/list/${encodeURIComponent(userId)}`,
+    undefined,
+    "GET",
+  );
+  return res?.memories ?? [];
+}
+
 /**
  * Format hits as a prompt block to be injected before the user's heartbeat prompt.
  * Returns empty string when there are no relevant hits, so the prompt stays clean.
@@ -110,39 +125,45 @@ export function extractRememberDirectives(reply: string): {
   return { cleaned, remembered };
 }
 
-const REMEMBER_TOKEN = "[remember:";
+const DIRECTIVE_TOKENS = ["[remember:", "[forget:"];
 
-/** True if `tail` could be the beginning of an unclosed `[remember:` directive. */
-function isPartialRememberPrefix(tail: string): boolean {
+/** True if `tail` could be the beginning of an unclosed memory directive. */
+function isPartialDirectivePrefix(tail: string): boolean {
   const t = tail.toLowerCase();
-  if (tail.length <= REMEMBER_TOKEN.length) {
-    return REMEMBER_TOKEN.startsWith(t);
-  }
-  // Already past the token length and still no closing `]` (complete ones are
-  // stripped before this check) → it's an in-progress directive, hold it back.
-  return t.startsWith(REMEMBER_TOKEN);
+  return DIRECTIVE_TOKENS.some((token) =>
+    t.length <= token.length ? token.startsWith(t) : t.startsWith(token),
+  );
+}
+
+export interface StripperResult {
+  remembered: string[];
+  forgotten: string[];
 }
 
 /**
- * Streaming-safe stripper for `[remember: ...]` directives.
+ * Streaming-safe stripper for `[remember: ...]` and `[forget: ...]` directives.
  *
  * Wraps a chunk sink so the directives never reach the user, even when split
- * across chunk boundaries, while collecting the remembered texts. Call
- * `flush()` once the stream ends to emit any trailing text and read the
- * collected memories.
+ * across chunk boundaries, while collecting the texts. Call `flush()` once the
+ * stream ends to emit any trailing text and read the collected directives.
  */
 export function createRememberStripper(emit: (text: string) => void): {
   push: (chunk: string) => void;
-  flush: () => string[];
+  flush: () => StripperResult;
 } {
   let buffer = "";
   const remembered: string[] = [];
+  const forgotten: string[] = [];
 
   const drainComplete = () => {
-    const pattern = /\[remember:\s*([^\]]+)\]/gi;
-    buffer = buffer.replace(pattern, (_m, text: string) => {
+    buffer = buffer.replace(/\[remember:\s*([^\]]+)\]/gi, (_m, text: string) => {
       const trimmed = text.trim();
       if (trimmed) remembered.push(trimmed);
+      return "";
+    });
+    buffer = buffer.replace(/\[forget:\s*([^\]]+)\]/gi, (_m, text: string) => {
+      const trimmed = text.trim();
+      if (trimmed) forgotten.push(trimmed);
       return "";
     });
   };
@@ -153,7 +174,7 @@ export function createRememberStripper(emit: (text: string) => void): {
       drainComplete();
       // Hold back a tail only if it might be the start of a directive.
       const lastOpen = buffer.lastIndexOf("[");
-      if (lastOpen !== -1 && isPartialRememberPrefix(buffer.slice(lastOpen))) {
+      if (lastOpen !== -1 && isPartialDirectivePrefix(buffer.slice(lastOpen))) {
         const safe = buffer.slice(0, lastOpen);
         buffer = buffer.slice(lastOpen);
         if (safe) emit(safe);
@@ -168,7 +189,18 @@ export function createRememberStripper(emit: (text: string) => void): {
         emit(buffer);
         buffer = "";
       }
-      return remembered;
+      return { remembered, forgotten };
     },
   };
 }
+
+/**
+ * Hidden instruction injected into each chat message so any responding session
+ * (including a brand-new one) knows the organic memory convention. The user
+ * never sees this — it's part of the model input, not the output.
+ */
+export const MEMORY_DIRECTIVE_HINT =
+  "[Memory: Du kannst dir dauerhaft etwas Bleibendes über diese Person merken, " +
+  "indem du am Ende deiner Antwort `[remember: kurzer Fakt]` schreibst — wird dem " +
+  "Nutzer nicht angezeigt. Nur wirklich Bleibendes (Vorlieben, Ziele, Fakten), " +
+  "keine Wegwerf-Details. Etwas vergessen: `[forget: stichwort]`. Sparsam einsetzen.]";
