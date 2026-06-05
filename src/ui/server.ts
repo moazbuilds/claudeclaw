@@ -359,6 +359,11 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
               const send = (data: object) => {
                 controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
               };
+              // Keep the SSE connection alive during long tool-call gaps so proxies
+              // and mobile networks don't drop the idle stream before the final reply.
+              const keepalive = setInterval(() => {
+                try { controller.enqueue(encoder.encode(":ka\n\n")); } catch {}
+              }, 10_000);
               try {
                 await onChat(
                   enrichedMessage,
@@ -371,6 +376,7 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
               } catch (err) {
                 send({ type: "error", message: String(err) });
               } finally {
+                clearInterval(keepalive);
                 controller.close();
                 // Fire-and-forget cleanup of temp image files
                 for (const p of tempImagePaths) {
