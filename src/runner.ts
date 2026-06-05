@@ -298,6 +298,22 @@ export function isMainBusy(): boolean {
   return mainRunCount > 0;
 }
 
+// Busy state per thread queue + global queue, so handlers can allow
+// parallel runs across different topics/threads while still rejecting
+// a second message to the SAME thread (or the global session).
+const busyThreads = new Set<string>();
+let busyGlobalCount = 0;
+
+/** True while THIS thread's queue is processing a task. */
+export function isThreadBusy(threadId: string): boolean {
+  return busyThreads.has(threadId);
+}
+
+/** True while a global-session (non-thread) run is in flight. */
+export function isGlobalBusy(): boolean {
+  return busyGlobalCount > 0;
+}
+
 function extractRateLimitMessage(stdout: string, stderr: string): string | null {
   const candidates = [stdout, stderr];
   for (const text of candidates) {
@@ -1031,6 +1047,7 @@ async function execClaude(
   onToolEvent?: (line: string) => void
 ): Promise<RunResult> {
   mainRunCount++;
+  if (threadId) busyThreads.add(threadId); else busyGlobalCount++;
   persistRunCount();
   try {
   await mkdir(LOGS_DIR, { recursive: true });
@@ -1426,6 +1443,7 @@ async function execClaude(
   return result;
   } finally {
     mainRunCount--;
+    if (threadId) busyThreads.delete(threadId); else busyGlobalCount = Math.max(0, busyGlobalCount - 1);
     persistRunCount();
   }
 }
