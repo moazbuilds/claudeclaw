@@ -2,7 +2,7 @@ import { writeFile, unlink, mkdir } from "fs/promises";
 import { extractErrorDetail } from "../messaging";
 import { join } from "path";
 import { fileURLToPath } from "url";
-import { run, runUserMessage, streamUserMessage, bootstrap, ensureProjectClaudeMd, loadHeartbeatPromptTemplate, isRateLimited, getRateLimitResetAt, wasRateLimitNotified, markRateLimitNotified } from "../runner";
+import { run, runUserMessage, streamUserMessage, killActive, bootstrap, ensureProjectClaudeMd, loadHeartbeatPromptTemplate, isRateLimited, getRateLimitResetAt, wasRateLimitNotified, markRateLimitNotified } from "../runner";
 import { writeState, type StateData } from "../statusline";
 import { cronMatches, nextCronMatch } from "../cron";
 import { clearJobSchedule, loadJobs, snapshotJobFrontmatter } from "../jobs";
@@ -562,14 +562,19 @@ export async function start(args: string[] = []) {
             updateState();
             console.log(`[${ts()}] Jobs reloaded from Web UI`);
           },
-          onChat: async (message, onChunk, onUnblock, onAgentEvent) => {
-            const wizardCtx = { iface: "web" as const, scopeId: "default" };
+          onChat: async (message, onChunk, onUnblock, onAgentEvent, session) => {
+            // session: per-user Claude session/history (e.g. Aymen vs. Maren). Default "chat".
+            const sessionName = session || "chat";
+            const wizardCtx = { iface: "web" as const, scopeId: sessionName };
             if (isWizardTrigger(message) || hasActiveWizard(wizardCtx)) {
               onChunk(await handleWizardInput(wizardCtx, message));
               return;
             }
-            await streamUserMessage("chat", message, onChunk, onUnblock, onAgentEvent);
+            await streamUserMessage(sessionName, message, onChunk, onUnblock, onAgentEvent);
           },
+          // Stop button: kill any in-flight main-queue run. The runner serializes all
+          // main runs, so killActive() stops whatever is currently executing.
+          onAbort: () => killActive(),
         });
       } catch (err) {
         lastError = err;

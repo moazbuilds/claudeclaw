@@ -260,11 +260,29 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
         }
       }
 
+      if (url.pathname === "/api/abort" && req.method === "POST") {
+        if (!opts.onAbort) return json({ ok: false, error: "abort not configured" }, 501);
+        try {
+          const body = await req.json().catch(() => ({}));
+          const rawSession = String((body as Record<string, unknown>)?.session ?? "").trim().toLowerCase();
+          const session = rawSession.replace(/[^a-z0-9-]/g, "").slice(0, 48) || undefined;
+          const killed = opts.onAbort(session);
+          return json({ ok: true, killed });
+        } catch (err) {
+          return json({ ok: false, error: String(err) }, 500);
+        }
+      }
+
       if (url.pathname === "/api/chat" && req.method === "POST") {
         if (!opts.onChat) return json({ ok: false, error: "chat not configured" });
         try {
           const body = await req.json();
           const message = String(body?.message ?? "").trim();
+
+          // Per-user session routing: sanitize to a safe session name, default "chat".
+          // Lets multiple users (e.g. Aymen / Maren) keep separate Claude sessions + history.
+          const rawSession = String(body?.session ?? "chat").trim().toLowerCase();
+          const session = rawSession.replace(/[^a-z0-9-]/g, "").slice(0, 48) || "chat";
 
           interface Attachment {
             name: string;
@@ -346,7 +364,8 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
                   enrichedMessage,
                   (chunk) => send({ type: "chunk", text: chunk }),
                   () => send({ type: "unblock" }),
-                  (ev) => send({ type: ev.type === "spawn" ? "agent_spawn" : "agent_done", id: ev.id, description: ev.description, result: ev.result })
+                  (ev) => send({ type: ev.type === "spawn" ? "agent_spawn" : "agent_done", id: ev.id, description: ev.description, result: ev.result }),
+                  session
                 );
                 send({ type: "done" });
               } catch (err) {

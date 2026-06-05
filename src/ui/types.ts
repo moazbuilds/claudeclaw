@@ -33,6 +33,9 @@ export interface StartWebUiOptions {
     message: string,
     onChunk: (text: string) => void,
     onUnblock: () => void,
-    onAgentEvent: (ev: import("../runner").AgentStreamEvent) => void
+    onAgentEvent: (ev: import("../runner").AgentStreamEvent) => void,
+    session?: string
   ) => Promise<void>;
+  /** Abort running work for a session (Stop button). Returns true if anything was killed. */
+  onAbort?: (session?: string) => boolean;
 }
