@@ -37,3 +37,10 @@ describe("runner treats missing sessionId as new session", () => {
     assert.match(src, /const isNew = !existing\?\.sessionId;/);
   });
 });
+
+describe("thread session peeking", () => {
+  it("validates sessions.json rows before returning them", () => {
+    const src = readFileSync(new URL("../src/sessionManager.ts", import.meta.url), "utf8");
+    assert.match(src, /return hasValidSessionId\(session\) \? session : null;/);
+  });
+});

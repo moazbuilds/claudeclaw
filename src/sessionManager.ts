@@ -107,5 +107,6 @@ export async function listThreadSessions(): Promise<ThreadSession[]> {
 /** Peek at a thread session without updating lastUsedAt. */
 export async function peekThreadSession(threadId: string): Promise<ThreadSession | null> {
   const data = await loadSessions();
-  return data.threads[threadId] ?? null;
+  const session = data.threads[threadId];
+  return hasValidSessionId(session) ? session : null;
 }
