@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -67,5 +67,13 @@ describe("sessionFiles", () => {
 
   it("findSessionJsonlPath rejects non-uuid session ids", () => {
     assert.equal(findSessionJsonlPath("../escape"), null);
+  });
+});
+
+describe("telegram command imports", () => {
+  it("imports existsSync for voice directive filtering", () => {
+    const src = readFileSync(new URL("../src/commands/telegram.ts", import.meta.url), "utf8");
+    assert.match(src, /import \{ existsSync \} from "node:fs";/);
+    assert.match(src, /existsSync\(p\)/);
   });
 });

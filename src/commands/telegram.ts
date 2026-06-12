@@ -7,6 +7,7 @@ import { getSettings, loadSettings } from "../config";
 import { transcribeAudioToText } from "../whisper";
 import { resetSession, resetFallbackSession, peekSession } from "../sessions";
 import { peekThreadSession, removeThreadSession } from "../sessionManager";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { findSessionJsonlPath } from "../sessionFiles";
 import { resolveSkillPrompt, listSkills } from "../skills";
