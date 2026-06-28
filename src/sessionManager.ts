@@ -98,10 +98,10 @@ export async function markThreadCompactWarned(threadId: string): Promise<void> {
   await saveSessions(data);
 }
 
-/** List all active thread sessions. */
+/** List all active thread sessions. Drops corrupted rows missing a sessionId. */
 export async function listThreadSessions(): Promise<ThreadSession[]> {
   const data = await loadSessions();
-  return Object.values(data.threads);
+  return Object.values(data.threads).filter(hasValidSessionId);
 }
 
 /** Peek at a thread session without updating lastUsedAt. */
