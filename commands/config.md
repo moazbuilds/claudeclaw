@@ -154,6 +154,16 @@ Set or clear the API token for the fallback model.
 4. Set `fallback.api` to the new value.
 5. Write and confirm.
 
+### `fallback base-url <url>` / `fallback base-url`
+
+Set or clear the Anthropic-compatible base URL for the fallback model.
+
+1. If URL is in `$ARGUMENTS`, use it directly.
+2. Otherwise, use **AskUserQuestion**: "What base URL should ClaudeClaw use for fallback model?" (header: "Fallback URL", options: let user type via Other)
+3. Read `.claude/claudeclaw/settings.json`.
+4. Set `fallback.baseUrl` to the new value (`""` to clear).
+5. Write and confirm.
+
 ### `timezone <tz>` / `timezone`
 
 Set the IANA timezone (e.g. `America/New_York`, `Europe/London`, `UTC`).
@@ -251,9 +261,11 @@ Location: `.claude/claudeclaw/settings.json`
 {
   "model": "opus",
   "api": "",
+  "baseUrl": "",
   "fallback": {
     "model": "glm",
-    "api": ""
+    "api": "",
+    "baseUrl": ""
   },
   "timezone": "America/New_York",
   "timezoneOffsetMinutes": -300,
@@ -286,9 +298,11 @@ Location: `.claude/claudeclaw/settings.json`
 | Key                        | Type       | Description                                    |
 |----------------------------|------------|------------------------------------------------|
 | `model`                    | string     | Claude model (`opus`, `sonnet`, `haiku`, `glm`, or full ID). Empty = default |
-| `api`                      | string     | API token used when model is `glm` (mapped to `ANTHROPIC_AUTH_TOKEN`) |
+| `api`                      | string     | API token mapped to `ANTHROPIC_AUTH_TOKEN` for the primary model |
+| `baseUrl`                  | string     | Optional Anthropic-compatible base URL for the primary model |
 | `fallback.model`           | string     | Backup model used automatically if primary run returns rate-limit text (recommend `glm` for provider diversity) |
 | `fallback.api`             | string     | API token used with `fallback.model` (optional) |
+| `fallback.baseUrl`         | string     | Optional Anthropic-compatible base URL for fallback providers |
 | `timezone`                 | string     | IANA timezone name (e.g. `America/New_York`)   |
 | `timezoneOffsetMinutes`    | number     | UTC offset in minutes (auto-resolved from timezone) |
 | `heartbeat.enabled`        | boolean    | Whether the recurring heartbeat runs           |
