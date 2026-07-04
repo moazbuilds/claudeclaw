@@ -1,6 +1,10 @@
 // Search skills.sh and return JSON results
 // Usage: node search.mjs <query>
 // Works with Node 18+, Bun, Deno
+//
+// Uses the skills.sh search API. The old approach (scraping embedded JSON
+// out of the homepage HTML) broke when skills.sh moved to a Next.js app
+// that loads results client-side.
 
 const query = process.argv[2];
 if (!query) {
@@ -9,33 +13,21 @@ if (!query) {
 }
 
 try {
-  const res = await fetch(`https://skills.sh/?q=${encodeURIComponent(query)}`);
-  const html = await res.text();
-
-  const skills = [];
-  const esc = `\\\\?"`;  // matches both \" and "
-  const pattern = new RegExp(
-    `\\{${esc}source${esc}:${esc}([^"\\\\]+)${esc},${esc}skillId${esc}:${esc}([^"\\\\]+)${esc},${esc}name${esc}:${esc}([^"\\\\]+)${esc},${esc}installs${esc}:(\\d+)\\}`,
-    "g"
+  const res = await fetch(
+    `https://www.skills.sh/api/search?q=${encodeURIComponent(query)}`
   );
-  let match;
-  while ((match = pattern.exec(html)) !== null) {
-    skills.push({
-      source: match[1],
-      id: match[2],
-      name: match[3],
-      installs: parseInt(match[4]),
-    });
-  }
+  if (!res.ok) throw new Error(`skills.sh API returned HTTP ${res.status}`);
+  const data = await res.json();
 
-  const q = query.toLowerCase();
-  let filtered = skills.filter(
-    (s) => s.name.toLowerCase().includes(q) || s.source.toLowerCase().includes(q)
-  );
-  if (filtered.length === 0) filtered = skills.slice(0, 20);
+  const skills = (data.skills ?? []).map((s) => ({
+    source: s.source,
+    id: s.skillId,
+    name: s.name,
+    installs: s.installs ?? 0,
+  }));
 
-  filtered.sort((a, b) => b.installs - a.installs);
-  console.log(JSON.stringify(filtered.slice(0, 15), null, 2));
+  skills.sort((a, b) => b.installs - a.installs);
+  console.log(JSON.stringify(skills.slice(0, 15), null, 2));
 } catch (e) {
   console.log(JSON.stringify({ error: e.message }));
   process.exit(1);
