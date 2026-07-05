@@ -964,6 +964,96 @@ export const pageStyles = String.raw`    :root {
       background: linear-gradient(180deg, #a9d4ff, #789fce);
     }
 
+    .confirm-card {
+      width: min(440px, 100%);
+      border: 1px solid #d8e4ff20;
+      border-radius: 16px;
+      background: #0b1220f2;
+      box-shadow: 0 20px 44px #00000066;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .confirm-body {
+      padding: 18px 18px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .confirm-msg {
+      margin: 0;
+      font-size: 15px;
+      color: #ccd9f5;
+    }
+    .confirm-msg strong {
+      color: #e8f0ff;
+    }
+    .confirm-sub {
+      margin: 0;
+      font-size: 13px;
+      color: #7a90b2;
+      line-height: 1.5;
+    }
+    .confirm-note {
+      margin: 0;
+      font-size: 12px;
+      color: #566880;
+      font-style: italic;
+    }
+    .confirm-warn { color: rgba(239, 68, 68, 0.85); }
+    .confirm-status {
+      min-height: 18px;
+      font-size: 13px;
+      color: #4db87a;
+      font-family: "JetBrains Mono", monospace;
+      letter-spacing: 0.02em;
+      opacity: 0;
+      transition: opacity 0.35s ease;
+    }
+    .confirm-status.visible {
+      opacity: 1;
+    }
+    .confirm-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      padding: 14px 18px;
+      border-top: 1px solid #ffffff12;
+    }
+    .hb-btn.solid.danger {
+      border-color: #c8303080;
+      background: linear-gradient(180deg, #8b1a1ad4 0%, #6b1414ce 100%);
+      color: #f8c8c8;
+    }
+    .hb-btn.solid.danger:hover {
+      filter: brightness(1.08);
+    }
+    .hb-btn.solid.danger:disabled {
+      opacity: 0.55;
+      cursor: default;
+      filter: none;
+    }
+    .confirm-progress {
+      height: 3px;
+      background: #ffffff08;
+      overflow: hidden;
+      opacity: 0;
+      transition: opacity 0.2s;
+    }
+    .confirm-progress.active {
+      opacity: 1;
+    }
+    .confirm-progress-fill {
+      height: 100%;
+      width: 40%;
+      background: linear-gradient(90deg, transparent, #3cb879cc, transparent);
+      animation: progress-sweep 1.6s ease-in-out infinite;
+    }
+    @keyframes progress-sweep {
+      0%   { transform: translateX(-200%); }
+      100% { transform: translateX(350%); }
+    }
+
     .dock-shell {
       position: fixed;
       left: 50%;
@@ -1683,6 +1773,33 @@ export const pageStyles = String.raw`    :root {
   transition: width 0.3s ease;
 }
 .usage-cost-label { position: relative; padding-left: 6px; font-variant-numeric: tabular-nums; color: var(--fg); }
+.usage-td-reset { text-align: right; padding-right: 0; width: 1%; white-space: nowrap; }
+.usage-reset-btn {
+  font-size: 10px;
+  font-family: inherit;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.08);
+  color: rgba(239, 68, 68, 0.75);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.usage-reset-btn:hover { background: rgba(239, 68, 68, 0.18); color: rgb(239, 68, 68); border-color: rgba(239, 68, 68, 0.6); }
+.usage-reset-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.usage-compact-btn {
+  font-size: 10px;
+  font-family: inherit;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(99, 179, 237, 0.35);
+  background: rgba(99, 179, 237, 0.08);
+  color: rgba(99, 179, 237, 0.75);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.usage-compact-btn:hover { background: rgba(99, 179, 237, 0.18); color: rgb(99, 179, 237); border-color: rgba(99, 179, 237, 0.6); }
+.usage-compact-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 @media (max-width: 640px) {
   .tab-btn { padding: 0 12px; font-size: 10px; }

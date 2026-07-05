@@ -111,6 +111,39 @@ ${pageStyles}
       </div>
     </article>
   </section>
+  <section class="info-modal" id="confirm-compact-modal" aria-live="polite" aria-hidden="true">
+    <article class="confirm-card">
+      <div class="info-head">
+        <span>Compact Session</span>
+      </div>
+      <div class="confirm-body">
+        <p class="confirm-msg">Compact <strong id="confirm-compact-label"></strong>?</p>
+        <p class="confirm-sub">Compresses conversation history into a summary. The session stays active but <strong class="confirm-warn">this can't be reversed.</strong></p>
+        <p class="confirm-note">This can take up to 2 minutes.</p>
+        <div class="confirm-status" id="confirm-compact-status" aria-live="polite"></div>
+      </div>
+      <div class="confirm-actions">
+        <button class="hb-btn ghost" id="confirm-compact-cancel" type="button">Cancel</button>
+        <button class="hb-btn solid" id="confirm-compact-ok" type="button">Compact</button>
+      </div>
+      <div class="confirm-progress" id="confirm-compact-progress"><div class="confirm-progress-fill"></div></div>
+    </article>
+  </section>
+  <section class="info-modal" id="confirm-reset-modal" aria-live="polite" aria-hidden="true">
+    <article class="confirm-card">
+      <div class="info-head">
+        <span>Reset Session</span>
+      </div>
+      <div class="confirm-body">
+        <p class="confirm-msg">Reset <strong id="confirm-reset-label"></strong>?</p>
+        <p class="confirm-sub">Permanently clears the session. The next interaction starts fresh. <strong class="confirm-warn">This can't be undone.</strong></p>
+      </div>
+      <div class="confirm-actions">
+        <button class="hb-btn ghost" id="confirm-reset-cancel" type="button">Cancel</button>
+        <button class="hb-btn solid danger" id="confirm-reset-ok" type="button">Reset</button>
+      </div>
+    </article>
+  </section>
   <main class="stage">
     <nav class="tab-nav" role="tablist" aria-label="Main navigation">
       <button class="tab-btn tab-btn-active" id="tab-dashboard" type="button" role="tab" aria-selected="true" aria-controls="dashboard-panel">Dashboard</button>

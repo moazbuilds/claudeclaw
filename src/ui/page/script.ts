@@ -1610,6 +1610,10 @@ export const pageScript = String.raw`    // --- Token management (Task 1.1) ---
           "</td>" +
           "<td class='usage-td usage-td-num usage-td-turns'>" + s.turnCount + "</td>" +
           "<td class='usage-td usage-td-age'>" + fmtRelative(s.lastUsedAt) + "</td>" +
+          "<td class='usage-td usage-td-reset'>" +
+            (s.channel === "discord" ? "<button class='usage-compact-btn' type='button' data-compact-session='" + escAttr(s.sessionId) + "' data-compact-label='" + escAttr(s.label) + "'>Compact</button> " : "") +
+            "<button class='usage-reset-btn' type='button' data-reset-session='" + escAttr(s.sessionId) + "' data-reset-label='" + escAttr(s.label) + "'>Reset</button>" +
+          "</td>" +
           "</tr>";
       }).join("");
       usageWrap.innerHTML =
@@ -1623,9 +1627,160 @@ export const pageScript = String.raw`    // --- Token management (Task 1.1) ---
         "<th class='usage-th'>Est. Cost</th>" +
         "<th class='usage-th usage-th-num'>Turns</th>" +
         "<th class='usage-th'>Last Active</th>" +
+        "<th class='usage-th'></th>" +
         "</tr></thead>" +
         "<tbody>" + rows + "</tbody>" +
         "</table>";
+    }
+
+    // Per-session in-flight lock — prevents concurrent compact/reset on the same session.
+    var inFlightSessions = new Set();
+
+    if (usageWrap) {
+      // ── Compact flow ──────────────────────────────────────────────────────────
+      usageWrap.addEventListener("click", function(event) {
+        var btn = event.target && event.target.closest && event.target.closest("[data-compact-session]");
+        if (!btn || !(btn instanceof HTMLButtonElement)) return;
+        var sessionId = btn.getAttribute("data-compact-session") || "";
+        var label = btn.getAttribute("data-compact-label") || sessionId;
+        if (!sessionId || inFlightSessions.has(sessionId)) return;
+        var compactModal = document.getElementById("confirm-compact-modal");
+        var compactLabelEl = document.getElementById("confirm-compact-label");
+        var compactOk = document.getElementById("confirm-compact-ok");
+        var compactCancel = document.getElementById("confirm-compact-cancel");
+        var compactProgress = document.getElementById("confirm-compact-progress");
+        var compactStatus = document.getElementById("confirm-compact-status");
+        if (!compactModal || !compactLabelEl || !compactOk || !compactCancel) return;
+        compactLabelEl.textContent = label;
+        compactModal.classList.add("open");
+        compactModal.setAttribute("aria-hidden", "false");
+        var statusTimer = null;
+        var statusFadeTimer = null;
+        var statusMessages = [
+          "Compacting conversation history…",
+          "Summarizing and condensing the session…",
+          "Still working, hang tight…",
+          "Almost there…",
+        ];
+        var startStatusCycle = function() {
+          if (!compactStatus) return;
+          var idx = 0;
+          var showNext = function() {
+            compactStatus.classList.remove("visible");
+            statusFadeTimer = setTimeout(function() {
+              compactStatus.textContent = statusMessages[idx % statusMessages.length];
+              compactStatus.classList.add("visible");
+              idx++;
+              statusTimer = setTimeout(showNext, 4000);
+            }, 350);
+          };
+          showNext();
+        };
+        var stopStatusCycle = function() {
+          if (statusTimer) { clearTimeout(statusTimer); statusTimer = null; }
+          if (statusFadeTimer) { clearTimeout(statusFadeTimer); statusFadeTimer = null; }
+          if (compactStatus) { compactStatus.classList.remove("visible"); compactStatus.textContent = ""; }
+        };
+        var cleanupCompact = function() {
+          stopStatusCycle();
+          inFlightSessions.delete(sessionId);
+          compactModal.classList.remove("open");
+          compactModal.setAttribute("aria-hidden", "true");
+          if (compactProgress) compactProgress.classList.remove("active");
+          compactOk.removeEventListener("click", onCompactOk);
+          compactCancel.removeEventListener("click", onCompactCancel);
+          compactOk.disabled = false;
+          compactOk.textContent = "Compact";
+          compactCancel.style.display = "";
+          btn.disabled = false;
+          btn.textContent = "Compact";
+        };
+        var onCompactCancel = function() {
+          cleanupCompact();
+        };
+        var onCompactOk = function() {
+          inFlightSessions.add(sessionId);
+          compactOk.disabled = true;
+          compactOk.textContent = "Working…";
+          compactCancel.style.display = "none";
+          if (compactProgress) compactProgress.classList.add("active");
+          startStatusCycle();
+          btn.disabled = true;
+          btn.textContent = "Compacting…";
+          fetch("/api/usage/" + encodeURIComponent(sessionId) + "/compact", { method: "POST" })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+              cleanupCompact();
+              if (data.ok) {
+                fetchUsage();
+              } else {
+                alert("Compact failed: " + (data.error || data.message || "unknown error"));
+              }
+            })
+            .catch(function(err) {
+              cleanupCompact();
+              alert("Compact failed: " + String(err));
+            });
+        };
+        compactOk.addEventListener("click", onCompactOk);
+        compactCancel.addEventListener("click", onCompactCancel);
+      });
+
+      // ── Reset flow ────────────────────────────────────────────────────────────
+      usageWrap.addEventListener("click", function(event) {
+        var btn = event.target && event.target.closest && event.target.closest("[data-reset-session]");
+        if (!btn || !(btn instanceof HTMLButtonElement)) return;
+        var sessionId = btn.getAttribute("data-reset-session") || "";
+        var label = btn.getAttribute("data-reset-label") || sessionId;
+        if (!sessionId || inFlightSessions.has(sessionId)) return;
+        var confirmModal = document.getElementById("confirm-reset-modal");
+        var confirmLabelEl = document.getElementById("confirm-reset-label");
+        var confirmOk = document.getElementById("confirm-reset-ok");
+        var confirmCancel = document.getElementById("confirm-reset-cancel");
+        if (!confirmModal || !confirmLabelEl || !confirmOk || !confirmCancel) return;
+        confirmLabelEl.textContent = label;
+        confirmModal.classList.add("open");
+        confirmModal.setAttribute("aria-hidden", "false");
+        var cleanupReset = function() {
+          inFlightSessions.delete(sessionId);
+          confirmModal.classList.remove("open");
+          confirmModal.setAttribute("aria-hidden", "true");
+          confirmOk.removeEventListener("click", onResetOk);
+          confirmCancel.removeEventListener("click", onResetCancel);
+          confirmOk.disabled = false;
+          confirmOk.textContent = "Reset";
+          confirmCancel.style.display = "";
+          btn.disabled = false;
+          btn.textContent = "Reset";
+        };
+        var onResetCancel = function() {
+          cleanupReset();
+        };
+        var onResetOk = function() {
+          inFlightSessions.add(sessionId);
+          confirmOk.disabled = true;
+          confirmOk.textContent = "Resetting…";
+          confirmCancel.style.display = "none";
+          btn.disabled = true;
+          btn.textContent = "Resetting…";
+          fetch("/api/usage/" + encodeURIComponent(sessionId) + "/reset", { method: "DELETE" })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+              cleanupReset();
+              if (data.ok) {
+                fetchUsage();
+              } else {
+                alert("Reset failed: " + (data.error || "unknown error"));
+              }
+            })
+            .catch(function(err) {
+              cleanupReset();
+              alert("Reset failed: " + String(err));
+            });
+        };
+        confirmOk.addEventListener("click", onResetOk);
+        confirmCancel.addEventListener("click", onResetCancel);
+      });
     }
 
     function fetchUsage() {

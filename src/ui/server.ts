@@ -7,7 +7,7 @@ import { readHeartbeatSettings, updateHeartbeatSettings } from "./services/setti
 import { createQuickJob, deleteJob } from "./services/jobs";
 import { readLogs } from "./services/logs";
 import { listSessions, readSessionMessages, listAgents } from "./services/sessions";
-import { getSessionUsage } from "./services/usage";
+import { getSessionUsage, compactSessionById, resetSessionById } from "./services/usage";
 import { runUserMessage } from "../runner";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
@@ -212,9 +212,35 @@ export function startWebUi(opts: StartWebUiOptions): WebServerHandle {
       if (url.pathname === "/api/usage" && req.method === "GET") {
         try {
           const channelNames = opts.getSnapshot().settings.discord?.channelNames;
-          return json(await getSessionUsage(channelNames));
+          const data = await getSessionUsage(channelNames);
+          return new Response(JSON.stringify(data), {
+            headers: {
+              "Content-Type": "application/json; charset=utf-8",
+              "Cache-Control": "no-store",
+            },
+          });
         } catch (err) {
           return json({ ok: false, error: String(err) });
+        }
+      }
+
+      if (url.pathname.startsWith("/api/usage/") && url.pathname.endsWith("/compact") && req.method === "POST") {
+        const sessionId = url.pathname.slice("/api/usage/".length, -"/compact".length);
+        try {
+          const result = await compactSessionById(sessionId);
+          return json({ ok: result.success, message: result.message });
+        } catch (err) {
+          return json({ ok: false, error: String(err) }, 400);
+        }
+      }
+
+      if (url.pathname.startsWith("/api/usage/") && url.pathname.endsWith("/reset") && req.method === "DELETE") {
+        const sessionId = url.pathname.slice("/api/usage/".length, -"/reset".length);
+        try {
+          await resetSessionById(sessionId);
+          return json({ ok: true });
+        } catch (err) {
+          return json({ ok: false, error: String(err) }, 400);
         }
       }
 
