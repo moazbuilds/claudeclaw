@@ -1,7 +1,7 @@
 import { writeFile, unlink, mkdir } from "fs/promises";
 import { join } from "path";
 import { fileURLToPath } from "url";
-import { run, runUserMessage, streamUserMessage, bootstrap, ensureProjectClaudeMd, loadHeartbeatPromptTemplate } from "../runner";
+import { run, runShell, runUserMessage, streamUserMessage, bootstrap, ensureProjectClaudeMd, loadHeartbeatPromptTemplate } from "../runner";
 import { writeState, type StateData } from "../statusline";
 import { cronMatches, nextCronMatch } from "../cron";
 import { clearJobSchedule, loadJobs } from "../jobs";
@@ -328,6 +328,17 @@ export async function start(args: string[] = []) {
   }
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
+  // Global crash net: an uncaught throw in one job/timer/gateway callback
+  // must not kill the supervisor and every other job with it. Log loudly
+  // and keep running; restart.sh remains the backstop for a wedged process.
+  process.on("uncaughtException", (err) => {
+    const detail = err instanceof Error ? err.stack ?? err.message : String(err);
+    console.error(`[${new Date().toLocaleTimeString()}] Uncaught exception (daemon kept alive): ${detail}`);
+  });
+  process.on("unhandledRejection", (reason) => {
+    const detail = reason instanceof Error ? reason.stack ?? reason.message : String(reason);
+    console.error(`[${new Date().toLocaleTimeString()}] Unhandled rejection (daemon kept alive): ${detail}`);
+  });
 
   console.log("ClaudeClaw daemon started");
   console.log(`  PID: ${process.pid}`);
@@ -490,6 +501,7 @@ export async function start(args: string[] = []) {
         stdin: "ignore",
         stdout: "inherit",
         stderr: "inherit",
+        windowsHide: true,
       });
       proc.unref();
       console.log(`[${ts()}] Plugin preflight started in background`);
@@ -697,7 +709,7 @@ export async function start(args: string[] = []) {
     for (const job of currentJobs) {
       if (cronMatches(job.schedule, now, currentSettings.timezoneOffsetMinutes)) {
         resolvePrompt(job.prompt)
-          .then((prompt) => run(job.name, prompt))
+          .then((prompt) => job.shell ? runShell(job.name, prompt) : run(job.name, prompt))
           .then((r) => {
             if (job.notify === false) return;
             if (job.notify === "error" && r.exitCode === 0) return;

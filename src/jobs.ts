@@ -9,13 +9,15 @@ export interface Job {
   prompt: string;
   recurring: boolean;
   notify: true | false | "error";
+  /** When true, the job body's first ```bash code block is executed directly via bash -c. No Claude session, no token cost. */
+  shell: boolean;
 }
 
 function parseFrontmatterValue(raw: string): string {
   return raw.trim().replace(/^["']|["']$/g, "");
 }
 
-function parseJobFile(name: string, content: string): Job | null {
+export function parseJobFile(name: string, content: string): Job | null {
   const match = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/);
   if (!match) {
     console.error(`Invalid job file format: ${name}`);
@@ -51,7 +53,13 @@ function parseJobFile(name: string, content: string): Job | null {
     : notifyRaw === "error" ? "error"
     : true;
 
-  return { name, schedule, prompt, recurring, notify };
+  const shellLine = lines.find((l) => l.startsWith("shell:"));
+  const shellRaw = shellLine
+    ? parseFrontmatterValue(shellLine.replace("shell:", "")).toLowerCase()
+    : "";
+  const shell = shellRaw === "true" || shellRaw === "yes" || shellRaw === "1";
+
+  return { name, schedule, prompt, recurring, notify, shell };
 }
 
 export async function loadJobs(): Promise<Job[]> {

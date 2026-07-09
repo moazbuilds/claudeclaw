@@ -100,11 +100,20 @@ export interface SecurityConfig {
   disallowedTools: string[];
 }
 
+export interface OllamaConfig {
+  enabled: boolean;
+  /** Model used to classify read vs write intent (default: "phi3:mini") */
+  classifierModel: string;
+  /** Model used for read-only query responses (default: "llama3.2:3b") */
+  readerModel: string;
+}
+
 export interface Settings {
   model: string;
   api: string;
   fallback: ModelConfig;
   agentic: AgenticConfig;
+  ollama?: OllamaConfig;
   timezone: string;
   timezoneOffsetMinutes: number;
   heartbeat: HeartbeatConfig;
@@ -113,6 +122,9 @@ export interface Settings {
   security: SecurityConfig;
   web: WebConfig;
   stt: SttConfig;
+  /** Max wall-clock time for a single Claude invocation, in ms.
+   *  Falls back to runner.ts CLAUDE_TIMEOUT_MS when absent. */
+  sessionTimeoutMs?: number;
 }
 
 export interface AgenticMode {
@@ -217,7 +229,7 @@ function parseAgenticConfig(raw: any): AgenticConfig {
   };
 }
 
-function parseSettings(raw: Record<string, any>): Settings {
+function parseSettings(raw: Record<string, any>, discordUserIdsFromText?: string[]): Settings {
   const rawLevel = raw.security?.level;
   const level: SecurityLevel =
     typeof rawLevel === "string" && VALID_LEVELS.has(rawLevel as SecurityLevel)
@@ -249,9 +261,14 @@ function parseSettings(raw: Record<string, any>): Settings {
     },
     discord: {
       token: typeof raw.discord?.token === "string" ? raw.discord.token.trim() : "",
-      allowedUserIds: Array.isArray(raw.discord?.allowedUserIds)
-          ? raw.discord.allowedUserIds.map(String)
-          : [],
+      // Prefer IDs re-extracted from the raw JSON text: snowflakes stored as
+      // bare numbers exceed Number.MAX_SAFE_INTEGER and JSON.parse silently
+      // corrupts them, which would make the allowlist never match.
+      allowedUserIds: discordUserIdsFromText && discordUserIdsFromText.length > 0
+          ? discordUserIdsFromText
+          : Array.isArray(raw.discord?.allowedUserIds)
+            ? raw.discord.allowedUserIds.map(String)
+            : [],
       listenChannels: Array.isArray(raw.discord?.listenChannels)
         ? raw.discord.listenChannels.map(String)
         : [],
@@ -274,6 +291,17 @@ function parseSettings(raw: Record<string, any>): Settings {
       baseUrl: typeof raw.stt?.baseUrl === "string" ? raw.stt.baseUrl.trim() : "",
       model: typeof raw.stt?.model === "string" ? raw.stt.model.trim() : "",
     },
+    sessionTimeoutMs:
+      Number.isFinite(raw.sessionTimeoutMs) && Number(raw.sessionTimeoutMs) > 0
+        ? Number(raw.sessionTimeoutMs)
+        : undefined,
+    ollama: raw.ollama?.enabled
+      ? {
+          enabled: true,
+          classifierModel: typeof raw.ollama.classifierModel === "string" ? raw.ollama.classifierModel : "phi3:mini",
+          readerModel: typeof raw.ollama.readerModel === "string" ? raw.ollama.readerModel : "llama3.2:3b",
+        }
+      : undefined,
   };
 }
 

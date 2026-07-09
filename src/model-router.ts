@@ -47,15 +47,6 @@ export function classifyTask(
     return { mode, score };
   });
 
-  // Question marks boost modes that have "planning"-style phrases
-  const questionMarks = (normalized.match(/\?/g) || []).length;
-  if (questionMarks > 0) {
-    for (const entry of scores) {
-      if (entry.mode.phrases && entry.mode.phrases.length > 0) {
-        entry.score += questionMarks * 0.5;
-      }
-    }
-  }
 
   // Find highest scoring mode
   scores.sort((a, b) => b.score - a.score);

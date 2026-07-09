@@ -1,14 +1,15 @@
-import { ensureProjectClaudeMd, run, runUserMessage, compactCurrentSession } from "../runner";
+import { ensureProjectClaudeMd, run, runOnce, runUserMessage, compactCurrentSession, CLAUDE_CMD } from "../runner";
 import { getSettings, loadSettings } from "../config";
 import { resetSession, peekSession } from "../sessions";
 import { listThreadSessions, removeThreadSession, peekThreadSession } from "../sessionManager";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { transcribeAudioToText } from "../whisper";
 import { resolveSkillPrompt } from "../skills";
 import { mkdir } from "node:fs/promises";
 import { extname, join } from "node:path";
+import { classifyEmoji, recordResponse, recordReaction } from "../training";
 
 // --- Discord API constants ---
 
@@ -64,6 +65,11 @@ interface DiscordMessage {
   referenced_message?: DiscordMessage | null;
   flags?: number;
   type: number;
+  // Discord populates `thread` on a message when the message has a thread
+  // started off it. We use this on `referenced_message` to detect replies
+  // that should be routed into an existing thread instead of spawning a
+  // duplicate one in the parent channel.
+  thread?: { id: string; parent_id?: string } | null;
 }
 
 interface DiscordInteraction {
@@ -108,6 +114,17 @@ let heartbeatAcked = true;
 let running = true;
 let discordDebug = false;
 
+// --- Gateway watchdog ---
+// The heartbeat-ack check (above) only fires on its scheduled interval. If
+// the OS sleeps the process or the WebSocket goes silent in a way that
+// doesn't trip onclose/onerror, the heartbeat timer can stop firing
+// entirely — leaving the daemon in an "open but dead" gateway state for
+// hours. The watchdog independently tracks the wall-clock time since the
+// last received gateway frame and forces a reconnect if the gap exceeds
+// 2× heartbeat interval (floor 90s). Updated on every onmessage.
+let lastGatewayActivityAt = Date.now();
+let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+
 // Bot identity (populated from READY)
 let botUserId: string | null = null;
 let botUsername: string | null = null;
@@ -118,6 +135,30 @@ let readyGuildIds: Set<string> | null = null;
 
 // Track known thread channel IDs and their parent channel IDs for multi-session support
 const knownThreads = new Map<string, { parentId: string }>();
+
+// Threads we've successfully PUT ourselves into as a member. Thread MEMBERSHIP
+// is what makes the gateway deliver MESSAGE_CREATE for a thread in real time —
+// threads we merely track in knownThreads (catchup discovery, message-time
+// recovery) but never joined only ever reach us via the 90s catchup sweep,
+// which is why factory-created threads felt sluggish (observed 2026-07-09:
+// every message in unjoined threads arrived via "Catchup: re-delivering",
+// while rejoinThreads-joined session threads got instant [GW] MESSAGE_CREATE).
+// Membership persists server-side, so this set only saves redundant PUTs
+// within one process lifetime.
+const joinedThreads = new Set<string>();
+
+async function joinThreadIfNeeded(token: string, threadId: string): Promise<void> {
+  if (joinedThreads.has(threadId)) return;
+  try {
+    await discordApi(token, "PUT", `/channels/${threadId}/thread-members/@me`);
+    joinedThreads.add(threadId);
+    debugLog(`Joined thread ${threadId} for real-time gateway delivery`);
+  } catch (err) {
+    // Archived threads 4xx here — they auto-unarchive on the next message and
+    // the catchup sweep still covers them, so this is best-effort by design.
+    debugLog(`Thread join failed for ${threadId}: ${err}`);
+  }
+}
 
 // --- Debug ---
 
@@ -134,14 +175,24 @@ async function discordApi<T>(
   endpoint: string,
   body?: unknown,
 ): Promise<T> {
-  const res = await fetch(`${DISCORD_API}${endpoint}`, {
-    method,
-    headers: {
-      Authorization: `Bot ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  // Hard timeout so a hung Discord request can't stall callers (notably the
+  // catchup sweep — a single slow GET would otherwise block the whole pass).
+  const ctrl = new AbortController();
+  const tHandle = setTimeout(() => ctrl.abort(), 15_000);
+  let res: Response;
+  try {
+    res = await fetch(`${DISCORD_API}${endpoint}`, {
+      method,
+      headers: {
+        Authorization: `Bot ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: ctrl.signal,
+    });
+  } finally {
+    clearTimeout(tHandle);
+  }
 
   // Rate limit handling
   if (res.status === 429) {
@@ -169,10 +220,14 @@ async function sendMessage(
   channelId: string,
   text: string,
   components?: unknown[],
-): Promise<void> {
-  const normalized = text.replace(/\[react:[^\]\r\n]+\]/gi, "").trim();
-  if (!normalized) return;
+): Promise<string | null> {
+  const normalized = text
+    .replace(/\[react:[^\]\r\n]+\]/gi, "")
+    .replace(/\[image:[^\]\r\n]+\]/gi, "")
+    .trim();
+  if (!normalized) return null;
   const MAX_LEN = 2000;
+  let lastId: string | null = null;
   for (let i = 0; i < normalized.length; i += MAX_LEN) {
     const chunk = normalized.slice(i, i + MAX_LEN);
     const body: Record<string, unknown> = { content: chunk };
@@ -180,8 +235,10 @@ async function sendMessage(
     if (components && i + MAX_LEN >= normalized.length) {
       body.components = components;
     }
-    await discordApi(token, "POST", `/channels/${channelId}/messages`, body);
+    const sent = await discordApi<{ id?: string }>(token, "POST", `/channels/${channelId}/messages`, body);
+    if (sent && typeof sent.id === "string") lastId = sent.id;
   }
+  return lastId;
 }
 
 async function sendMessageToUser(
@@ -219,9 +276,64 @@ async function sendReaction(
   ).catch(() => {});
 }
 
+// Upload one or more files to a channel via multipart/form-data.
+// Discord rejects application/json bodies for file uploads, so this is a
+// parallel send path to sendMessage() — use it whenever there are attachments.
+async function sendMessageWithFiles(
+  token: string,
+  channelId: string,
+  text: string,
+  filePaths: string[],
+): Promise<string | null> {
+  const normalized = text
+    .replace(/\[react:[^\]\r\n]+\]/gi, "")
+    .replace(/\[image:[^\]\r\n]+\]/gi, "")
+    .trim();
+
+  const form = new FormData();
+  const attachmentsMeta: Array<{ id: number; filename: string }> = [];
+  let idx = 0;
+  for (const raw of filePaths) {
+    const filePath = raw.startsWith("~")
+      ? join(homedir(), raw.slice(1).replace(/^[\\/]/, ""))
+      : raw;
+    const file = Bun.file(filePath);
+    if (!(await file.exists())) {
+      console.error(`[Discord] sendMessageWithFiles: file not found: ${filePath}`);
+      continue;
+    }
+    const filename = filePath.split(/[\\/]/).pop() ?? `file-${idx}`;
+    form.append(`files[${idx}]`, file, filename);
+    attachmentsMeta.push({ id: idx, filename });
+    idx++;
+  }
+
+  if (attachmentsMeta.length === 0) {
+    // Nothing actually attached — fall back to a plain text send so the user
+    // still gets *something* instead of a silent drop.
+    return sendMessage(token, channelId, normalized || "(image attachment failed)");
+  }
+
+  const payload: Record<string, unknown> = { attachments: attachmentsMeta };
+  if (normalized) payload.content = normalized.slice(0, 2000);
+  form.append("payload_json", JSON.stringify(payload));
+
+  const res = await fetch(`${DISCORD_API}/channels/${channelId}/messages`, {
+    method: "POST",
+    headers: { Authorization: `Bot ${token}` },
+    body: form,
+  });
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    throw new Error(`Discord upload failed: ${res.status} ${res.statusText} ${errText}`);
+  }
+  const sent = (await res.json()) as { id?: string };
+  return sent.id ?? null;
+}
+
 // --- Reaction directive extraction (same as telegram.ts) ---
 
-function extractReactionDirective(text: string): { cleanedText: string; reactionEmoji: string | null } {
+export function extractReactionDirective(text: string): { cleanedText: string; reactionEmoji: string | null } {
   let reactionEmoji: string | null = null;
   const cleanedText = text
     .replace(/\[react:([^\]\r\n]+)\]/gi, (_match, raw) => {
@@ -235,49 +347,518 @@ function extractReactionDirective(text: string): { cleanedText: string; reaction
   return { cleanedText, reactionEmoji };
 }
 
+// Pull out [image:/path/to/file.png] directives so the bot can upload them
+// alongside the reply text. Same shape as the [react:] convention.
+function extractImageDirectives(text: string): { cleanedText: string; imagePaths: string[] } {
+  const imagePaths: string[] = [];
+  const cleanedText = text
+    .replace(/\[image:([^\]\r\n]+)\]/gi, (_match, raw) => {
+      const candidate = String(raw).trim();
+      if (candidate) imagePaths.push(candidate);
+      return "";
+    })
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return { cleanedText, imagePaths };
+}
+
+// --- Thread history fetcher ---
+// When claudeclaw starts a fresh Claude session in a thread that already
+// has Discord messages (recovered thread, lost session, or first reply
+// after the bot was offline), the agent walks in blind. Pull the recent
+// thread messages AND the thread's starter message from the parent
+// channel, then format them as a history block to prepend to the first
+// prompt so context isn't lost.
+export type HistoryMsg = {
+  id: string;
+  author: { id?: string; username: string; bot?: boolean };
+  content: string;
+  timestamp?: string;
+  attachments?: Array<{ filename: string }>;
+};
+
+// Hard caps on seeded thread history. Keeps a single thread-resume from
+// dumping a huge transcript into a fresh Claude session's context window.
+// Defaults sized for ~5k tokens of seed context.
+export const THREAD_HISTORY_DEFAULT_MAX_MESSAGES = 20;
+export const THREAD_HISTORY_DEFAULT_MAX_CHARS = 20_000;
+
+/**
+ * Pure formatter for the thread-history seed block. Exported for testing.
+ * - Keeps the starter when present, plus the newest N-1 messages.
+ * - Drops any item whose body is empty after trimming.
+ * - Hard-caps the rendered length; over the cap, oldest non-starter lines
+ *   are dropped first and a truncation marker is prepended.
+ */
+export function formatThreadHistory(
+  starter: HistoryMsg | null,
+  messagesOldestFirst: HistoryMsg[],
+  opts: { maxMessages?: number; maxChars?: number } = {},
+): string | null {
+  const maxMessages = opts.maxMessages ?? THREAD_HISTORY_DEFAULT_MAX_MESSAGES;
+  const maxChars = opts.maxChars ?? THREAD_HISTORY_DEFAULT_MAX_CHARS;
+
+  let ordered: HistoryMsg[] = [];
+  if (starter) ordered.push(starter);
+  ordered.push(...messagesOldestFirst);
+
+  if (ordered.length > maxMessages) {
+    ordered = starter
+      ? [starter, ...ordered.slice(1).slice(-(maxMessages - 1))]
+      : ordered.slice(-maxMessages);
+  }
+
+  const lines: string[] = [];
+  for (const m of ordered) {
+    const speaker = m.author.bot ? "claudeclaw" : m.author.username;
+    const ts = m.timestamp ? m.timestamp.slice(0, 19).replace("T", " ") : "";
+    let body = (m.content || "").trim();
+    if (m.attachments?.length) {
+      const files = m.attachments.map((a) => a.filename).join(", ");
+      body = body ? `${body} [attachments: ${files}]` : `[attachments: ${files}]`;
+    }
+    if (!body) continue;
+    const marker = starter && m.id === starter.id ? " [thread starter]" : "";
+    lines.push(`${speaker} (${ts})${marker}: ${body}`);
+  }
+  if (lines.length === 0) return null;
+
+  const header = "[Discord thread history — prior turns in this thread, included because no resumable Claude session was found. Starter message is the original parent-channel message the thread was created from.]";
+  const footer = "[End of thread history]";
+  let working = [...lines];
+
+  const render = () => [header, ...working, footer].join("\n");
+
+  while (working.length > 1 && render().length > maxChars) {
+    // Drop the second line (oldest non-starter); starter (if present) is at index 0.
+    const dropIdx = starter && working.length > 0 && working[0]?.includes("[thread starter]") ? 1 : 0;
+    working.splice(dropIdx, 1);
+  }
+
+  let result = render();
+  if (result.length > maxChars) {
+    const truncMarker = "[... thread history truncated to stay under context cap ...]\n";
+    result = truncMarker + result.slice(-(maxChars - truncMarker.length));
+  }
+  return result;
+}
+
+async function fetchThreadHistoryContext(
+  token: string,
+  threadId: string,
+  parentId: string,
+  beforeMessageId: string,
+  limit = THREAD_HISTORY_DEFAULT_MAX_MESSAGES,
+): Promise<string | null> {
+  // Threads created off a parent channel message (auto-thread flow + the
+  // "hire X" intent) have thread.id === starterMessage.id, and the starter
+  // lives in the PARENT channel, not the thread's messages endpoint.
+  // Fetching it from the thread directly returns 404. Standalone threads
+  // (POST /channels/{id}/threads with no starter) also 404 here — that's
+  // fine, debugLog and move on.
+  let starter: HistoryMsg | null = null;
+  try {
+    starter = await discordApi<HistoryMsg>(token, "GET", `/channels/${parentId}/messages/${threadId}`);
+  } catch (err) {
+    debugLog(`Thread starter fetch skipped for ${threadId}: ${err}`);
+  }
+
+  let messages: HistoryMsg[] = [];
+  try {
+    messages = await discordApi<HistoryMsg[]>(
+      token,
+      "GET",
+      `/channels/${threadId}/messages?limit=${limit}&before=${beforeMessageId}`,
+    );
+  } catch (err) {
+    debugLog(`Thread history fetch failed for ${threadId}: ${err}`);
+  }
+
+  // Discord returns newest first — reverse to chronological.
+  return formatThreadHistory(starter, [...messages].reverse());
+}
+
 // --- Thread rejoin helper ---
+// Populates `knownThreads` from sessions.json on startup/resume so the bot
+// recognizes every thread it has ever had a conversation in — even archived
+// ones it can no longer join. The PUT join is best-effort: Discord rejects
+// thread-member PUTs on archived threads, but the bot still receives
+// MESSAGE_CREATE for them (auto-unarchive on first reply). Decoupling the two
+// ensures a failed join never causes us to forget a thread.
 async function rejoinThreads(token: string): Promise<void> {
   const threadSessions = await listThreadSessions();
+  let tracked = 0;
+  let joined = 0;
   for (const ts of threadSessions) {
-    try {
-      await discordApi(token, "PUT", `/channels/${ts.threadId}/thread-members/@me`);
-      if (!knownThreads.has(ts.threadId)) {
+    if (!knownThreads.has(ts.threadId)) {
+      try {
         const ch = await discordApi<{ parent_id?: string }>(token, "GET", `/channels/${ts.threadId}`);
         if (ch.parent_id) {
           knownThreads.set(ts.threadId, { parentId: ch.parent_id });
+          tracked++;
         }
+      } catch (err) {
+        debugLog(`Failed to fetch parent for thread ${ts.threadId}: ${err}`);
       }
-      console.log(`[Discord] Rejoined thread: ${ts.threadId}`);
+    }
+    try {
+      await discordApi(token, "PUT", `/channels/${ts.threadId}/thread-members/@me`);
+      joinedThreads.add(ts.threadId);
+      joined++;
     } catch (err) {
-      console.error(`[Discord] Failed to rejoin thread ${ts.threadId}: ${err}`);
+      // Archived threads return 4xx here — expected, not an error.
+      debugLog(`Thread join skipped for ${ts.threadId} (likely archived): ${err}`);
     }
   }
   if (threadSessions.length > 0) {
-    console.log(`[Discord] Rejoined ${threadSessions.length} thread(s) from sessions.json`);
+    console.log(`[Discord] Threads from sessions.json: ${threadSessions.length} known, ${tracked} newly tracked, ${joined} joined`);
   }
+}
+
+// --- Thread catchup ---
+// Gateway events get dropped occasionally — daemon offline windows, silent
+// WebSocket pauses, missed THREAD_CREATE deliveries. The watchdog fixes
+// gateway death but can't replay events Discord already discarded. So we
+// poll: every CATCHUP_INTERVAL_MS we scan known thread sessions, look at
+// the newest message via REST, and re-deliver any user message that the
+// bot hasn't replied to yet. This makes followup messages eventually
+// reliable across every thread regardless of which channel the parent is
+// in.
+const CATCHUP_INTERVAL_MS = 90 * 1000; // 90s — short enough that gateway drops feel real-time
+const CATCHUP_MAX_AGE_MS = 6 * 60 * 60 * 1000; // 6h — don't auto-reply to stale messages the user has moved on from
+const CATCHUP_STARTUP_DELAY_MS = 15 * 1000;
+const CATCHUP_FETCH_TIMEOUT_MS = 15 * 1000; // per-request cap so one slow thread can't stall the whole sweep
+let catchupTimer: ReturnType<typeof setInterval> | null = null;
+let catchupStartupTimer: ReturnType<typeof setTimeout> | null = null;
+// Dedicated liveness ping: writes health.txt every 60s independent of catchup.
+// A long Claude session inside catchupThreads can block the sweep for many
+// minutes, leaving the sweep-start/sweep-end writes stale long enough that
+// restart.sh thinks the daemon is frozen and bounces it (5+ false-positive
+// bounces observed since 2026-05-26). This timer keeps health.txt fresh
+// whenever the event loop is alive, which is the real liveness signal —
+// "catchup is currently running a Claude session" is a healthy state, not a
+// frozen one. If the event loop genuinely dies, the ping stops too. Named
+// `livenessTimer` to avoid clashing with `heartbeatTimer` (Discord gateway
+// websocket ping) declared near the top of the file.
+let livenessTimer: ReturnType<typeof setInterval> | null = null;
+const inFlightThreads = new Set<string>();
+const recentlyProcessedMessageIds = new Set<string>();
+
+// Single-flight guard: if a sweep is still running when the timer fires
+// again, skip — accumulating parallel sweeps just makes things worse.
+let catchupSweeping = false;
+
+// REST message objects don't include guild_id — it's a gateway-only field.
+// handleMessageCreate branches guild-vs-DM on guild_id, so catchup
+// re-deliveries (REST-fetched) must stamp it back on before delivery or
+// they take the DM path: no thread routing, top-level channel replies,
+// and a message that never looks answered (the 2026-07-08 reply loop).
+// Guild membership per channel is stable, so cache it.
+const channelGuildCache = new Map<string, string>();
+
+// Incremental-sweep cursors: channel/thread id → the last_message_id we
+// already made a decision about. When the bulk guild endpoints report the
+// same last_message_id, the per-channel messages fetch is skipped entirely.
+const sweepCursors = new Map<string, string>();
+
+async function resolveChannelGuildId(token: string, channelId: string): Promise<string | undefined> {
+  const cached = channelGuildCache.get(channelId);
+  if (cached) return cached;
+  try {
+    const ch = await discordApi<{ guild_id?: string }>(token, "GET", `/channels/${channelId}`);
+    if (ch.guild_id) {
+      channelGuildCache.set(channelId, ch.guild_id);
+      return ch.guild_id;
+    }
+  } catch (err) {
+    debugLog(`Guild resolve failed for ${channelId}: ${err}`);
+  }
+  return undefined; // genuinely a DM channel (or lookup failed) — DM handling is correct
+}
+
+// The processed-message dedup set only lived in memory, so every daemon
+// restart wiped it — that's what turned one unthreaded reply into an
+// hours-long duplicate-reply loop on 2026-07-08 (crash-restarts every
+// 5-9 min, each one re-delivering the same "unreplied" channel messages).
+// Persist to disk so restarts don't re-deliver.
+const processedIdsFile = () => join(process.cwd(), ".claude/claudeclaw/processed-messages.json");
+let processedIdsLoaded = false;
+
+async function loadProcessedIds(): Promise<void> {
+  if (processedIdsLoaded) return;
+  processedIdsLoaded = true;
+  try {
+    const ids = JSON.parse(await readFile(processedIdsFile(), "utf8"));
+    if (Array.isArray(ids)) for (const id of ids) recentlyProcessedMessageIds.add(String(id));
+    debugLog(`Loaded ${recentlyProcessedMessageIds.size} processed message ids from disk`);
+  } catch { /* first run — start empty */ }
+}
+
+let persistProcessedTimer: ReturnType<typeof setTimeout> | null = null;
+function persistProcessedIds(): void {
+  if (persistProcessedTimer) return; // debounce bursts
+  persistProcessedTimer = setTimeout(() => {
+    persistProcessedTimer = null;
+    writeFile(processedIdsFile(), JSON.stringify([...recentlyProcessedMessageIds].slice(-500)), "utf8").catch(() => {});
+  }, 2000);
+}
+
+async function catchupThreads(token: string): Promise<void> {
+  const me = botUserId;
+  if (!me) return;
+  if (catchupSweeping) {
+    debugLog("Catchup sweep skipped — previous sweep still running");
+    return;
+  }
+  catchupSweeping = true;
+  const sweepStart = Date.now();
+  try {
+    // Liveness: write health.txt at sweep START, not just end. handleMessageCreate
+    // awaits the entire Claude session run, so a long Claude job inside the
+    // per-thread loop can block the sweep for many minutes. Without an early
+    // write, restart.sh sees health.txt stale and force-bounces the daemon
+    // mid-Claude, killing the in-flight session and starting a new daemon that
+    // hits the same unreplied message — infinite cascade. The end-of-sweep
+    // write below still happens with real scanned/processed counts.
+    try {
+      await writeFile(
+        join(process.cwd(), ".claude/claudeclaw/health.txt"),
+        `${new Date().toISOString()} sweep=start processed=0\n`,
+        "utf8",
+      );
+    } catch {}
+    const config = getSettings().discord;
+    // Build the candidate set: union of (a) every thread we have a session
+    // for, (b) every active thread under a listen channel parent. (b) is
+    // critical — if the user starts a brand new thread and posts the first
+    // message themselves (no bot reply yet), there's no session entry, so
+    // (a) alone would never see it. Fetching active threads per listen
+    // channel costs one extra REST call per channel per sweep.
+    const candidateIds = new Set<string>();
+    // Incremental sweep: last_message_id per channel/thread from the bulk
+    // guild endpoints (1 REST call each per guild). The scan loops below
+    // skip the per-channel messages fetch when nothing changed since the
+    // last decision.
+    const lastMsgIds = new Map<string, string>();
+    // Open-mic mode: every active thread in every guild we're in is a
+    // candidate, regardless of parent. Archived threads are deliberately NOT
+    // candidates: an archived thread can't receive messages — posting to one
+    // auto-unarchives it, which puts it back in this active list. Scanning
+    // all 460+ session threads (mostly archived) every sweep is what made a
+    // full sweep take ~44 minutes on 2026-07-09.
+    let activesFetched = false;
+    for (const guildId of readyGuildIds ?? new Set<string>()) {
+      try {
+        const active = await discordApi<{ threads?: Array<{ id: string; parent_id?: string; last_message_id?: string | null }> }>(
+          token, "GET", `/guilds/${guildId}/threads/active`,
+        );
+        activesFetched = true;
+        for (const t of active.threads ?? []) {
+          candidateIds.add(t.id);
+          if (t.parent_id) knownThreads.set(t.id, { parentId: t.parent_id });
+          channelGuildCache.set(t.id, guildId);
+          if (t.last_message_id) lastMsgIds.set(t.id, t.last_message_id);
+          // Join any active thread we aren't a member of yet so its future
+          // messages arrive via the gateway instantly instead of waiting for
+          // the next sweep. Awaited serially — self-pacing against the REST
+          // rate limit; the joinedThreads guard makes this a no-op for all
+          // but newly-discovered threads.
+          await joinThreadIfNeeded(token, t.id);
+        }
+      } catch (err) {
+        debugLog(`Catchup: active-threads fetch failed for guild ${guildId}: ${err}`);
+      }
+    }
+    // Fallback: gateway not ready / active lists unavailable — scan session
+    // threads like the pre-1.7.7 sweep so offline recovery still works.
+    if (!activesFetched) {
+      for (const ts of await listThreadSessions()) candidateIds.add(ts.threadId);
+    }
+
+    // Open-mic mode: scan every text channel in every guild, not just the
+    // configured listenChannels. The thread scan above catches messages
+    // inside threads; this catches messages posted directly in a parent
+    // channel that haven't been auto-threaded yet. The previous version
+    // only scanned listenChannels, so any new channel the user created
+    // (skull-style-logo, etc.) silently dropped unreplied messages.
+    let scanned = 0;
+    let processed = 0;
+    const channelsToScan = new Set<string>(config.listenChannels);
+    for (const guildId of readyGuildIds ?? new Set<string>()) {
+      try {
+        const chs = await discordApi<Array<{ id: string; type: number; last_message_id?: string | null }>>(
+          token, "GET", `/guilds/${guildId}/channels`,
+        );
+        for (const c of chs) {
+          if (c.type === 0 || c.type === 5) channelsToScan.add(c.id); // text + announcement
+          channelGuildCache.set(c.id, guildId);
+          if (c.last_message_id) lastMsgIds.set(c.id, c.last_message_id);
+        }
+      } catch (err) {
+        debugLog(`Catchup: guild channels fetch failed for ${guildId}: ${err}`);
+      }
+    }
+    for (const chId of channelsToScan) {
+      // Incremental: nothing posted since this channel's last decision —
+      // skip the messages fetch (and the pacing sleep) entirely.
+      const chLastId = lastMsgIds.get(chId);
+      if (chLastId && sweepCursors.get(chId) === chLastId) continue;
+      try {
+        const msgs = await discordApi<DiscordMessage[]>(
+          token, "GET", `/channels/${chId}/messages?limit=20`,
+        );
+        // Commit the cursor now that we have the messages; the catch below
+        // rolls it back so a failed fetch/delivery is retried next sweep.
+        if (chLastId && !inFlightThreads.has(chId)) sweepCursors.set(chId, chLastId);
+        for (let mi = 0; mi < msgs.length; mi++) {
+          const m = msgs[mi];
+          if (!m.author || m.author.bot || m.author.id === me) continue;
+          if (m.type === 18 || m.type === 21) continue; // Discord system pointers
+          if (m.thread?.id) continue; // already replied (bot auto-threaded)
+          // Also skip if bot already replied in-channel without threading.
+          // msgs is newest-first; entries at indices < mi are newer. If any
+          // are from the bot, the message was answered — thread check alone
+          // misses unthreaded top-level replies and triggers infinite re-delivery.
+          if (msgs.slice(0, mi).some((r) => r.author?.id === me)) continue;
+          if (recentlyProcessedMessageIds.has(m.id)) continue;
+          if (inFlightThreads.has(chId)) continue;
+          const t0 = (m as DiscordMessage & { timestamp?: string }).timestamp;
+          const age = t0 ? Date.now() - new Date(t0).getTime() : Infinity;
+          if (age > CATCHUP_MAX_AGE_MS) continue;
+          if (config.allowedUserIds.length > 0 && !config.allowedUserIds.includes(m.author.id)) continue;
+          console.log(
+            `[Discord] Catchup: re-delivering channel message ${m.id} in ${chId.slice(0, 8)} ` +
+            `(${Math.round(age / 60000)}m old): "${(m.content || "").slice(0, 60).replace(/\n/g, " ")}"`,
+          );
+          // Stamp guild_id back on (REST omits it) so the handler routes this
+          // as a guild message — threads the reply instead of top-level spam.
+          if (!m.guild_id) m.guild_id = await resolveChannelGuildId(token, chId);
+          await handleMessageCreate(token, m);
+          processed++;
+        }
+      } catch (err) {
+        sweepCursors.delete(chId); // retry this channel next sweep
+        debugLog(`Catchup: channel ${chId} scan failed: ${err}`);
+      }
+      await Bun.sleep(150);
+    }
+
+    for (const threadId of candidateIds) {
+      if (inFlightThreads.has(threadId)) continue;
+      // Incremental: nothing posted since this thread's last decision.
+      const thLastId = lastMsgIds.get(threadId);
+      if (thLastId && sweepCursors.get(threadId) === thLastId) continue;
+      try {
+        const msgs = await discordApi<DiscordMessage[]>(
+          token, "GET", `/channels/${threadId}/messages?limit=5`,
+        );
+        scanned++;
+        // Commit the cursor; the catch below rolls it back so a failed
+        // fetch/delivery is retried next sweep.
+        if (thLastId) sweepCursors.set(threadId, thLastId);
+        if (!msgs || msgs.length === 0) continue;
+        const newest = msgs[0]; // Discord returns newest first
+        if (!newest || newest.author?.id === me) continue; // bot replied last, nothing to do
+        if (recentlyProcessedMessageIds.has(newest.id)) continue;
+        const ts0 = (newest as DiscordMessage & { timestamp?: string }).timestamp;
+        const age = ts0 ? Date.now() - new Date(ts0).getTime() : Infinity;
+        if (age > CATCHUP_MAX_AGE_MS) continue;
+        if (config.allowedUserIds.length > 0 && !config.allowedUserIds.includes(newest.author.id)) continue;
+
+        console.log(
+          `[Discord] Catchup: re-delivering unreplied message ${newest.id} in thread ${threadId.slice(0, 8)} ` +
+          `(${Math.round(age / 60000)}m old): "${(newest.content || "").slice(0, 60).replace(/\n/g, " ")}"`,
+        );
+        // Stamp guild_id back on (REST omits it) so the handler routes this
+        // as a guild message rather than a DM.
+        if (!newest.guild_id) newest.guild_id = await resolveChannelGuildId(token, threadId);
+        // Let handleMessageCreate own recentlyProcessedMessageIds — pre-adding
+        // here makes the handler think the message is already processed and exit.
+        await handleMessageCreate(token, newest);
+        processed++;
+      } catch (err) {
+        sweepCursors.delete(threadId); // retry this thread next sweep
+        debugLog(`Catchup failed for ${threadId}: ${err}`);
+      }
+      await Bun.sleep(150); // pace REST calls
+    }
+    // Bound the dedup set so it doesn't grow forever
+    if (recentlyProcessedMessageIds.size > 500) {
+      const arr = [...recentlyProcessedMessageIds];
+      recentlyProcessedMessageIds.clear();
+      for (const id of arr.slice(-250)) recentlyProcessedMessageIds.add(id);
+    }
+    if (processed > 0) {
+      console.log(`[Discord] Catchup: scanned ${scanned}, re-delivered ${processed} (took ${Date.now() - sweepStart}ms)`);
+    }
+    // Liveness signal for external watchers (claudeclaw-restart.sh checks this
+    // on SessionStart to detect a frozen daemon and force-bounce it).
+    try {
+      await writeFile(
+        join(process.cwd(), ".claude/claudeclaw/health.txt"),
+        `${new Date().toISOString()} sweep=${scanned} processed=${processed}\n`,
+        "utf8",
+      );
+    } catch {}
+  } finally {
+    catchupSweeping = false;
+  }
+}
+
+function startCatchupTimer(token: string): void {
+  stopCatchupTimer();
+  // Restore the processed-ids dedup set from disk before the first sweep —
+  // an empty set after a restart is what re-delivered already-answered
+  // messages on every daemon bounce during the 2026-07-08 incident.
+  loadProcessedIds().catch(() => {});
+  catchupStartupTimer = setTimeout(() => {
+    catchupStartupTimer = null;
+    catchupThreads(token).catch((err) => console.error(`[Discord] Catchup error: ${err}`));
+  }, CATCHUP_STARTUP_DELAY_MS);
+  catchupTimer = setInterval(() => {
+    catchupThreads(token).catch((err) => console.error(`[Discord] Catchup error: ${err}`));
+  }, CATCHUP_INTERVAL_MS);
+  // Dedicated liveness ping: writes every 60s independent of catchup work.
+  // Catchup sweep-start/sweep-end writes go stale during long Claude sessions;
+  // this one doesn't care what catchup is doing as long as the event loop is
+  // alive.
+  livenessTimer = setInterval(() => {
+    const state = catchupSweeping ? "sweep" : "idle";
+    writeFile(
+      join(process.cwd(), ".claude/claudeclaw/health.txt"),
+      `${new Date().toISOString()} liveness=${state}\n`,
+      "utf8",
+    ).catch(() => {});
+  }, 60 * 1000);
+}
+
+function stopCatchupTimer(): void {
+  if (catchupTimer) clearInterval(catchupTimer);
+  catchupTimer = null;
+  if (catchupStartupTimer) clearTimeout(catchupStartupTimer);
+  catchupStartupTimer = null;
+  if (livenessTimer) clearInterval(livenessTimer);
+  livenessTimer = null;
 }
 
 // --- Guild trigger logic ---
 
 function guildTriggerReason(message: DiscordMessage): string | null {
-  // Reply to bot
+  // Open-mic mode: reply to any guild message. The downstream `allowedUserIds`
+  // gate is the real defense against random users; the explicit listenChannels
+  // allow-list kept producing regressions every time the user spun up a new
+  // channel (skull-style-logo, etc.) without updating the config. The
+  // reason-strings below are kept only for diagnostic logging.
   if (botUserId && message.referenced_message?.author?.id === botUserId) return "reply_to_bot";
-
-  // Mention via mentions array
   if (botUserId && message.mentions.some((m) => m.id === botUserId)) return "mention";
-
-  // Mention in content (fallback)
   if (botUserId && message.content.includes(`<@${botUserId}>`)) return "mention_in_content";
-
-  // Listen channel (respond to all messages, no mention needed)
   const config = getSettings().discord;
   if (config.listenChannels.includes(message.channel_id)) return "listen_channel";
-
-  // Thread whose parent channel is a listen channel
   const threadInfo = knownThreads.get(message.channel_id);
   if (threadInfo && config.listenChannels.includes(threadInfo.parentId)) return "listen_channel_thread";
-
-  return null;
+  if (threadInfo) return "known_thread";
+  return "open_mic";
 }
 
 // --- Attachment handling ---
@@ -305,20 +886,22 @@ Rules:
 - Return ONLY valid JSON or the word null. No explanation.`;
 
   try {
-    const { execSync } = await import("node:child_process");
     const input = `${systemPrompt}\n\n---\nUser message: ${text}`;
-    const result = execSync(
-      `claude --model claude-sonnet-4-20250514 --print --output-format text`,
-      {
-        input,
-        encoding: "utf-8",
-        timeout: 15000,
-        env: { ...process.env, HOME: homedir() },
-      },
-    ).trim();
+    const proc = Bun.spawn(
+      [...CLAUDE_CMD, "-p", input, "--output-format", "text", "--model", "claude-haiku-4-5-20251001", "--dangerously-skip-permissions"],
+      { stdout: "pipe", stderr: "pipe", windowsHide: true, env: { ...process.env, HOME: homedir() } as Record<string, string> },
+    );
+    const timeoutId = setTimeout(() => { try { proc.kill(); } catch {} }, 10000);
+    // Drain stderr alongside stdout — an undrained pipe can fill and block
+    // the child, which would then only exit via the kill timer.
+    const [rawResult] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    clearTimeout(timeoutId);
+    const result = rawResult.trim();
 
     if (!result || result === "null") return null;
-    // Extract JSON from response (in case there's extra text)
     const jsonMatch = result.match(/\{[\s\S]*\}/);
     if (!jsonMatch) return null;
     return JSON.parse(jsonMatch[0]) as ThreadIntent;
@@ -429,25 +1012,70 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
   // Ignore bot messages
   if (message.author.bot) return;
 
+  // Skip Discord system-generated messages. Type 18 (THREAD_STARTER_MESSAGE)
+  // is a UI pointer Discord posts in the parent channel referencing a thread
+  // starter — it has the original author but no real intent. Type 21
+  // (THREAD_CREATED) is the "X started a thread" notification. Processing
+  // either causes a duplicate, contextless reply alongside the real thread
+  // conversation. Type 0 = default, type 19 = reply — both real and kept.
+  if (message.type === 18 || message.type === 21) {
+    debugLog(`Skip system message type=${message.type} id=${message.id}`);
+    return;
+  }
+
+  // Dedup gateway echo vs catchup re-delivery for the same message ID.
+  if (recentlyProcessedMessageIds.has(message.id)) return;
+  recentlyProcessedMessageIds.add(message.id);
+  persistProcessedIds(); // persist so a restart can't wipe the dedup set (2026-07-08 loop)
+
   const userId = message.author.id;
   const channelId = message.channel_id;
-  const isDM = !message.guild_id;
-  const isGuild = !!message.guild_id;
+  // REST-fetched messages (catchup re-delivery) don't carry guild_id — it's
+  // a gateway-only field. Deriving guild-ness from it alone sent every
+  // re-delivered guild message down the DM path: no thread routing,
+  // top-level channel replies, and a message that never looked answered —
+  // the 2026-07-08 reply loop. knownThreads membership is guild evidence
+  // even when guild_id is absent (catchup also stamps guild_id upstream;
+  // this is the belt-and-braces for any other REST-sourced delivery path).
+  const isGuild = !!message.guild_id || knownThreads.has(message.channel_id);
+  const isDM = !isGuild;
   const content = message.content;
 
-  // Recover lost thread from sessions.json (fallback for knownThreads volatility)
+  // Recover unknown thread channels at message time. Covers every case where
+  // knownThreads doesn't have the channel yet: missed THREAD_CREATE,
+  // post-restart memory loss, archived threads the bot lost membership of,
+  // sessions.json gaps where a Claude session was never persisted.
+  //
+  // Any guild thread channel (type 10/11/12) is registered unconditionally
+  // here — the previous `persisted || isListenThread` gate caused recurring
+  // silent drops on long-tail threads (skull.style work in non-listen-channel
+  // parents that auto-archived between sessions). The `allowedUserIds` check
+  // a few lines below is the real defense against random-user spam, so this
+  // recovery doesn't need to second-guess intent.
   if (isGuild && !knownThreads.has(channelId)) {
-    const persisted = await peekThreadSession(channelId);
-    if (persisted) {
-      try {
-        const ch = await discordApi<{ parent_id?: string }>(config.token, "GET", `/channels/${channelId}`);
-        if (ch.parent_id) {
-          knownThreads.set(channelId, { parentId: ch.parent_id });
-          debugLog(`Thread recovered from sessions.json: ${channelId} (parent: ${ch.parent_id})`);
-        }
-      } catch (err) {
-        debugLog(`Thread recovery failed for ${channelId}: ${err}`);
+    try {
+      const ch = await discordApi<{ parent_id?: string; type?: number }>(
+        config.token, "GET", `/channels/${channelId}`,
+      );
+      const isThreadChannel = ch.type === 10 || ch.type === 11 || ch.type === 12;
+      if (isThreadChannel && ch.parent_id) {
+        const persisted = await peekThreadSession(channelId);
+        const isListenThread = config.listenChannels.includes(ch.parent_id);
+        knownThreads.set(channelId, { parentId: ch.parent_id });
+        await joinThreadIfNeeded(config.token, channelId);
+        const source = persisted ? "session" : isListenThread ? "listen" : "thread_fallback";
+        console.log(
+          `[Discord] Thread recovered at message time: ${channelId} ` +
+          `(parent: ${ch.parent_id}, source: ${source}, knownSize=${knownThreads.size})`,
+        );
+      } else {
+        debugLog(
+          `[Discord] Recovery skipped for ${channelId}: not a thread channel ` +
+          `(type=${ch.type ?? "?"}, parent=${ch.parent_id ?? "none"})`,
+        );
       }
+    } catch (err) {
+      console.warn(`[Discord] Thread recovery lookup failed for ${channelId}: ${err}`);
     }
   }
 
@@ -495,6 +1123,7 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
 
   // Typing indicator loop (Discord typing lasts 10s, fire every 8s)
   const typingInterval = setInterval(() => sendTyping(config.token, channelId), 8000);
+  inFlightThreads.add(channelId);
 
   try {
     await sendTyping(config.token, channelId);
@@ -532,7 +1161,11 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
     }
 
     // --- Thread management: AI-powered intent classification ---
-    if (isGuild && cleanContent.length < 200) {
+    // Skip when the message is already inside a thread — thread management
+    // is a parent-channel feature, and running it on every in-thread reply
+    // adds latency and risks mis-classifying a normal reply as "hire X".
+    const inThread = knownThreads.has(channelId);
+    if (isGuild && !inThread && cleanContent.length < 200) {
       const intent = await classifyThreadIntent(cleanContent);
       if (intent && intent.action === "hire" && intent.names.length > 0) {
         const results: string[] = [];
@@ -636,28 +1269,205 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
     }
 
     const prefixedPrompt = promptParts.join("\n");
-    // Use thread-specific session if message is in a known thread
-    const threadId = knownThreads.has(channelId) ? channelId : undefined;
-    const result = await runUserMessage("discord", prefixedPrompt, threadId);
+
+    // For guild messages not already in a thread, route the bot's reply into
+    // a thread BEFORE running Claude so the reply (and follow-ups) live in
+    // the thread instead of cluttering the channel. Two-step routing:
+    //   1. If the user's message is a reply-to a message that already has a
+    //      thread, reuse that thread. This is the common art-channel case:
+    //      bot posts art → auto-creates thread A → user uses Discord's reply
+    //      UI on the art post → we'd otherwise create thread B and reply
+    //      there with no context. Routing into A keeps the conversation in
+    //      one place and lets the thread session provide context.
+    //   2. Otherwise, auto-create a fresh thread off the user's message.
+    let replyChannelId = channelId;
+    const inKnownThread = knownThreads.has(channelId);
+    if (isGuild && !inKnownThread) {
+      const refThreadId = message.referenced_message?.thread?.id;
+      if (refThreadId) {
+        knownThreads.set(refThreadId, { parentId: channelId });
+        await joinThreadIfNeeded(config.token, refThreadId);
+        replyChannelId = refThreadId;
+        console.log(
+          `[Discord] Routed parent-channel reply into existing thread ${refThreadId.slice(0, 8)} ` +
+          `(referenced message ${message.referenced_message!.id.slice(0, 8)} already has thread)`,
+        );
+      } else {
+        try {
+          const threadName = (cleanContent || "Thread").slice(0, 100);
+          const thread = await discordApi<{ id: string }>(
+            config.token, "POST",
+            `/channels/${channelId}/messages/${message.id}/threads`,
+            { name: threadName, auto_archive_duration: 4320 },
+          );
+          knownThreads.set(thread.id, { parentId: channelId });
+          // Creating a thread does not reliably add the bot as a member —
+          // join explicitly so follow-ups in it arrive via the gateway.
+          await joinThreadIfNeeded(config.token, thread.id);
+          replyChannelId = thread.id;
+          debugLog(`Auto-created reply thread: ${thread.id} for message ${message.id}`);
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          // 160004: Discord already auto-created a thread for this message
+          // (channel-level auto-thread setting). Fetch the message and route
+          // into the existing thread instead of falling back to parent channel.
+          if (errMsg.includes("160004")) {
+            try {
+              const msg = await discordApi<{ thread?: { id: string } }>(
+                config.token, "GET",
+                `/channels/${channelId}/messages/${message.id}`,
+              );
+              if (msg.thread?.id) {
+                knownThreads.set(msg.thread.id, { parentId: channelId });
+                await joinThreadIfNeeded(config.token, msg.thread.id);
+                replyChannelId = msg.thread.id;
+                debugLog(`Routed into pre-existing thread ${msg.thread.id} for message ${message.id}`);
+              }
+            } catch (lookupErr) {
+              debugLog(`Could not fetch pre-existing thread for ${message.id}: ${lookupErr instanceof Error ? lookupErr.message : lookupErr}`);
+            }
+          } else {
+            console.warn(`[Discord] Failed to auto-create reply thread for message ${message.id} in ${channelId}: ${errMsg}`);
+          }
+        }
+      }
+    }
+
+    // Thread messages (including auto-created ones) get their own persistent session.
+    // Only messages that couldn't get a thread run ephemerally via runOnce.
+    const threadTarget = knownThreads.has(replyChannelId) ? replyChannelId : undefined;
+
+    // Diagnostic for the "fell to quick session" path. If we got here through
+    // a thread-shaped channel (type 10/11/12) but threadTarget is undefined,
+    // the agent will reply without thread context — that's the bug we keep
+    // chasing. Log enough state to root-cause it from the daemon log.
+    console.log(
+      `[Discord][DIAG] route channel=${channelId} replyChannel=${replyChannelId} ` +
+      `threadTarget=${threadTarget ?? "none"} knownThread=${knownThreads.has(channelId)} ` +
+      `triggerReason=${triggerReason} contentLen=${cleanContent.length}`,
+    );
+
+    // When starting a fresh Claude session for an EXISTING thread (channel
+    // is already a thread, but we have no resumable session for it), pull
+    // prior Discord messages from the thread and prepend them so the agent
+    // doesn't walk in blind. Skip auto-created threads (replyChannelId
+    // !== channelId): those have no prior turns to recover.
+    let threadPrompt = prefixedPrompt;
+    if (threadTarget && threadTarget === channelId) {
+      const existingSession = await peekThreadSession(threadTarget);
+      if (!existingSession) {
+        const parentId = knownThreads.get(threadTarget)?.parentId;
+        if (parentId) {
+          const history = await fetchThreadHistoryContext(config.token, threadTarget, parentId, message.id);
+          if (history) {
+            threadPrompt = `${history}\n\n${prefixedPrompt}`;
+            console.log(`[Discord] Seeded new thread session with prior history (${threadTarget.slice(0, 8)}, ${history.length} chars)`);
+          }
+        }
+      }
+    }
+
+    const result = threadTarget
+      ? await runUserMessage("discord", threadPrompt, threadTarget)
+      : await runOnce("discord", prefixedPrompt);
 
     if (result.exitCode !== 0) {
-      await sendMessage(config.token, channelId, `Error (exit ${result.exitCode}): ${result.stderr || result.stdout || "Unknown error"}`);
+      await sendMessage(config.token, replyChannelId, `Error (exit ${result.exitCode}): ${result.stderr || result.stdout || "Unknown error"}`);
     } else {
       const { cleanedText, reactionEmoji } = extractReactionDirective(result.stdout || "");
+      const { cleanedText: textWithoutImages, imagePaths } = extractImageDirectives(cleanedText);
       if (reactionEmoji) {
         await sendReaction(config.token, channelId, message.id, reactionEmoji).catch((err) => {
           console.error(`[Discord] Failed to send reaction for ${label}: ${err instanceof Error ? err.message : err}`);
         });
       }
-      await sendMessage(config.token, channelId, cleanedText || "(empty response)");
+      const finalText = textWithoutImages || (imagePaths.length > 0 ? "" : "(empty response)");
+      const sentId = imagePaths.length > 0
+        ? await sendMessageWithFiles(config.token, replyChannelId, finalText, imagePaths).catch((err) => {
+            console.error(`[Discord] Image upload failed for ${label}: ${err instanceof Error ? err.message : err}`);
+            return sendMessage(config.token, replyChannelId, finalText || "(image upload failed)");
+          })
+        : await sendMessage(config.token, replyChannelId, finalText);
+      if (sentId) {
+        recordResponse({
+          messageId: sentId,
+          channelId: replyChannelId,
+          userId,
+          prompt: cleanContent || (voiceTranscript ? `(voice) ${voiceTranscript}` : "(no text)"),
+          response: finalText,
+        }).catch((err) => debugLog(`Failed to record response: ${err}`));
+      }
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     console.error(`[Discord] Error for ${label}: ${errMsg}`);
+    // replyChannelId is scoped to the try block, so error reports go to the
+    // original channel — acceptable, since the thread may not exist yet.
     await sendMessage(config.token, channelId, `Error: ${errMsg}`);
   } finally {
     clearInterval(typingInterval);
+    inFlightThreads.delete(channelId);
   }
+}
+
+// --- Reaction handler (training-data capture) ---
+
+interface ReactionAddPayload {
+  user_id: string;
+  channel_id: string;
+  message_id: string;
+  guild_id?: string;
+  emoji: { id: string | null; name: string | null; animated?: boolean };
+  message_author_id?: string;
+}
+
+// Ack any allowlisted reaction with a ⚡ on the same message, regardless of
+// who authored it. The bot's own ⚡ won't loop back because gateway events
+// from botUserId are filtered above.
+const REACTION_ACK_EMOJI = "⚡";
+
+async function handleReactionAdd(token: string, data: ReactionAddPayload): Promise<void> {
+  // Ignore reactions added by the bot itself.
+  if (botUserId && data.user_id === botUserId) return;
+
+  // Only act on reactions from authorized users (same allowlist as messages).
+  const config = getSettings().discord;
+  if (config.allowedUserIds.length > 0 && !config.allowedUserIds.includes(data.user_id)) return;
+
+  const isCustom = !!data.emoji.id;
+  const emojiName = data.emoji.name; // unicode char or custom name
+  if (!emojiName) return;
+
+  // Don't ack our own ack — if someone else also reacts ⚡, we'd otherwise
+  // pile on. Cheap dedupe: skip when the incoming emoji already matches.
+  if (!isCustom && emojiName === REACTION_ACK_EMOJI) {
+    debugLog(`Reaction ack skipped (already ⚡): msg ${data.message_id}`);
+  } else {
+    await sendReaction(token, data.channel_id, data.message_id, REACTION_ACK_EMOJI).catch((err) => {
+      console.error(`[Discord] Failed to ack reaction on ${data.message_id}: ${err instanceof Error ? err.message : err}`);
+    });
+  }
+
+  // Training-data capture is still scoped to bot-authored messages. The ack
+  // above runs for any message; the log below only when we have a clean
+  // signal about one of our own replies.
+  if (data.message_author_id && botUserId && data.message_author_id !== botUserId) return;
+
+  const sentiment = classifyEmoji(emojiName, isCustom);
+  if (sentiment === "neutral") {
+    debugLog(`Reaction skipped (neutral): ${emojiName} on ${data.message_id}`);
+    return;
+  }
+
+  await recordReaction({
+    messageId: data.message_id,
+    channelId: data.channel_id,
+    reactorId: data.user_id,
+    emoji: emojiName,
+    isCustom,
+    sentiment,
+  });
+  console.log(`[Discord][train] ${sentiment} reaction ${emojiName} on msg ${data.message_id}`);
 }
 
 // --- Interaction handler (slash commands + secretary buttons) ---
@@ -895,6 +1705,7 @@ function startHeartbeat(): void {
     }
     sendHeartbeat();
   }, heartbeatIntervalMs);
+  startWatchdog();
 }
 
 function stopHeartbeat(): void {
@@ -902,6 +1713,29 @@ function stopHeartbeat(): void {
   heartbeatTimer = null;
   if (heartbeatJitterTimer) clearTimeout(heartbeatJitterTimer);
   heartbeatJitterTimer = null;
+  stopWatchdog();
+}
+
+function startWatchdog(): void {
+  stopWatchdog();
+  lastGatewayActivityAt = Date.now();
+  watchdogTimer = setInterval(() => {
+    if (ws?.readyState !== WebSocket.OPEN) return;
+    const gap = Date.now() - lastGatewayActivityAt;
+    const limit = Math.max(heartbeatIntervalMs * 2, 90_000);
+    if (gap > limit) {
+      console.warn(
+        `[Discord] Watchdog: no gateway activity for ${Math.round(gap / 1000)}s ` +
+        `(limit ${Math.round(limit / 1000)}s) — forcing reconnect`,
+      );
+      try { ws?.close(4000, "Watchdog timeout"); } catch {}
+    }
+  }, 30_000);
+}
+
+function stopWatchdog(): void {
+  if (watchdogTimer) clearInterval(watchdogTimer);
+  watchdogTimer = null;
 }
 
 function resetGatewayState(): void {
@@ -915,6 +1749,8 @@ function resetGatewayState(): void {
   botUsername = null;
   applicationId = null;
   knownThreads.clear();
+  stopCatchupTimer();
+  inFlightThreads.clear();
 }
 
 function sendIdentify(token: string): void {
@@ -962,12 +1798,16 @@ function handleDispatch(token: string, eventName: string, data: any): void {
       registerSlashCommands(token).catch((err) =>
         console.error(`[Discord] Failed to register slash commands: ${err}`),
       );
+      startCatchupTimer(token);
       break;
 
     case "RESUMED":
-      console.log("[Discord] Session resumed — rejoining threads");
+      console.log("[Discord] Session resumed — rejoining threads + running catchup sweep");
       rejoinThreads(token).catch((err) =>
         console.error(`[Discord] Failed to rejoin threads on RESUMED: ${err}`),
+      );
+      catchupThreads(token).catch((err) =>
+        console.error(`[Discord] Catchup on RESUMED failed: ${err}`),
       );
       break;
 
@@ -975,6 +1815,12 @@ function handleDispatch(token: string, eventName: string, data: any): void {
       console.log(`[Discord][GW] MESSAGE_CREATE ch=${data.channel_id} author=${data.author?.username} guild=${data.guild_id || 'DM'}`);
       handleMessageCreate(token, data).catch((err) =>
         console.error(`[Discord] MESSAGE_CREATE unhandled:`, err),
+      );
+      break;
+
+    case "MESSAGE_REACTION_ADD":
+      handleReactionAdd(token, data).catch((err) =>
+        console.error(`[Discord] MESSAGE_REACTION_ADD unhandled:`, err),
       );
       break;
 
@@ -1007,6 +1853,9 @@ function handleDispatch(token: string, eventName: string, data: any): void {
     case "THREAD_CREATE":
       if (data.id && data.parent_id) {
         knownThreads.set(data.id, { parentId: data.parent_id });
+        // Membership, not just tracking, is what keeps MESSAGE_CREATE flowing
+        // for this thread across reconnects — join as soon as we see it.
+        joinThreadIfNeeded(token, data.id).catch(() => {});
         debugLog(`Thread tracked: ${data.id} (parent: ${data.parent_id})`);
       }
       break;
@@ -1022,15 +1871,14 @@ function handleDispatch(token: string, eventName: string, data: any): void {
       break;
 
     case "THREAD_UPDATE":
+      // Archive is reversible — Discord auto-unarchives on the next message.
+      // Keep both knownThreads and the persistent Claude session intact across
+      // archive cycles so a user can return hours later and continue talking.
+      // Only THREAD_DELETE is destructive.
       if (data.id && data.parent_id) {
+        knownThreads.set(data.id, { parentId: data.parent_id });
         if (data.thread_metadata?.archived) {
-          knownThreads.delete(data.id);
-          removeThreadSession(data.id).catch((err) =>
-            console.error(`[Discord] Failed to cleanup archived thread session: ${err}`),
-          );
-          debugLog(`Thread archived and cleaned up: ${data.id}`);
-        } else {
-          knownThreads.set(data.id, { parentId: data.parent_id });
+          debugLog(`Thread archived (session preserved): ${data.id}`);
         }
       }
       break;
@@ -1107,6 +1955,7 @@ function connectGateway(token: string, url?: string): void {
   };
 
   ws.onmessage = (event) => {
+    lastGatewayActivityAt = Date.now();
     try {
       const payload = JSON.parse(String(event.data)) as GatewayPayload;
       handleGatewayPayload(token, payload);
@@ -1116,7 +1965,10 @@ function connectGateway(token: string, url?: string): void {
   };
 
   ws.onclose = (event) => {
-    debugLog(`Gateway closed: code=${event.code} reason=${event.reason}`);
+    // Console-level (not debugLog): the gateway flapping silently is exactly
+    // the failure mode that made 2026-07-09 message delivery degrade to the
+    // catchup sweep with nothing in the daemon log to explain why.
+    console.log(`[Discord] Gateway closed: code=${event.code} reason=${event.reason || "(none)"}`);
     stopHeartbeat();
     if (!running) return;
 

@@ -17,3 +17,10 @@ Show the Discord bot integration status. Check the following:
 4. **Running**: Check if the daemon is running by reading `.claude/claudeclaw/daemon.pid`. The Discord bot runs in-process with the daemon when a token is configured.
 
 Format the output clearly for the user.
+
+---
+
+**Bot capabilities (for reference when responding on Discord):**
+- **Text**: plain markdown, up to 2000 chars per chunk (longer replies are auto-split).
+- **Reactions**: include `[react:<emoji>]` anywhere in the reply to add a native reaction to the user's message.
+- **Image uploads**: include `[image:/absolute/path/to/file.png]` anywhere in the reply to upload that file as an attachment. `~` is expanded to the home dir. Multiple `[image:]` tags = multiple attachments in one message. Discord per-message size cap: 25 MB (Nitro Basic: 50 MB).

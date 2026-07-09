@@ -1,6 +1,52 @@
-import { mkdir, readFile, writeFile } from "fs/promises";
-import { join } from "path";
+import { mkdir, readFile, writeFile, unlink } from "fs/promises";
+import { join, dirname } from "path";
 import { existsSync } from "fs";
+import { execSync } from "child_process";
+
+/**
+ * On Windows, `claude` resolves to claude.cmd which runs via cmd.exe.
+ * cmd.exe has an 8,191-char command-line limit, which the --append-system-prompt
+ * value easily exceeds. Instead, find the native binary or Node entry point
+ * and invoke it directly, bypassing cmd.exe entirely.
+ */
+function claudeEntryFromPackageDir(base: string): string[] | null {
+  const exe = join(base, "bin", "claude.exe");
+  if (existsSync(exe)) return [exe];
+  const cjs = join(base, "cli-wrapper.cjs");
+  if (existsSync(cjs)) return ["node", cjs];
+  const js = join(base, "cli.js");
+  if (existsSync(js)) return ["node", js];
+  return null;
+}
+
+function resolveClaudeCmd(): string[] {
+  if (process.platform !== "win32") return ["claude"];
+  // Cheap filesystem probes first — `npm root -g` shells out to npm and can
+  // block module load for seconds on Windows, so it's the last resort.
+  if (process.env.APPDATA) {
+    const found = claudeEntryFromPackageDir(
+      join(process.env.APPDATA, "npm", "node_modules", "@anthropic-ai", "claude-code"),
+    );
+    if (found) return found;
+  }
+  try {
+    const cmdPath = Bun.which("claude.cmd");
+    if (cmdPath) {
+      const found = claudeEntryFromPackageDir(
+        join(dirname(cmdPath), "node_modules", "@anthropic-ai", "claude-code"),
+      );
+      if (found) return found;
+    }
+  } catch {}
+  try {
+    const npmRoot = execSync("npm root -g", { encoding: "utf8" }).trim();
+    const found = claudeEntryFromPackageDir(join(npmRoot, "@anthropic-ai", "claude-code"));
+    if (found) return found;
+  } catch {}
+  return ["claude"]; // last resort
+}
+
+export const CLAUDE_CMD = resolveClaudeCmd();
 import { getSession, createSession, incrementTurn, markCompactWarned } from "./sessions";
 import {
   getThreadSession,
@@ -11,6 +57,7 @@ import {
 import { getSettings, type ModelConfig, type SecurityConfig } from "./config";
 import { buildClockPromptPrefix } from "./timezone";
 import { selectModel } from "./model-router";
+import { classifyReadOnly, queryOllama, LOCAL_SIGIL } from "./ollama";
 
 const LOGS_DIR = join(process.cwd(), ".claude/claudeclaw/logs");
 // Resolve prompts relative to the claudeclaw installation, not the project dir
@@ -28,7 +75,7 @@ const CLAUDECLAW_BLOCK_END = "<!-- claudeclaw:managed:end -->";
  * COMPACT_WARN_THRESHOLD: notify user that context is getting large.
  * COMPACT_TIMEOUT_ENABLED: whether to auto-compact on timeout (exit 124).
  */
-const COMPACT_WARN_THRESHOLD = 25;
+const COMPACT_WARN_THRESHOLD = 10;
 const COMPACT_TIMEOUT_ENABLED = true;
 
 export type CompactEvent =
@@ -102,6 +149,36 @@ function isNotFoundError(error: unknown): boolean {
   return /enoent|no such file or directory/i.test(message);
 }
 
+/**
+ * Bun.spawn() throws synchronously (not a rejected promise) when the target
+ * executable doesn't exist. claude.exe briefly disappears mid self-update
+ * (rename-then-write), so a spawn can hit that gap and throw ENOENT even
+ * though the binary is back moments later. One short retry absorbs that race
+ * instead of propagating an uncaught exception that would crash the daemon.
+ */
+// All call sites pipe stdout/stderr, so narrow the subprocess type accordingly
+// (ReturnType<typeof Bun.spawn> widens streams to `number | ReadableStream`).
+type PipedSubprocess = Bun.Subprocess<"ignore", "pipe", "pipe">;
+
+async function spawnWithRetry(args: string[], opts: Parameters<typeof Bun.spawn>[1]): Promise<PipedSubprocess> {
+  try {
+    return Bun.spawn(args, opts) as PipedSubprocess;
+  } catch (err) {
+    if (!isNotFoundError(err)) throw err;
+    console.warn(`[${new Date().toLocaleTimeString()}] Spawn hit ENOENT (likely mid claude.exe self-update), retrying in 1.5s...`);
+    await Bun.sleep(1500);
+    return Bun.spawn(args, opts) as PipedSubprocess;
+  }
+}
+
+// Unique temp-file names for --append-system-prompt-file. Concurrent thread
+// sessions can hit the same Date.now() millisecond, so a per-process counter
+// disambiguates.
+let syspromptSeq = 0;
+function nextSyspromptFile(): string {
+  return join(LOGS_DIR, `sysprompt-${Date.now()}-${++syspromptSeq}.tmp`);
+}
+
 function buildChildEnv(baseEnv: Record<string, string>, model: string, api: string): Record<string, string> {
   const childEnv: Record<string, string> = { ...baseEnv };
   const normalizedModel = model.trim().toLowerCase();
@@ -130,11 +207,21 @@ async function runClaudeOnce(
   const normalizedModel = model.trim().toLowerCase();
   if (model.trim() && normalizedModel !== "glm") args.push("--model", model.trim());
 
-  const proc = Bun.spawn(args, {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: buildChildEnv(baseEnv, model, api),
-  });
+  let proc: PipedSubprocess;
+  try {
+    proc = await spawnWithRetry(args, {
+      stdout: "pipe",
+      stderr: "pipe",
+      windowsHide: true,
+      env: buildChildEnv(baseEnv, model, api),
+    });
+  } catch (err) {
+    // Spawn failed after retry — a bad-luck spawn now fails this one job,
+    // not the whole daemon.
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[${new Date().toLocaleTimeString()}] Spawn failed after retry: ${message}`);
+    return { rawStdout: "", stderr: message, exitCode: 127 };
+  }
 
   const timeoutPromise = new Promise<never>((_, reject) => {
     setTimeout(() => reject(new Error(`Claude session timed out after ${timeoutMs / 1000}s`)), timeoutMs);
@@ -172,6 +259,20 @@ async function runClaudeOnce(
 }
 
 const PROJECT_DIR = process.cwd();
+
+/**
+ * Build a clean environment for spawned claude subprocesses.
+ * Strip vars that mark the current process as a Claude Code instance — these
+ * cause the child to behave as a nested invocation (different, slower startup path).
+ */
+function buildCleanEnv(): Record<string, string> {
+  const env = { ...process.env } as Record<string, string>;
+  delete env.CLAUDECODE;
+  delete env.CLAUDE_CODE_ENTRYPOINT;
+  delete env.CLAUDE_CODE_EXECPATH;
+  delete env.CLAUDE_CODE_GIT_BASH_PATH; // let child detect its own git bash
+  return env;
+}
 
 const DIR_SCOPE_PROMPT = [
   `CRITICAL SECURITY CONSTRAINT: You are scoped to the project directory: ${PROJECT_DIR}`,
@@ -303,7 +404,7 @@ export async function runCompact(
   timeoutMs: number
 ): Promise<boolean> {
   const compactArgs = [
-    "claude", "-p", "/compact",
+    ...CLAUDE_CMD, "-p", "/compact",
     "--output-format", "text",
     "--resume", sessionId,
     ...securityArgs,
@@ -325,9 +426,8 @@ export async function compactCurrentSession(): Promise<{ success: boolean; messa
 
   const settings = getSettings();
   const securityArgs = buildSecurityArgs(settings.security);
-  const { CLAUDECODE: _, ...cleanEnv } = process.env;
-  const baseEnv = { ...cleanEnv } as Record<string, string>;
-  const timeoutMs = (settings as any).sessionTimeoutMs || CLAUDE_TIMEOUT_MS;
+  const baseEnv = buildCleanEnv();
+  const timeoutMs = settings.sessionTimeoutMs ?? CLAUDE_TIMEOUT_MS;
 
   const ok = await runCompact(
     existing.sessionId,
@@ -378,7 +478,7 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
     api: fallback?.api ?? "",
   };
   const securityArgs = buildSecurityArgs(security);
-  const timeoutMs = (settings as any).sessionTimeoutMs || CLAUDE_TIMEOUT_MS;
+  const timeoutMs = settings.sessionTimeoutMs ?? CLAUDE_TIMEOUT_MS;
 
   console.log(
     `[${new Date().toLocaleTimeString()}] Running: ${name} (${isNew ? "new session" : `resume ${existing.sessionId.slice(0, 8)}`}, security: ${security.level})`
@@ -387,39 +487,48 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
   // New session: use json output to capture Claude's session_id
   // Resumed session: use text output with --resume
   const outputFormat = isNew ? "json" : "text";
-  const args = ["claude", "-p", prompt, "--output-format", outputFormat, ...securityArgs];
+  const args = [...CLAUDE_CMD, "-p", prompt, "--output-format", outputFormat, ...securityArgs];
 
   if (!isNew) {
     args.push("--resume", existing.sessionId);
   }
 
-  // Build the appended system prompt: prompt files + directory scoping
-  // This is passed on EVERY invocation (not just new sessions) because
-  // --append-system-prompt does not persist across --resume.
-  const promptContent = await loadPrompts();
-  const appendParts: string[] = [
-    "You are running inside ClaudeClaw.",
-  ];
-  if (promptContent) appendParts.push(promptContent);
-
-  // Load the project's CLAUDE.md if it exists
-  if (existsSync(PROJECT_CLAUDE_MD)) {
-    try {
-      const claudeMd = await Bun.file(PROJECT_CLAUDE_MD).text();
-      if (claudeMd.trim()) appendParts.push(claudeMd.trim());
-    } catch (e) {
-      console.error(`[${new Date().toLocaleTimeString()}] Failed to read project CLAUDE.md:`, e);
-    }
-  }
-
+  // CLAUDE.md is auto-loaded by Claude Code from the project directory.
+  // IDENTITY/USER/SOUL are embedded in the managed block inside CLAUDE.md.
+  // We only append runtime-only context that isn't persisted anywhere.
+  const appendParts: string[] = [];
   if (security.level !== "unrestricted") appendParts.push(DIR_SCOPE_PROMPT);
+
+  // Write system prompt to a temp file to avoid Windows cmd.exe 8191-char command-line limit.
+  const syspromptFile = nextSyspromptFile();
   if (appendParts.length > 0) {
-    args.push("--append-system-prompt", appendParts.join("\n\n"));
+    await writeFile(syspromptFile, appendParts.join("\n\n"), "utf8");
+    args.push("--append-system-prompt-file", syspromptFile);
   }
 
   // Strip CLAUDECODE env var so child claude processes don't think they're nested
-  const { CLAUDECODE: _, ...cleanEnv } = process.env;
-  const baseEnv = { ...cleanEnv } as Record<string, string>;
+  const baseEnv = buildCleanEnv();
+
+  // Ollama local routing — disabled, local model quality not sufficient yet
+  // To re-enable: set ollama.enabled = true in settings.json
+  // if (settings.ollama?.enabled) {
+  //   const { classifierModel = "phi3:mini", readerModel = "llama3.2:3b" } = settings.ollama;
+  //   try {
+  //     const readOnly = await classifyReadOnly(prompt, classifierModel);
+  //     if (readOnly) {
+  //       console.log(`[${new Date().toLocaleTimeString()}] Ollama: read-only detected, routing locally`);
+  //       const response = await queryOllama(prompt, readerModel);
+  //       await Bun.write(logFile, [
+  //         `# ${name}`, `Date: ${new Date().toISOString()}`, `Model: ollama/${readerModel} ${LOCAL_SIGIL}`,
+  //         `Prompt: ${prompt}`, "", "## Output", response,
+  //       ].join("\n"));
+  //       return { stdout: response, stderr: "", exitCode: 0 };
+  //     }
+  //     console.log(`[${new Date().toLocaleTimeString()}] Ollama: write intent, routing to Claude`);
+  //   } catch (err) {
+  //     console.warn(`[${new Date().toLocaleTimeString()}] Ollama unavailable, falling through to Claude:`, err);
+  //   }
+  // }
 
   let exec = await runClaudeOnce(args, primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs);
   const primaryRateLimit = extractRateLimitMessage(exec.rawStdout, exec.stderr);
@@ -484,6 +593,8 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
   ].join("\n");
 
   await Bun.write(logFile, output);
+  // Clean up temp system prompt file
+  if (appendParts.length > 0) unlink(syspromptFile).catch(() => {});
   console.log(`[${new Date().toLocaleTimeString()}] Done: ${name} → ${logFile}`);
 
   // --- Auto-compact on timeout (exit 124) ---
@@ -545,6 +656,189 @@ export async function run(name: string, prompt: string, threadId?: string): Prom
   return enqueue(() => execClaude(name, prompt, threadId), threadId);
 }
 
+/**
+ * Run a job's body as a shell command — no Claude session, no token cost.
+ * Extracts the first ```bash ... ``` code block from the prompt and pipes it to bash -c.
+ * Falls back to running the whole prompt as a script if no fence is found.
+ */
+export function extractShellBlock(prompt: string): string {
+  const match = prompt.match(/```(?:bash|sh)?\s*\n([\s\S]*?)\n```/);
+  return (match ? match[1] : prompt).trim();
+}
+
+async function execShell(name: string, prompt: string): Promise<RunResult> {
+  await mkdir(LOGS_DIR, { recursive: true });
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const logFile = join(LOGS_DIR, `${name}-${timestamp}.log`);
+  const script = extractShellBlock(prompt);
+
+  console.log(`[${new Date().toLocaleTimeString()}] Running: ${name} (shell, no session)`);
+
+  let proc: PipedSubprocess;
+  try {
+    proc = await spawnWithRetry(["bash", "-lc", script], {
+      stdout: "pipe",
+      stderr: "pipe",
+      windowsHide: true,
+      env: buildCleanEnv(),
+    });
+  } catch (err) {
+    // Spawn failed after retry — no session, so we can still write a
+    // normal-shaped log entry instead of losing the failure silently.
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[${new Date().toLocaleTimeString()}] Spawn failed after retry: ${message}`);
+    const output = [
+      `# ${name}`,
+      `Date: ${new Date().toISOString()}`,
+      `Mode: shell (no Claude session)`,
+      `Script: ${script.split("\n")[0]}${script.includes("\n") ? " ..." : ""}`,
+      `Exit code: 127`,
+      "",
+      "## Output",
+      "",
+      "## Stderr",
+      message,
+    ].join("\n");
+    await Bun.write(logFile, output);
+    console.log(`[${new Date().toLocaleTimeString()}] Done: ${name} → ${logFile}`);
+    return { stdout: "", stderr: message, exitCode: 127 };
+  }
+
+  let shellTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    shellTimeoutHandle = setTimeout(() => reject(new Error("Shell job timed out after 300s")), 300_000);
+  });
+
+  let stdout = "";
+  let stderr = "";
+  let exitCode = 1;
+  try {
+    [stdout, stderr] = await Promise.race([
+      Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]),
+      timeoutPromise,
+    ]) as [string, string];
+    await proc.exited;
+    exitCode = proc.exitCode ?? 1;
+  } catch (err) {
+    try { proc.kill("SIGTERM"); } catch {}
+    stderr = err instanceof Error ? err.message : String(err);
+    exitCode = 124;
+  } finally {
+    clearTimeout(shellTimeoutHandle);
+  }
+
+  const output = [
+    `# ${name}`,
+    `Date: ${new Date().toISOString()}`,
+    `Mode: shell (no Claude session)`,
+    `Script: ${script.split("\n")[0]}${script.includes("\n") ? " ..." : ""}`,
+    `Exit code: ${exitCode}`,
+    "",
+    "## Output",
+    stdout,
+    ...(stderr ? ["## Stderr", stderr] : []),
+  ].join("\n");
+  await Bun.write(logFile, output);
+  console.log(`[${new Date().toLocaleTimeString()}] Done: ${name} → ${logFile}`);
+
+  return { stdout, stderr, exitCode };
+}
+
+export async function runShell(name: string, prompt: string): Promise<RunResult> {
+  return execShell(name, prompt);
+}
+
+// --- Quick session: dedicated lightweight session for general-channel Discord messages ---
+// Resumed on every message (fast — skips full init), compacted every QUICK_COMPACT_EVERY turns.
+const QUICK_SESSION_FILE = join(process.cwd(), ".claude/claudeclaw/quick-session.json");
+const QUICK_COMPACT_EVERY = 5;
+
+interface QuickSession { sessionId: string; turnCount: number; createdAt: string; }
+
+async function getQuickSession(): Promise<QuickSession | null> {
+  try { return JSON.parse(await readFile(QUICK_SESSION_FILE, "utf8")); } catch { return null; }
+}
+
+async function saveQuickSession(s: QuickSession): Promise<void> {
+  await writeFile(QUICK_SESSION_FILE, JSON.stringify(s, null, 2), "utf8");
+}
+
+async function deleteQuickSession(): Promise<void> {
+  try { await unlink(QUICK_SESSION_FILE); } catch {}
+}
+
+/**
+ * Run using a persistent but aggressively-compacted quick session.
+ * Resuming an existing session is fast (skips full Claude Code init).
+ * Compact every QUICK_COMPACT_EVERY turns to keep context lean.
+ * Serialized on its own queue: concurrent callers would otherwise --resume
+ * the same session at once and race the turnCount/compact bookkeeping.
+ */
+export async function runOnce(name: string, prompt: string): Promise<RunResult> {
+  return enqueue(() => execQuick(name, prompt), "quick-session");
+}
+
+async function execQuick(name: string, prompt: string): Promise<RunResult> {
+  await mkdir(LOGS_DIR, { recursive: true });
+  const settings = getSettings();
+  const { security, api } = settings;
+  const securityArgs = buildSecurityArgs(security);
+  const timeoutMs = settings.sessionTimeoutMs ?? CLAUDE_TIMEOUT_MS;
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const logFile = join(LOGS_DIR, `${name}-${timestamp}.log`);
+  const model = "claude-sonnet-4-6";
+
+  const existing = await getQuickSession();
+  const isNew = !existing;
+  const outputFormat = isNew ? "json" : "text";
+  const args = [...CLAUDE_CMD, "-p", prompt, "--output-format", outputFormat, "--model", model, ...securityArgs];
+  if (!isNew) args.push("--resume", existing.sessionId);
+
+  const baseEnv = buildCleanEnv();
+
+  console.log(`[${new Date().toLocaleTimeString()}] Running: ${name} (quick/${isNew ? "new" : `resume ${existing.sessionId.slice(0, 8)}`})`);
+  const exec = await runClaudeOnce(args, model, api, baseEnv, timeoutMs);
+
+  let stdout = exec.rawStdout;
+  let sessionId = existing?.sessionId ?? "unknown";
+
+  if (isNew && exec.exitCode === 0) {
+    try {
+      const json = JSON.parse(exec.rawStdout);
+      sessionId = json.session_id;
+      stdout = json.result ?? "";
+      await saveQuickSession({ sessionId, turnCount: 1, createdAt: new Date().toISOString() });
+      console.log(`[${new Date().toLocaleTimeString()}] Quick session created: ${sessionId}`);
+    } catch {}
+  } else if (!isNew && exec.exitCode === 0) {
+    const turnCount = existing.turnCount + 1;
+    await saveQuickSession({ ...existing, turnCount });
+    if (turnCount % QUICK_COMPACT_EVERY === 0) {
+      console.log(`[${new Date().toLocaleTimeString()}] Quick session compact (turn ${turnCount})`);
+      await runCompact(sessionId, model, api, baseEnv, securityArgs, timeoutMs);
+    }
+  } else if (exec.exitCode !== 0) {
+    // Session may be corrupt — delete so next message gets a fresh one
+    await deleteQuickSession();
+  }
+
+  const result: RunResult = { stdout, stderr: exec.stderr, exitCode: exec.exitCode };
+  const output = [
+    `# ${name}`,
+    `Date: ${new Date().toISOString()}`,
+    `Session: ${sessionId} (quick/${isNew ? "new" : "resumed"})`,
+    `Prompt: ${prompt}`,
+    `Exit code: ${result.exitCode}`,
+    "",
+    "## Output",
+    result.stdout,
+    ...(result.stderr ? ["## Stderr", result.stderr] : []),
+  ].join("\n");
+  await Bun.write(logFile, output);
+  console.log(`[${new Date().toLocaleTimeString()}] Done: ${name} → ${logFile}`);
+  return result;
+}
+
 async function streamClaude(
   name: string,
   prompt: string,
@@ -560,39 +854,46 @@ async function streamClaude(
   // stream-json gives us events as they happen — text before tool calls,
   // so we can unblock the UI as soon as Claude acknowledges, not after sub-agents finish.
   // --verbose is required for stream-json to produce output in -p (print) mode.
-  const args = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose", ...securityArgs];
+  const args = [...CLAUDE_CMD, "-p", prompt, "--output-format", "stream-json", "--verbose", ...securityArgs];
 
   if (existing) args.push("--resume", existing.sessionId);
 
-  const promptContent = await loadPrompts();
-  const appendParts: string[] = ["You are running inside ClaudeClaw."];
-  if (promptContent) appendParts.push(promptContent);
-
-  if (existsSync(PROJECT_CLAUDE_MD)) {
-    try {
-      const claudeMd = await Bun.file(PROJECT_CLAUDE_MD).text();
-      if (claudeMd.trim()) appendParts.push(claudeMd.trim());
-    } catch {}
-  }
-
+  // CLAUDE.md auto-loaded; no manual loading needed.
+  const appendParts: string[] = [];
   if (security.level !== "unrestricted") appendParts.push(DIR_SCOPE_PROMPT);
+
+  // Write system prompt to a temp file to avoid Windows cmd.exe 8191-char command-line limit.
+  const streamSyspromptFile = nextSyspromptFile();
   if (appendParts.length > 0) {
-    args.push("--append-system-prompt", appendParts.join("\n\n"));
+    await writeFile(streamSyspromptFile, appendParts.join("\n\n"), "utf8");
+    args.push("--append-system-prompt-file", streamSyspromptFile);
   }
 
   const normalizedModel = model.trim().toLowerCase();
   if (model.trim() && normalizedModel !== "glm") args.push("--model", model.trim());
 
-  const { CLAUDECODE: _, ...cleanEnv } = process.env;
-  const childEnv = buildChildEnv(cleanEnv as Record<string, string>, model, api);
+  const childEnv = buildChildEnv(buildCleanEnv(), model, api);
 
   console.log(`[${new Date().toLocaleTimeString()}] Running: ${name} (stream-json, session: ${existing?.sessionId?.slice(0, 8) ?? "new"})`);
 
-  const proc = Bun.spawn(args, {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: childEnv,
-  });
+  let proc: PipedSubprocess;
+  try {
+    proc = await spawnWithRetry(args, {
+      stdout: "pipe",
+      stderr: "pipe",
+      windowsHide: true,
+      env: childEnv,
+    });
+  } catch (err) {
+    // Spawn failed after retry — surface it as a chat message and unblock
+    // the UI instead of throwing out of this streaming call.
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[${new Date().toLocaleTimeString()}] Spawn failed after retry: ${message}`);
+    onChunk(`⚠️ Couldn't start Claude: ${message}`);
+    onUnblock();
+    if (appendParts.length > 0) unlink(streamSyspromptFile).catch(() => {});
+    return;
+  }
 
   const reader = proc.stdout.getReader();
   const decoder = new TextDecoder();
@@ -663,6 +964,8 @@ async function streamClaude(
   await proc.exited;
   // Ensure unblock fires even if something unexpected happened
   maybeUnblock();
+  // Clean up temp system prompt file
+  if (appendParts.length > 0) unlink(streamSyspromptFile).catch(() => {});
 
   console.log(`[${new Date().toLocaleTimeString()}] Done: ${name}`);
 }

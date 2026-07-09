@@ -151,6 +151,7 @@ function startWhisperWarmupInBackground(): void {
       stdin: "ignore",
       stdout: "inherit",
       stderr: "inherit",
+      windowsHide: true,
     });
     proc.unref();
     console.log("preflight: whisper warmup started in background");
