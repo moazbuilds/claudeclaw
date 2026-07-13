@@ -1449,9 +1449,13 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     let streamMsgId: number | null = null;
     let hadToolLines = false;
     if (busy) {
-      await sendMessage(config.token, chatId, "Claude is busy — try again in a moment, or use /fork for a quick parallel task.", threadId);
-      return;
-    } else {
+      // Don't drop the message — queue it behind the in-flight run. runUserMessage
+      // routes through enqueue(), which serializes per-thread (keyed by sessionKey),
+      // so messages from this chat run in order instead of being silently lost.
+      // Let the user know it's waiting rather than pretending nothing happened.
+      await sendMessage(config.token, chatId, "⏳ Claude is busy — your message is queued and will run after the current one finishes. Use /fork for a quick parallel task, or /kill to cancel what's running.", threadId);
+    }
+    {
       const stream = makeStreamCallback(config.token, chatId, threadId, { verbose });
       result = await runUserMessage("telegram", prefixedPrompt, sessionKey, undefined, stream.onChunk, stream.onToolEvent, modelOverride);
       const streamResult = await stream.waitForStreamMsg();
