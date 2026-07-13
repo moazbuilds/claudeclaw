@@ -88,7 +88,8 @@ interface TelegramUser {
 interface TelegramMessage {
   message_id: number;
   from?: TelegramUser;
-  reply_to_message?: { message_id?: number; from?: TelegramUser };
+  reply_to_message?: { message_id?: number; from?: TelegramUser; text?: string; caption?: string };
+  quote?: { text?: string };
   chat: { id: number; type: string };
   message_thread_id?: number;
   text?: string;
@@ -1385,6 +1386,18 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
 
     const promptParts = [`[Telegram from ${label}]`];
     if (threadId) promptParts.push(`[thread:${threadId}]`);
+    // Include the message being replied to / quoted so Claude has the context.
+    // Telegram puts the full original in reply_to_message; quote.text holds the
+    // specific highlighted excerpt when the user quotes only part of a message.
+    const repliedText = message.reply_to_message?.text ?? message.reply_to_message?.caption;
+    const quotedExcerpt = message.quote?.text;
+    if (quotedExcerpt || repliedText) {
+      const fromBot = botId != null && message.reply_to_message?.from?.id === botId;
+      const who = fromBot
+        ? "your own earlier message"
+        : `a message from ${message.reply_to_message?.from?.first_name ?? "someone"}`;
+      promptParts.push(`In reply to ${who}: ${wrapUntrusted("replied-message", quotedExcerpt ?? repliedText!, 2000)}`);
+    }
     if (skillContext) {
       // Strip the slash command from the message text and pass remaining args
       const args = text.trim().slice(command!.length).trim();
