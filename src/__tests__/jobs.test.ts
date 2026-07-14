@@ -78,6 +78,26 @@ describe("loadJobs", () => {
     expect(job?.prompt).toBe("Summarise today's news");
   });
 
+  test("parses notifyChannel from frontmatter", async () => {
+    await writeFile(
+      join(LEGACY_JOBS_DIR, "blog-daily.md"),
+      jobMd("0 7 * * *", "Propose a topic", 'notifyChannel: "1498867541710213262"')
+    );
+    const jobs = await loadJobsInSandbox();
+    const job = jobs.find((j) => j.name === "blog-daily");
+    expect(job?.notifyChannel).toBe("1498867541710213262");
+  });
+
+  test("notifyChannel is undefined when not set", async () => {
+    await writeFile(
+      join(LEGACY_JOBS_DIR, "no-channel.md"),
+      jobMd("0 3 * * *", "Run nightly report")
+    );
+    const jobs = await loadJobsInSandbox();
+    const job = jobs.find((j) => j.name === "no-channel");
+    expect(job?.notifyChannel).toBeUndefined();
+  });
+
   test("directory location overrides frontmatter agent field", async () => {
     // Even if the .md file says agent: wrong, the enclosing dir wins.
     await writeFile(
