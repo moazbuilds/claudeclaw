@@ -600,15 +600,18 @@ async function fetchThreadHistory(
       user?: string;
       bot_id?: string;
       ts: string;
+      files?: SlackFile[];
     }>;
   };
   if (!data.ok) {
     throw new Error(`conversations.replies error: ${data.error ?? "unknown"}`);
   }
 
-  return (data.messages ?? []).map((msg) => ({
+  const msgs = data.messages ?? [];
+  const resolved = await downloadHistoryFiles(token, msgs);
+  return msgs.map((msg) => ({
     role: msg.bot_id ? "assistant" : "user",
-    text: msg.text,
+    text: appendFileNotes(msg.text, msg.files, resolved),
     user: msg.user,
     ts: msg.ts,
   }));
@@ -625,6 +628,9 @@ function formatThreadHistoryAsContext(
     lines.push(`[${sender}]: ${msg.text}`);
   }
   lines.push("--- End of Thread History ---");
+  if (historyHasSavedAttachment(messages.map((m) => m.text))) {
+    lines.push("(Attachments in the history above are saved to local paths — read the relevant ones directly before answering.)");
+  }
   lines.push("");
   return lines.join("\n");
 }
@@ -791,16 +797,21 @@ async function fetchChannelHistory(
   const data = await res.json() as {
     ok: boolean;
     error?: string;
-    messages?: Array<{ text: string; user?: string; bot_id?: string; ts: string }>;
+    messages?: Array<{ text: string; user?: string; bot_id?: string; ts: string; files?: SlackFile[] }>;
   };
   if (!data.ok) {
     return `Error reading channel ${channelId}: ${data.error ?? "unknown"}`;
   }
   const msgs = (data.messages ?? []).reverse();
+  const resolved = await downloadHistoryFiles(token, msgs);
+  const rendered = msgs.map((msg) => sanitizeUserInput(appendFileNotes(msg.text, msg.files, resolved)));
   const lines = [`--- Channel ${channelId} History (${msgs.length} messages) ---`];
-  for (const msg of msgs) {
-    const sender = msg.bot_id ? "Bot" : `User ${msg.user ?? "unknown"}`;
-    lines.push(`[${sender}]: ${sanitizeUserInput(msg.text)}`);
+  for (let i = 0; i < msgs.length; i++) {
+    const sender = msgs[i].bot_id ? "Bot" : `User ${msgs[i].user ?? "unknown"}`;
+    lines.push(`[${sender}]: ${rendered[i]}`);
+  }
+  if (historyHasSavedAttachment(rendered)) {
+    lines.push("(Attachments above are saved to local paths — read the relevant ones directly when needed.)");
   }
   lines.push("--- End ---");
   return lines.join("\n");
@@ -856,6 +867,66 @@ function isVoiceFile(f: SlackFile): boolean {
 
 function isDocumentFile(f: SlackFile): boolean {
   return !isImageFile(f) && !isVoiceFile(f) && Boolean(f.url_private);
+}
+
+// --- History attachments ---
+// Thread/channel history used to serialize only msg.text, so a file-only
+// message (an uploaded screenshot, invoice, PDF) rendered as an empty line —
+// the model could not even know the file existed. Download a bounded number
+// of history attachments (newest first) and reference their local paths
+// inline so the model can read them like triggering-message attachments.
+
+const HISTORY_FILE_DOWNLOAD_CAP = 6;
+
+function formatHistoryFileNote(f: SlackFile, localPath: string | null): string {
+  if (isVoiceFile(f)) return "[voice message — not transcribed]";
+  const name = (f.name ?? f.id).slice(0, 80);
+  if (localPath) {
+    return isImageFile(f) ? `[image saved: ${localPath}]` : `[file "${name}" saved: ${localPath}]`;
+  }
+  return `[attachment "${name}" (${f.filetype ?? f.mimetype ?? "file"}) — not downloaded]`;
+}
+
+async function downloadHistoryFiles(
+  token: string,
+  msgs: { files?: SlackFile[] }[],
+  cap: number = HISTORY_FILE_DOWNLOAD_CAP,
+): Promise<Map<string, string | null>> {
+  const resolved = new Map<string, string | null>();
+  let downloaded = 0;
+  // Iterate newest-first so the download budget favors recent files.
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    for (const f of msgs[i].files ?? []) {
+      if (!f.id || resolved.has(f.id)) continue;
+      if (isVoiceFile(f) || !f.url_private || downloaded >= cap) {
+        resolved.set(f.id, null);
+        continue;
+      }
+      try {
+        const p = await downloadSlackFile(token, f, isImageFile(f) ? "image" : "document");
+        resolved.set(f.id, p);
+        if (p) downloaded++;
+      } catch (err) {
+        debugLog(`History file download failed (${f.id}): ${err instanceof Error ? err.message : err}`);
+        resolved.set(f.id, null);
+      }
+    }
+  }
+  return resolved;
+}
+
+function appendFileNotes(
+  text: string,
+  files: SlackFile[] | undefined,
+  resolved: Map<string, string | null>,
+): string {
+  if (!files || files.length === 0) return text;
+  const notes = files.map((f) => formatHistoryFileNote(f, resolved.get(f.id) ?? null));
+  return [text, ...notes].filter((s) => s && s.trim()).join("\n");
+}
+
+function historyHasSavedAttachment(texts: string[]): boolean {
+  return texts.some((t) => t.includes(" saved: "));
 }
 
 function isBotMentioned(text: string): boolean {
@@ -981,16 +1052,21 @@ async function handleMessage(event: SlackMessage): Promise<void> {
       threadHistoryLoaded.set(sessionThreadId, Date.now());
     }
 
-    let imagePath: string | null = null;
+    const imagePaths: string[] = [];
     let voicePath: string | null = null;
     let voiceTranscript: string | null = null;
     const docPaths: { path: string; name: string }[] = [];
 
     if (hasImage) {
-      try {
-        imagePath = await downloadSlackFile(config.botToken, imageFiles[0], "image");
-      } catch (err) {
-        console.error(`[Slack] Failed to download image: ${err instanceof Error ? err.message : err}`);
+      // First 5 images, not just the first — a message can carry several
+      // screenshots/photos and each may matter.
+      for (const imageFile of imageFiles.slice(0, 5)) {
+        try {
+          const p = await downloadSlackFile(config.botToken, imageFile, "image");
+          if (p) imagePaths.push(p);
+        } catch (err) {
+          console.error(`[Slack] Failed to download image: ${err instanceof Error ? err.message : err}`);
+        }
       }
     }
 
@@ -1066,9 +1142,13 @@ async function handleMessage(event: SlackMessage): Promise<void> {
     } else if (cleanText.trim()) {
       promptParts.push(`Message: ${cleanText}`);
     }
-    if (imagePath) {
-      promptParts.push(`Image path: ${imagePath}`);
-      promptParts.push("The user attached an image. Inspect this image file directly before answering.");
+    if (imagePaths.length > 0) {
+      for (const p of imagePaths) promptParts.push(`Image path: ${p}`);
+      promptParts.push(
+        imagePaths.length === 1
+          ? "The user attached an image. Inspect this image file directly before answering."
+          : `The user attached ${imagePaths.length} images${imageFiles.length > 5 ? ` (first 5 of ${imageFiles.length})` : ""}. Inspect every image path above before answering.`,
+      );
     } else if (hasImage) {
       promptParts.push("The user attached an image, but downloading it failed. Respond and ask them to resend.");
     }
@@ -1646,7 +1726,7 @@ function scheduleReconnect(appToken: string): void {
 
 // --- Exports ---
 
-export { sendMessage, sanitizeUserInput, extractChannelReadDirectives, extractReactionDirective, assistantKey };
+export { sendMessage, sanitizeUserInput, extractChannelReadDirectives, extractReactionDirective, assistantKey, formatHistoryFileNote, appendFileNotes, formatThreadHistoryAsContext };
 
 export async function sendMessageToUser(
   token: string,
