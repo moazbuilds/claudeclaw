@@ -1,4 +1,4 @@
-import { ensureProjectClaudeMd, run, runUserMessage, runFork, killActive, isMainBusy, compactCurrentSession, compactCurrentThreadSession, isRateLimited, getRateLimitResetAt, getPermissionMode, setPermissionMode, type PermissionMode } from "../runner";
+import { ensureProjectClaudeMd, run, runUserMessage, runFork, killActive, isThreadBusy, isGlobalBusy, compactCurrentSession, compactCurrentThreadSession, isRateLimited, getRateLimitResetAt, getPermissionMode, setPermissionMode, type PermissionMode } from "../runner";
 import { wrapUntrusted } from "../prompt-safety";
 import { isAllowed } from "../allowlist";
 import { extractErrorDetail } from "../messaging";
@@ -1442,14 +1442,16 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
       );
     }
     const prefixedPrompt = promptParts.join("\n");
-    const busy = isMainBusy();
+    // Per-thread busy check: only reject if THIS topic's queue (or the global
+    // session for non-topic chats) is mid-run. Different topics run in parallel.
+    const busy = sessionKey ? isThreadBusy(sessionKey) : isGlobalBusy();
     const verbose = verboseChats.has(chatId);
     const modelOverride = chatModels.get(chatId);
     let result;
     let streamMsgId: number | null = null;
     let hadToolLines = false;
     if (busy) {
-      await sendMessage(config.token, chatId, "Claude is busy — try again in a moment, or use /fork for a quick parallel task.", threadId);
+      await sendMessage(config.token, chatId, "Claude is still working on the previous message in this topic — try again in a moment, or use /fork for a quick parallel task.", threadId);
       return;
     } else {
       const stream = makeStreamCallback(config.token, chatId, threadId, { verbose });
