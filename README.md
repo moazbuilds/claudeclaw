@@ -99,11 +99,9 @@ Authorization: Bearer <contents of .claude/claudeclaw/web.token>
 
 Existing `/api/inject` users who configured `settings.apiToken` are unaffected; that fallback still works.
 
-### v1.1.0 — Discord text-attachment truncation limit reduced
+### v1.1.0 — Discord text attachments downloaded in full, not truncated
 
-Text attachments sent to the Discord bot are now truncated at **2,048 bytes** (previously 51,200). Payloads over that limit have `…[truncated]` appended silently; there is no config knob to restore the old limit.
-
-**Migration:** if you rely on passing large text files through Discord attachments, switch to gists or another file-sharing mechanism and paste the URL instead.
+Text attachments sent to the Discord bot (including long messages Discord auto-converts to `.txt`) are now downloaded in full to `.claude/claudeclaw/inbox/discord/` instead of being truncated to 2,048 bytes and inlined. Attachments over **5 MB** are rejected rather than partially processed.
 
 ---
 
