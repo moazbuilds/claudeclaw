@@ -1651,6 +1651,7 @@ export const pageScript = String.raw`    // --- Token management (Task 1.1) ---
         var compactProgress = document.getElementById("confirm-compact-progress");
         var compactStatus = document.getElementById("confirm-compact-status");
         if (!compactModal || !compactLabelEl || !compactOk || !compactCancel) return;
+        if (compactModal.classList.contains("open")) return; // one modal instance at a time — avoids stacking listeners
         compactLabelEl.textContent = label;
         compactModal.classList.add("open");
         compactModal.setAttribute("aria-hidden", "false");
@@ -1738,6 +1739,7 @@ export const pageScript = String.raw`    // --- Token management (Task 1.1) ---
         var confirmOk = document.getElementById("confirm-reset-ok");
         var confirmCancel = document.getElementById("confirm-reset-cancel");
         if (!confirmModal || !confirmLabelEl || !confirmOk || !confirmCancel) return;
+        if (confirmModal.classList.contains("open")) return; // one modal instance at a time — avoids stacking listeners
         confirmLabelEl.textContent = label;
         confirmModal.classList.add("open");
         confirmModal.setAttribute("aria-hidden", "false");

@@ -149,7 +149,9 @@ export async function compactSessionById(sessionId: string): Promise<{ success: 
   const session = threadSessions.find((s) => s.sessionId === sessionId);
   if (!session) throw new Error("session not found or not a Discord session");
 
-  return compactCurrentThreadSession(session.threadId);
+  const result = await compactCurrentThreadSession(session.threadId);
+  invalidateUsageCache();
+  return result;
 }
 
 export async function resetSessionById(sessionId: string): Promise<void> {
