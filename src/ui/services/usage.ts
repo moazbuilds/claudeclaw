@@ -1,7 +1,10 @@
-import { readFile } from "node:fs/promises";
+import { readFile, rename } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { findSessionJsonlPath } from "../../sessionFiles";
+import { listThreadSessions, removeThreadSession } from "../../sessionManager";
+import { compactCurrentThreadSession } from "../../runner";
+import { resetSession } from "../../sessions";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -114,23 +117,19 @@ export async function getSessionUsage(channelNames?: Record<string, string>): Pr
     }
   } catch {}
 
-  // Per-channel Discord sessions
-  const sessionsFile = join(cwd, ".claude", "claudeclaw", "sessions.json");
+  // Per-channel Discord/job sessions — read through sessionManager's in-memory cache
   try {
-    if (existsSync(sessionsFile)) {
-      const data = JSON.parse(await readFile(sessionsFile, "utf-8"));
-      for (const [threadId, thread] of Object.entries(data.threads ?? {})) {
-        const t = thread as any;
-        if (!UUID_RE.test(t.sessionId)) continue;
-        const label = channelNames?.[threadId] ?? `#${threadId}`;
-        const tokens = await parseJSONLUsage(t.sessionId);
-        sessions.push(buildEntry(
-          t.sessionId, label, "discord",
-          t.turnCount ?? 0,
-          t.lastUsedAt || t.createdAt,
-          tokens,
-        ));
-      }
+    const threadSessions = await listThreadSessions();
+    for (const t of threadSessions) {
+      if (!UUID_RE.test(t.sessionId)) continue;
+      const label = channelNames?.[t.threadId] ?? `#${t.threadId}`;
+      const tokens = await parseJSONLUsage(t.sessionId);
+      sessions.push(buildEntry(
+        t.sessionId, label, "discord",
+        t.turnCount ?? 0,
+        t.lastUsedAt || t.createdAt,
+        tokens,
+      ));
     }
   } catch {}
 
@@ -141,4 +140,45 @@ export async function getSessionUsage(channelNames?: Record<string, string>): Pr
 
 export function invalidateUsageCache(): void {
   usageCache = null;
+}
+
+export async function compactSessionById(sessionId: string): Promise<{ success: boolean; message: string }> {
+  if (!UUID_RE.test(sessionId)) throw new Error("invalid sessionId");
+
+  const threadSessions = await listThreadSessions();
+  const session = threadSessions.find((s) => s.sessionId === sessionId);
+  if (!session) throw new Error("session not found or not a Discord session");
+
+  const result = await compactCurrentThreadSession(session.threadId);
+  invalidateUsageCache();
+  return result;
+}
+
+export async function resetSessionById(sessionId: string): Promise<void> {
+  if (!UUID_RE.test(sessionId)) throw new Error("invalid sessionId");
+  const cwd = process.cwd();
+
+  // Global web session
+  const sessionFile = join(cwd, ".claude", "claudeclaw", "session.json");
+  if (existsSync(sessionFile)) {
+    const data = JSON.parse(await readFile(sessionFile, "utf-8"));
+    if (data.sessionId === sessionId) {
+      const backup = join(cwd, ".claude", "claudeclaw", `session_backup_${Date.now()}.json`);
+      await rename(sessionFile, backup);
+      await resetSession(); // clear in-memory `current` cache so runner doesn't resume the stale sessionId
+      invalidateUsageCache();
+      return;
+    }
+  }
+
+  // Discord/job thread session — go through sessionManager to keep in-memory cache consistent
+  const threadSessions = await listThreadSessions();
+  const session = threadSessions.find((s) => s.sessionId === sessionId);
+  if (session) {
+    await removeThreadSession(session.threadId);
+    invalidateUsageCache();
+    return;
+  }
+
+  throw new Error("session not found");
 }

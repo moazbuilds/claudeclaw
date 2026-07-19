@@ -995,28 +995,33 @@ export async function compactCurrentThreadSession(
   threadId: string,
   agentName?: string
 ): Promise<{ success: boolean; message: string }> {
-  const existing = await getThreadSession(threadId);
-  if (!existing) return { success: false, message: "No active session to compact." };
+  // Share the same per-thread queue as normal message runs (see execClaude below) so a
+  // compact triggered from the web dashboard can't race a Discord/Telegram turn that's
+  // actively resuming this thread's session.
+  return enqueue(async () => {
+    const existing = await getThreadSession(threadId);
+    if (!existing) return { success: false, message: "No active session to compact." };
 
-  const settings = getSettings();
-  const securityArgs = buildSecurityArgs(settings.security);
-  const baseEnv = cleanSpawnEnv();
-  const timeoutMs = settings.sessionTimeoutMs;
+    const settings = getSettings();
+    const securityArgs = buildSecurityArgs(settings.security);
+    const baseEnv = cleanSpawnEnv();
+    const timeoutMs = settings.sessionTimeoutMs;
 
-  const compactCwd = agentName ? await ensureAgentDir(agentName) : undefined;
-  const ok = await runCompact(
-    existing.sessionId,
-    settings.model,
-    settings.api,
-    baseEnv,
-    securityArgs,
-    timeoutMs,
-    compactCwd
-  );
+    const compactCwd = agentName ? await ensureAgentDir(agentName) : undefined;
+    const ok = await runCompact(
+      existing.sessionId,
+      settings.model,
+      settings.api,
+      baseEnv,
+      securityArgs,
+      timeoutMs,
+      compactCwd
+    );
 
-  return ok
-    ? { success: true, message: `✅ Thread session compact complete (${existing.sessionId.slice(0, 8)})` }
-    : { success: false, message: `❌ Compact failed (${existing.sessionId.slice(0, 8)})` };
+    return ok
+      ? { success: true, message: `✅ Thread session compact complete (${existing.sessionId.slice(0, 8)})` }
+      : { success: false, message: `❌ Compact failed (${existing.sessionId.slice(0, 8)})` };
+  }, threadId);
 }
 
 async function execClaude(
