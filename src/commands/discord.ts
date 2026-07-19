@@ -1,6 +1,6 @@
 import { ensureProjectClaudeMd, run, runUserMessage, compactCurrentSession, compactCurrentThreadSession, agentDirKey } from "../runner";
 import { wrapUntrusted } from "../prompt-safety";
-import { isAllowed } from "../allowlist";
+import { isAllowed, isDiscordAuthorized } from "../allowlist";
 import { extractErrorDetail } from "../messaging";
 import { loadPendingResume } from "../pending-resume";
 import { getSettings, loadSettings, DEFAULT_IMAGE_OUTPUT_ROOT } from "../config";
@@ -784,8 +784,9 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
     `Handle message channel=${channelId} from=${userId} reason=${triggerReason} text="${content.slice(0, 80)}"`,
   );
 
-  // Authorization check
-  if (!isAllowed(userId, config.allowedUserIds)) {
+  // Authorization check — global allowlist works everywhere; channel-scoped allowlist only
+  // grants access to guild messages in that specific channel, never DMs.
+  if (!isDiscordAuthorized(userId, isGuild, channelId, config.allowedUserIds, config.channelAllowedUserIds)) {
     if (isDM) {
       await sendMessage(config.token, channelId, "Unauthorized.");
     } else {
