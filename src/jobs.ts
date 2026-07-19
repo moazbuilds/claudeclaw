@@ -9,7 +9,10 @@ export interface Job {
   prompt: string;
   recurring: boolean;
   notify: true | false | "error";
-  /** When set, routes the completion notification to this Discord channel ID instead of DMing allowedUserIds. */
+  /**
+   * When set, routes the completion notification to this Discord channel ID instead of DMing allowedUserIds.
+   * Not gated by discord.allowedUserIds — anyone with access to the channel sees the job output.
+   */
   notifyChannel?: string;
   /** When set, overrides the global model for this job. Useful for routing cheap tasks to haiku. */
   model?: string;
