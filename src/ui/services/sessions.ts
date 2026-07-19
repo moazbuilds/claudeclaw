@@ -1,8 +1,8 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join, basename } from "node:path";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { getAgentsDir } from "../../config";
+import { findSessionJsonlPath, getClaudeProjectDir } from "../../sessionFiles";
 
 export interface SessionInfo {
   id: string;
@@ -24,12 +24,6 @@ export interface ChatMessage {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DISCORD_SNOWFLAKE_RE = /^\d{17,19}$/;
-
-// Must match Claude Code's JSONL directory sanitizer (slashes, backslashes, dots → dashes).
-function getProjectDir(): string {
-  const sanitized = process.cwd().replace(/[/\\.]/g, "-");
-  return join(homedir(), ".claude", "projects", sanitized);
-}
 
 function extractUserText(line: string): string {
   if (!line.trim()) return "";
@@ -61,8 +55,8 @@ function extractUserText(line: string): string {
 // Single file read to get both the first and last user message (for sidebar preview).
 async function peekMessages(sessionId: string): Promise<{ first: string; last: string }> {
   if (!UUID_RE.test(sessionId)) return { first: "", last: "" };
-  const filePath = join(getProjectDir(), `${sessionId}.jsonl`);
-  if (!existsSync(filePath)) return { first: "", last: "" };
+  const filePath = findSessionJsonlPath(sessionId);
+  if (!filePath) return { first: "", last: "" };
   let first = "";
   let last = "";
   try {
@@ -160,7 +154,7 @@ export async function listSessions(): Promise<SessionInfo[]> {
 
   // Orphan JSONL sessions not tracked by any session file (up to 20 most recent)
   try {
-    const projectDir = getProjectDir();
+    const projectDir = getClaudeProjectDir();
     const files = (await readdir(projectDir)).filter(f => f.endsWith(".jsonl"));
     const candidates = files
       .map(f => basename(f, ".jsonl"))
@@ -201,8 +195,8 @@ export async function readSessionMessages(
   // Validate UUID shape before constructing file path (prevent path traversal).
   if (!UUID_RE.test(sessionId)) return { messages: [], total: 0 };
 
-  const filePath = join(getProjectDir(), `${sessionId}.jsonl`);
-  if (!existsSync(filePath)) return { messages: [], total: 0 };
+  const filePath = findSessionJsonlPath(sessionId);
+  if (!filePath) return { messages: [], total: 0 };
 
   const content = await readFile(filePath, "utf-8");
   const all: ChatMessage[] = [];

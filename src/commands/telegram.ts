@@ -7,9 +7,9 @@ import { getSettings, loadSettings } from "../config";
 import { transcribeAudioToText } from "../whisper";
 import { resetSession, resetFallbackSession, peekSession } from "../sessions";
 import { peekThreadSession, removeThreadSession } from "../sessionManager";
-import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
+import { readFile } from "node:fs/promises";
+import { findSessionJsonlPath } from "../sessionFiles";
 import { resolveSkillPrompt, listSkills } from "../skills";
 import { mkdir } from "node:fs/promises";
 import { extname, join } from "node:path";
@@ -1097,10 +1097,8 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
       await sendMessage(config.token, chatId, "No active session.", threadId);
       return;
     }
-    const home = homedir();
-    const projectSlug = process.cwd().replace(/\//g, "-");
-    const jsonlPath = `${home}/.claude/projects/${projectSlug}/${session.sessionId}.jsonl`;
-    if (!existsSync(jsonlPath)) {
+    const jsonlPath = findSessionJsonlPath(session.sessionId);
+    if (!jsonlPath) {
       await sendMessage(config.token, chatId, "Conversation file not found.", threadId);
       return;
     }

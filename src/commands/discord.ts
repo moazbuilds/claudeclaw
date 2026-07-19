@@ -8,6 +8,7 @@ import { resetSession, resetFallbackSession, peekSession } from "../sessions";
 import { listThreadSessions, removeThreadSession, peekThreadSession } from "../sessionManager";
 import { readFile } from "node:fs/promises";
 import { existsSync, realpathSync, statSync } from "node:fs";
+import { findSessionJsonlPath } from "../sessionFiles";
 import { homedir } from "node:os";
 import { transcribeAudioToText } from "../whisper";
 import { resolveSkillPrompt } from "../skills";
@@ -77,6 +78,12 @@ interface DiscordMessage {
   message_snapshots?: [{ message: DiscordMessageSnapshot }];
   flags?: number;
   type: number;
+}
+
+const enum DiscordMessageType {
+  Default = 0,
+  Reply = 19,
+  ThreadCreated = 18,
 }
 
 interface DiscordInteraction {
@@ -740,6 +747,10 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
   // Ignore bot messages
   if (message.author.bot) return;
 
+  // Ignore system message types (thread creation recap, pins, etc.) — only process
+  // regular messages (0) and replies (19) to avoid spurious prompts on the parent channel.
+  if (message.type !== DiscordMessageType.Default && message.type !== DiscordMessageType.Reply) return;
+
   const userId = message.author.id;
   const channelId = message.channel_id;
   const isDM = !message.guild_id;
@@ -1188,10 +1199,8 @@ async function handleInteractionCreate(token: string, interaction: DiscordIntera
         await respondToInteraction(interaction, { content: "No active session." });
         return;
       }
-      const home = homedir();
-      const projectSlug = process.cwd().replace(/\//g, "-");
-      const jsonlPath = `${home}/.claude/projects/${projectSlug}/${session.sessionId}.jsonl`;
-      if (!existsSync(jsonlPath)) {
+      const jsonlPath = findSessionJsonlPath(session.sessionId);
+      if (!jsonlPath) {
         await respondToInteraction(interaction, { content: "Conversation file not found." });
         return;
       }
