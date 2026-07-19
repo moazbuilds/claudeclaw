@@ -118,6 +118,8 @@ Legacy compatibility: `daily` is still accepted in existing job files.
 
 Logs are always written to `.claude/claudeclaw/logs/` regardless of the `notify` setting.
 
+**`notifyChannel`**: When set to a Discord channel ID, routes the completion notification to that channel instead of DMing everyone in `discord.allowedUserIds`. This output is **not** gated by `discord.allowedUserIds` — anyone with access to the channel sees the job's output, so only point it at a channel where that's intended.
+
 | Expression       | Meaning                  |
 |------------------|--------------------------|
 | `* * * * *`      | Every minute             |
