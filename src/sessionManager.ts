@@ -1,4 +1,5 @@
 import { join } from "path";
+import { hasValidSessionId } from "./sessionValidate";
 
 const HEARTBEAT_DIR = join(process.cwd(), ".claude", "claudeclaw");
 const SESSIONS_FILE = join(HEARTBEAT_DIR, "sessions.json");
@@ -40,7 +41,7 @@ export async function getThreadSession(
 ): Promise<{ sessionId: string; turnCount: number; compactWarned: boolean } | null> {
   const data = await loadSessions();
   const session = data.threads[threadId];
-  if (!session) return null;
+  if (!hasValidSessionId(session)) return null;
 
   if (typeof session.turnCount !== "number") session.turnCount = 0;
   if (typeof session.compactWarned !== "boolean") session.compactWarned = false;
@@ -97,14 +98,15 @@ export async function markThreadCompactWarned(threadId: string): Promise<void> {
   await saveSessions(data);
 }
 
-/** List all active thread sessions. */
+/** List all active thread sessions. Drops corrupted rows missing a sessionId. */
 export async function listThreadSessions(): Promise<ThreadSession[]> {
   const data = await loadSessions();
-  return Object.values(data.threads);
+  return Object.values(data.threads).filter(hasValidSessionId);
 }
 
 /** Peek at a thread session without updating lastUsedAt. */
 export async function peekThreadSession(threadId: string): Promise<ThreadSession | null> {
   const data = await loadSessions();
-  return data.threads[threadId] ?? null;
+  const session = data.threads[threadId];
+  return hasValidSessionId(session) ? session : null;
 }

@@ -1,6 +1,7 @@
 import { dirname, join } from "path";
 import { unlink, readdir, rename, mkdir } from "fs/promises";
 import { getAgentsDir } from "./config";
+import { hasValidSessionId } from "./sessionValidate";
 
 const HEARTBEAT_DIR = join(process.cwd(), ".claude", "claudeclaw");
 const SESSION_FILE = join(HEARTBEAT_DIR, "session.json");
@@ -14,6 +15,8 @@ export interface GlobalSession {
   messageCount?: number;
 }
 
+export { hasValidSessionId } from "./sessionValidate";
+
 // Module-level cache is for the GLOBAL session only.
 // Agent sessions bypass this cache — they read/write directly.
 let current: GlobalSession | null = null;
@@ -26,16 +29,26 @@ function sessionPathFor(agentName?: string): string {
 async function loadSession(agentName?: string): Promise<GlobalSession | null> {
   if (agentName) {
     try {
-      return await Bun.file(sessionPathFor(agentName)).json();
+      const session = await Bun.file(sessionPathFor(agentName)).json();
+      return hasValidSessionId(session) ? session : null;
     } catch {
       return null;
     }
   }
-  if (current) return current;
+  if (current) {
+    if (hasValidSessionId(current)) return current;
+    current = null;
+  }
   try {
-    current = await Bun.file(SESSION_FILE).json();
+    const session = await Bun.file(SESSION_FILE).json();
+    if (!hasValidSessionId(session)) {
+      current = null;
+      return null;
+    }
+    current = session;
     return current;
   } catch {
+    current = null;
     return null;
   }
 }
@@ -126,7 +139,8 @@ function fallbackSessionPathFor(agentName?: string, threadId?: string): string {
 
 async function loadFallbackSession(agentName?: string, threadId?: string): Promise<GlobalSession | null> {
   try {
-    return await Bun.file(fallbackSessionPathFor(agentName, threadId)).json();
+    const session = await Bun.file(fallbackSessionPathFor(agentName, threadId)).json();
+    return hasValidSessionId(session) ? session : null;
   } catch {
     return null;
   }
