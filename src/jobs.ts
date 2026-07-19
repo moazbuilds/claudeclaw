@@ -9,6 +9,11 @@ export interface Job {
   prompt: string;
   recurring: boolean;
   notify: true | false | "error";
+  /**
+   * When set, routes the completion notification to this Discord channel ID instead of DMing allowedUserIds.
+   * Not gated by discord.allowedUserIds — anyone with access to the channel sees the job output.
+   */
+  notifyChannel?: string;
   /** When set, overrides the global model for this job. Useful for routing cheap tasks to haiku. */
   model?: string;
   /** When set, overrides the global session timeout for this job (in seconds). */
@@ -65,6 +70,11 @@ function parseJobFile(name: string, content: string): Job | null {
     : notifyRaw === "error" ? "error"
     : true;
 
+  const notifyChannelLine = lines.find((l) => l.startsWith("notifyChannel:"));
+  const notifyChannel = notifyChannelLine
+    ? parseFrontmatterValue(notifyChannelLine.replace("notifyChannel:", "")) || undefined
+    : undefined;
+
   const modelLine = lines.find((l) => l.startsWith("model:"));
   const model = modelLine ? parseFrontmatterValue(modelLine.replace("model:", "")) || undefined : undefined;
 
@@ -96,7 +106,7 @@ function parseJobFile(name: string, content: string): Job | null {
   const retryDelayLine = lines.find((l) => l.startsWith("retry_delay:"));
   const retryDelay = retryDelayLine ? parseInt(parseFrontmatterValue(retryDelayLine.replace("retry_delay:", "")), 10) || undefined : undefined;
 
-  return { name, schedule, prompt, recurring, notify, model, timeoutSeconds, agent, label, enabled, retry, retryDelay };
+  return { name, schedule, prompt, recurring, notify, notifyChannel, model, timeoutSeconds, agent, label, enabled, retry, retryDelay };
 }
 
 export async function loadJobs(): Promise<Job[]> {
