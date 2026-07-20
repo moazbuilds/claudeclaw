@@ -77,7 +77,7 @@ Start the heartbeat daemon for this project. Follow these steps exactly:
      - If "Yes": Set `agentic.enabled` to `true` with default modes (planning→opus, implementation→sonnet). The user can customize modes later via `/config`.
      - If "No": Set `agentic.enabled` to `false`.
    - Ask whether to set a fallback model. Recommend `glm` first so fallback uses a different provider path than the primary Claude model. If yes, set `fallback.model` and optionally `fallback.api`.
-   - Ask whether to enable GLM fallback (kicks in automatically when your Claude token limit is hit). The fallback model is always `glm` — no other model is supported. Use AskUserQuestion: "Enable GLM fallback? Automatically switches to GLM when your Claude limit is hit." (header: "Fallback", options: "Yes — enable GLM fallback", "Skip"). If yes, ask in normal free-form text for the GLM API token (optional, user can skip). Set `fallback.model` to `"glm"` and `fallback.api` to the token if provided.
+   - Ask whether to enable fallback (kicks in automatically when your Claude token limit is hit). Use AskUserQuestion: "Enable fallback? Automatically switches providers when your Claude limit is hit." (header: "Fallback", options: "Yes — enable GLM fallback (Recommended)", "Skip"). If yes, ask in normal free-form text for the fallback API token (optional, user can skip). Set `fallback.model` to `"glm"` and `fallback.api` to the token if provided. Advanced users can later set `fallback.baseUrl` for OpenRouter, LiteLLM, or a local Anthropic-compatible proxy.
 
    - **If yes to heartbeat**: Use AskUserQuestion again with one question:
      - "How often should it run in minutes?" (header: "Interval", options: "5", "15", "30 (Recommended)", "60")
@@ -172,9 +172,11 @@ Defaults: `WEB_HOST=127.0.0.1`, `WEB_PORT=4632` unless changed via settings or `
 {
   "model": "opus",
   "api": "",
+  "baseUrl": "",
   "fallback": {
     "model": "glm",
-    "api": ""
+    "api": "",
+    "baseUrl": ""
   },
   "agentic": {
     "enabled": true,
@@ -218,9 +220,11 @@ Defaults: `WEB_HOST=127.0.0.1`, `WEB_PORT=4632` unless changed via settings or `
 }
 ```
 - `model` — Claude model to use (`opus`, `sonnet`, `haiku`, `glm`, or full model ID). Empty string uses default. Ignored when `agentic.enabled` is true.
-- `api` — API token used when `model` is `glm` (passed as `ANTHROPIC_AUTH_TOKEN` for that provider path).
+- `api` — optional API token passed as `ANTHROPIC_AUTH_TOKEN` for the primary model.
+- `baseUrl` — optional Anthropic-compatible base URL for the primary model. If omitted and `model` is `glm`, ClaudeClaw uses the legacy GLM endpoint.
 - `fallback.model` — backup model used automatically if the primary run returns a rate-limit message. Prefer `glm` for provider diversity.
 - `fallback.api` — optional API token to use with `fallback.model`.
+- `fallback.baseUrl` — optional Anthropic-compatible base URL for fallback providers such as OpenRouter, LiteLLM, or local proxies. If omitted and `fallback.model` is `glm`, ClaudeClaw uses the legacy GLM endpoint.
 - `agentic.enabled` — when true, automatically routes tasks to appropriate models based on task type
 - `agentic.defaultMode` — which mode to use when no keywords match (default: `"implementation"`)
 - `agentic.modes` — array of routing modes, each with: `name` (string), `model` (string), `keywords` (string[]), optional `phrases` (string[], checked before keywords with higher priority). Old `planningModel`/`implementationModel` format is auto-converted.

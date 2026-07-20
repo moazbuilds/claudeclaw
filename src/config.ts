@@ -33,6 +33,7 @@ export function getAgentsDir(): string {
 const DEFAULT_SETTINGS: Settings = {
   model: "",
   api: "",
+  baseUrl: "",
   fallback: {
     model: "",
     api: "",
@@ -170,6 +171,7 @@ export interface TimeoutsConfig {
 export interface Settings {
   model: string;
   api: string;
+  baseUrl: string;
   fallback: ModelConfig;
   agentic: AgenticConfig;
   timezone: string;
@@ -207,6 +209,7 @@ export interface AgenticConfig {
 export interface ModelConfig {
   model: string;
   api: string;
+  baseUrl?: string;
 }
 
 export interface WebConfig {
@@ -323,9 +326,13 @@ function parseSettings(
   return {
     model: typeof raw.model === "string" ? raw.model.trim() : "",
     api: typeof raw.api === "string" ? raw.api.trim() : "",
+    baseUrl: typeof raw.baseUrl === "string" ? raw.baseUrl.trim() : "",
     fallback: {
       model: typeof raw.fallback?.model === "string" ? raw.fallback.model.trim() : "",
       api: typeof raw.fallback?.api === "string" ? raw.fallback.api.trim() : "",
+      ...(typeof raw.fallback?.baseUrl === "string" && raw.fallback.baseUrl.trim()
+        ? { baseUrl: raw.fallback.baseUrl.trim() }
+        : {}),
     },
     agentic: parseAgenticConfig(raw.agentic),
     timezone: parsedTimezone,
