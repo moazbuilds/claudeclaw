@@ -58,6 +58,7 @@ import { getSettings, type ModelConfig, type SecurityConfig } from "./config";
 import { buildClockPromptPrefix } from "./timezone";
 import { selectModel } from "./model-router";
 import { classifyReadOnly, queryOllama, LOCAL_SIGIL } from "./ollama";
+import { isAuthError, handleAuthFailure } from "./auth-guard";
 
 const LOGS_DIR = join(process.cwd(), ".claude/claudeclaw/logs");
 // Resolve prompts relative to the claudeclaw installation, not the project dir
@@ -542,6 +543,32 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
     usedFallback = true;
   }
 
+  // Claude auth is broken (expired/revoked key, login issue) rather than a
+  // normal task failure — degrade to a local Ollama answer, or a single
+  // clean status line, instead of returning the raw CLI error. This also
+  // keeps exitCode at 0 below so callers (heartbeat, notify:"error" jobs)
+  // don't forward the raw failure text to Discord/Telegram.
+  if (exec.exitCode !== 0 && isAuthError(`${exec.stderr}\n${exec.rawStdout}`)) {
+    console.warn(`[${new Date().toLocaleTimeString()}] Claude auth failure detected for ${name}; degrading gracefully...`);
+    const fallback = await handleAuthFailure(prompt);
+    const output = [
+      `# ${name}`,
+      `Date: ${new Date().toISOString()}`,
+      `Model config: auth-fallback (${fallback.usedFallback})`,
+      `Prompt: ${prompt}`,
+      `Exit code: 0`,
+      "",
+      "## Output",
+      fallback.stdout,
+      "## Original error",
+      exec.stderr || exec.rawStdout,
+    ].join("\n");
+    await Bun.write(logFile, output);
+    if (appendParts.length > 0) unlink(syspromptFile).catch(() => {});
+    console.log(`[${new Date().toLocaleTimeString()}] Done: ${name} → ${logFile} (auth fallback: ${fallback.usedFallback})`);
+    return { stdout: fallback.stdout, stderr: "", exitCode: 0 };
+  }
+
   const rawStdout = exec.rawStdout;
   const stderr = exec.stderr;
   const exitCode = exec.exitCode;
@@ -725,6 +752,14 @@ async function execShell(name: string, prompt: string): Promise<RunResult> {
     exitCode = 124;
   } finally {
     clearTimeout(shellTimeoutHandle);
+  }
+
+  // A clean, silent run (exit 0, nothing printed) means the job had nothing
+  // to report — skip the log file so silent no-ops don't pile up between
+  // real events. Errors and any output always get a log entry.
+  if (exitCode === 0 && !stdout.trim() && !stderr.trim()) {
+    console.log(`[${new Date().toLocaleTimeString()}] Done: ${name} (silent, no log)`);
+    return { stdout, stderr, exitCode };
   }
 
   const output = [

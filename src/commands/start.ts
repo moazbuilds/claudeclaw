@@ -534,6 +534,36 @@ export async function start(args: string[] = []) {
     }
   }
 
+  // --- Heartbeat failure guard ---
+  // Auth failures already degrade gracefully inside execClaude (Ollama
+  // fallback or a clean status line) and come back as exitCode 0, so any
+  // non-zero heartbeat result here is an unexpected internal failure (spawn
+  // error, timeout, bad JSON, etc). Raw stderr/exit codes are noise to
+  // Discord/Telegram — log locally and send at most one clean heads-up per
+  // cooldown window instead of dumping the real error every tick.
+  let lastHeartbeatFailureNotifyAt = 0;
+  const HEARTBEAT_FAILURE_NOTIFY_COOLDOWN_MS = 3 * 60 * 60 * 1000;
+
+  function guardHeartbeatFailure(result: { exitCode: number; stdout: string; stderr: string }) {
+    console.error(`[${ts()}] Heartbeat failed (exit ${result.exitCode}): ${result.stderr || result.stdout || "no output"}`);
+
+    const now = Date.now();
+    if (now - lastHeartbeatFailureNotifyAt < HEARTBEAT_FAILURE_NOTIFY_COOLDOWN_MS) return;
+    lastHeartbeatFailureNotifyAt = now;
+
+    const text = "⚡ heartbeat's been erroring out internally — check the logs when you get a chance. Not spamming you every tick.";
+    if (telegramSend) {
+      for (const userId of currentSettings.telegram.allowedUserIds) {
+        telegramSend(userId, text).catch((err) => console.error(`[Telegram] Failed to forward to ${userId}: ${err}`));
+      }
+    }
+    if (discordSendToUser) {
+      for (const userId of currentSettings.discord.allowedUserIds) {
+        discordSendToUser(userId, text).catch((err) => console.error(`[Discord] Failed to forward to ${userId}: ${err}`));
+      }
+    }
+  }
+
   // --- Heartbeat scheduling ---
   function scheduleHeartbeat() {
     if (heartbeatTimer) clearTimeout(heartbeatTimer);
@@ -579,6 +609,10 @@ export async function start(args: string[] = []) {
         })
         .then((r) => {
           if (!r) return;
+          if (r.exitCode !== 0) {
+            guardHeartbeatFailure(r);
+            return;
+          }
           const shouldForward = currentSettings.heartbeat.forwardToTelegram || !r.stdout.trim().startsWith("HEARTBEAT_OK");
           if (shouldForward) {
             forwardToTelegram("", r);

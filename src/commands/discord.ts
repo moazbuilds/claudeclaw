@@ -734,7 +734,19 @@ async function catchupThreads(token: string): Promise<void> {
           // Stamp guild_id back on (REST omits it) so the handler routes this
           // as a guild message — threads the reply instead of top-level spam.
           if (!m.guild_id) m.guild_id = await resolveChannelGuildId(token, chId);
-          await handleMessageCreate(token, m);
+          // Dispatched, not awaited: a long Claude session inside one
+          // channel's handler must not block the sweep from reaching every
+          // other candidate, nor from releasing catchupSweeping so the next
+          // 90s tick can run. inFlightThreads (set early inside
+          // handleMessageCreate) guards this channel against re-delivery
+          // while its handler is still in flight. Without this, a single
+          // multi-minute task (e.g. "run these skills against 3 repos")
+          // silently starved every other thread of catchup delivery for its
+          // entire duration — confirmed 2026-07-12: a 23-minute handler
+          // blocked the sweep and left 7 other threads' replies unsent.
+          handleMessageCreate(token, m).catch((err) =>
+            console.error(`[Discord] Catchup delivery failed for channel ${chId}: ${err}`),
+          );
           processed++;
         }
       } catch (err) {
@@ -775,7 +787,12 @@ async function catchupThreads(token: string): Promise<void> {
         if (!newest.guild_id) newest.guild_id = await resolveChannelGuildId(token, threadId);
         // Let handleMessageCreate own recentlyProcessedMessageIds — pre-adding
         // here makes the handler think the message is already processed and exit.
-        await handleMessageCreate(token, newest);
+        // Dispatched, not awaited — see the channel-loop comment above for
+        // why: one long-running thread handler must not block delivery to
+        // every other thread in this sweep, or the next sweep 90s later.
+        handleMessageCreate(token, newest).catch((err) =>
+          console.error(`[Discord] Catchup delivery failed for thread ${threadId}: ${err}`),
+        );
         processed++;
       } catch (err) {
         sweepCursors.delete(threadId); // retry this thread next sweep
