@@ -323,7 +323,56 @@ function isNotFoundError(error: unknown): boolean {
   return /enoent|no such file or directory/i.test(message);
 }
 
-function buildChildEnv(baseEnv: Record<string, string>, model: string, api: string): Record<string, string> {
+/** Anthropic-compatible base URLs for the MiniMax provider preset. */
+const MINIMAX_ANTHROPIC_BASE_URLS = {
+  global: "https://api.minimax.io/anthropic",
+  cn: "https://api.minimaxi.com/anthropic",
+} as const;
+
+/** Canonical MiniMax model IDs, keyed by the accepted `model` setting aliases. */
+const MINIMAX_MODEL_IDS: Record<string, string> = {
+  minimax: "MiniMax-M3",
+  "minimax-m3": "MiniMax-M3",
+  "minimax-m2.7": "MiniMax-M2.7",
+};
+
+/**
+ * Resolve the MiniMax provider preset for a configured `model` string.
+ *
+ * Users select a MiniMax model with `minimax`, `minimax-m3`, or `minimax-m2.7`
+ * (the bare `minimax` alias maps to the latest MiniMax-M3). Append `-cn` to any
+ * of those to route to the China endpoint instead of the global one. Returns
+ * null when the model is not a MiniMax preset.
+ */
+export function resolveMinimaxModel(model: string): { baseUrl: string; modelId: string } | null {
+  let normalized = model.trim().toLowerCase();
+  if (!normalized.startsWith("minimax")) return null;
+
+  let baseUrl = MINIMAX_ANTHROPIC_BASE_URLS.global;
+  if (normalized.endsWith("-cn")) {
+    baseUrl = MINIMAX_ANTHROPIC_BASE_URLS.cn;
+    normalized = normalized.slice(0, -"-cn".length);
+  }
+
+  const modelId = MINIMAX_MODEL_IDS[normalized];
+  return modelId ? { baseUrl, modelId } : null;
+}
+
+/**
+ * Resolve the value passed to the Claude CLI `--model` flag, or null when no
+ * flag should be added. GLM uses its provider default (no flag); MiniMax presets
+ * are rewritten to their canonical model IDs; anything else is passed through.
+ */
+export function resolveModelArg(model: string): string | null {
+  const trimmed = model.trim();
+  if (!trimmed) return null;
+  if (trimmed.toLowerCase() === "glm") return null;
+  const minimax = resolveMinimaxModel(trimmed);
+  if (minimax) return minimax.modelId;
+  return trimmed;
+}
+
+export function buildChildEnv(baseEnv: Record<string, string>, model: string, api: string): Record<string, string> {
   const childEnv: Record<string, string> = { ...baseEnv };
   const normalizedModel = model.trim().toLowerCase();
 
@@ -332,6 +381,11 @@ function buildChildEnv(baseEnv: Record<string, string>, model: string, api: stri
   if (normalizedModel === "glm") {
     childEnv.ANTHROPIC_BASE_URL = "https://api.z.ai/api/anthropic";
     childEnv.API_TIMEOUT_MS = "3000000";
+  }
+
+  const minimax = resolveMinimaxModel(model);
+  if (minimax) {
+    childEnv.ANTHROPIC_BASE_URL = minimax.baseUrl;
   }
 
   return childEnv;
@@ -414,8 +468,8 @@ async function runClaudeOnce(
   cwd?: string
 ): Promise<{ rawStdout: string; stderr: string; exitCode: number }> {
   const args = [...baseArgs];
-  const normalizedModel = model.trim().toLowerCase();
-  if (model.trim() && normalizedModel !== "glm") args.push("--model", model.trim());
+  const modelArg = resolveModelArg(model);
+  if (modelArg) args.push("--model", modelArg);
 
   const proc = Bun.spawn(args, {
     stdout: "pipe",
@@ -483,8 +537,8 @@ async function runClaudeStream(
   onToolEvent?: (line: string) => void
 ): Promise<{ rawStdout: string; stderr: string; exitCode: number; sessionId?: string }> {
   const args = [...baseArgs];
-  const normalizedModel = model.trim().toLowerCase();
-  if (model.trim() && normalizedModel !== "glm") args.push("--model", model.trim());
+  const modelArg = resolveModelArg(model);
+  if (modelArg) args.push("--model", modelArg);
 
   const proc = Bun.spawn(args, {
     stdout: "pipe",
@@ -635,8 +689,8 @@ async function runClaudeStreaming(
   onToolEvent?: (line: string) => void
 ): Promise<{ result: string; stderr: string; exitCode: number; sessionId?: string; isRateLimit: boolean }> {
   const args = [...baseArgs];
-  const normalizedModel = model.trim().toLowerCase();
-  if (model.trim() && normalizedModel !== "glm") args.push("--model", model.trim());
+  const modelArg = resolveModelArg(model);
+  if (modelArg) args.push("--model", modelArg);
 
   const proc = Bun.spawn(args, {
     stdout: "pipe",
@@ -1502,8 +1556,8 @@ async function streamClaude(
     args.push("--append-system-prompt", appendParts.join("\n\n"));
   }
 
-  const normalizedModel = model.trim().toLowerCase();
-  if (model.trim() && normalizedModel !== "glm") args.push("--model", model.trim());
+  const modelArg = resolveModelArg(model);
+  if (modelArg) args.push("--model", modelArg);
 
   const childEnv = buildChildEnv(cleanSpawnEnv(), model, api);
 

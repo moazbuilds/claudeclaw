@@ -14,8 +14,8 @@ Parse `$ARGUMENTS` to identify what the user wants. If no arguments are given, s
 2. Display all settings clearly:
 
    **General**
-   - Model: (e.g. `opus`, `sonnet`, `haiku`, `glm` or "default")
-   - API token: (first 5 chars + "..." or "not configured"; used when `model` is `glm`)
+   - Model: (e.g. `opus`, `sonnet`, `haiku`, `glm`, `minimax` or "default")
+   - API token: (first 5 chars + "..." or "not configured"; used when `model` is `glm` or a `minimax` preset)
    - Fallback model: (e.g. `glm`, `sonnet`, or "not configured")
    - Fallback API token: (first 5 chars + "..." or "not configured")
    - Timezone: (e.g. `America/New_York` or "UTC")
@@ -285,8 +285,8 @@ Location: `.claude/claudeclaw/settings.json`
 
 | Key                        | Type       | Description                                    |
 |----------------------------|------------|------------------------------------------------|
-| `model`                    | string     | Claude model (`opus`, `sonnet`, `haiku`, `glm`, or full ID). Empty = default |
-| `api`                      | string     | API token used when model is `glm` (mapped to `ANTHROPIC_AUTH_TOKEN`) |
+| `model`                    | string     | Claude model (`opus`, `sonnet`, `haiku`, `glm`, `minimax`/`minimax-m3`/`minimax-m2.7`, or full ID). Append `-cn` to a MiniMax alias for the China endpoint. Empty = default |
+| `api`                      | string     | API token used when model is `glm` or a `minimax` preset (mapped to `ANTHROPIC_AUTH_TOKEN`) |
 | `fallback.model`           | string     | Backup model used automatically if primary run returns rate-limit text (recommend `glm` for provider diversity) |
 | `fallback.api`             | string     | API token used with `fallback.model` (optional) |
 | `timezone`                 | string     | IANA timezone name (e.g. `America/New_York`)   |
