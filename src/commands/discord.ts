@@ -1262,6 +1262,18 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
 
     // Build prompt (same pattern as Telegram)
     const promptParts = [`[Discord from ${label}]`];
+    // Surface Discord reply context in the prompt. When the user uses the
+    // reply UI, Discord populates message.referenced_message with the full
+    // message being replied to — previously that was only used internally
+    // (reply_to_bot trigger detection, thread routing) and never reached the
+    // agent, so a reply to a specific message looked identical to a plain
+    // message typed in a thread.
+    if (message.referenced_message) {
+      const ref = message.referenced_message;
+      const refSpeaker = ref.author?.bot ? "claudeclaw" : (ref.author?.username ?? "unknown");
+      const refBody = (ref.content || "").trim().slice(0, 500) || "[no text content]";
+      promptParts.push(`[Replying to ${refSpeaker}: ${refBody}]`);
+    }
     if (skillContext) {
       const args = cleanContent.trim().slice(command!.length).trim();
       promptParts.push(`<command-name>${command}</command-name>`);
