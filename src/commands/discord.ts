@@ -54,6 +54,26 @@ interface DiscordAttachment {
   flags?: number;
 }
 
+// A forward's `message_reference.type` is FORWARD (1); a reply's is DEFAULT (0).
+const DISCORD_REFERENCE_TYPE_FORWARD = 1;
+
+interface DiscordMessageReference {
+  type?: number;
+  message_id?: string;
+  channel_id?: string;
+  guild_id?: string;
+}
+
+// Discord's snapshot deliberately omits `author` (anti-spoofing) — we can
+// never tell from the payload alone whose message got forwarded.
+interface DiscordMessageSnapshot {
+  message: {
+    type: number;
+    content: string;
+    attachments?: DiscordAttachment[];
+  };
+}
+
 interface DiscordMessage {
   id: string;
   channel_id: string;
@@ -63,6 +83,8 @@ interface DiscordMessage {
   attachments: DiscordAttachment[];
   mentions: DiscordUser[];
   referenced_message?: DiscordMessage | null;
+  message_reference?: DiscordMessageReference | null;
+  message_snapshots?: DiscordMessageSnapshot[];
   flags?: number;
   type: number;
   // Discord populates `thread` on a message when the message has a thread
@@ -859,6 +881,50 @@ function stopCatchupTimer(): void {
   livenessTimer = null;
 }
 
+// --- Forward detection ---
+//
+// Discord's native "Forward" feature reposts a message (often one of the
+// bot's own) into a channel via `message_reference.type === FORWARD` plus
+// `message_snapshots` — never through `content`/`attachments` on the
+// forwarding message itself (Discord docs: a forward "will never have
+// content, embeds, or attachments" of its own). That means a *pure* forward
+// with no added commentary is naturally content-less and already falls out
+// of the router via the empty-content guard.
+//
+// The failure mode this guards against is the forwarded text leaking into
+// `content` anyway (a client/relay quirk) and being mistaken for a fresh,
+// human-typed instruction — reported 3x in one week as a "truncated echo".
+// Since Discord deliberately strips `author` from the snapshot (anti-
+// spoofing), we can't identify whose message it was; instead we compare
+// `content` against the snapshot text itself. If content is empty, or is
+// just the (possibly truncated) snapshot text restated, there's no new
+// instruction here regardless of who originally posted it.
+function normalizeForCompare(text: string): string {
+  return text.trim().replace(/[.…]+$/, "").trim().toLowerCase();
+}
+
+export function classifyForward(
+  message: DiscordMessage,
+): { isForward: boolean; addedText: string; shouldSkip: boolean } {
+  const isForward =
+    message.message_reference?.type === DISCORD_REFERENCE_TYPE_FORWARD &&
+    (message.message_snapshots?.length ?? 0) > 0;
+  if (!isForward) {
+    return { isForward: false, addedText: message.content, shouldSkip: false };
+  }
+
+  const rawContent = message.content.trim();
+  const snapshotText = normalizeForCompare(message.message_snapshots![0].message.content ?? "");
+  const normalizedContent = normalizeForCompare(rawContent);
+  const isEchoOfSnapshot =
+    rawContent.length > 0 &&
+    snapshotText.length > 0 &&
+    (normalizedContent === snapshotText || snapshotText.startsWith(normalizedContent));
+
+  const addedText = rawContent.length === 0 || isEchoOfSnapshot ? "" : rawContent;
+  return { isForward: true, addedText, shouldSkip: addedText.length === 0 };
+}
+
 // --- Guild trigger logic ---
 
 function guildTriggerReason(message: DiscordMessage): string | null {
@@ -1056,7 +1122,16 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
   // this is the belt-and-braces for any other REST-sourced delivery path).
   const isGuild = !!message.guild_id || knownThreads.has(message.channel_id);
   const isDM = !isGuild;
-  const content = message.content;
+
+  // Discord "Forward" reposts (often one of the bot's own prior messages)
+  // carry no real content of their own — skip before they can be mistaken
+  // for a fresh instruction. See classifyForward for the detection details.
+  const forwardInfo = classifyForward(message);
+  if (forwardInfo.isForward && forwardInfo.shouldSkip) {
+    debugLog(`Skip forward with no added content id=${message.id} channel=${message.channel_id}`);
+    return;
+  }
+  const content = forwardInfo.isForward ? forwardInfo.addedText : message.content;
 
   // Recover unknown thread channels at message time. Covers every case where
   // knownThreads doesn't have the channel yet: missed THREAD_CREATE,
