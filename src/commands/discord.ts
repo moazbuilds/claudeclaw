@@ -92,6 +92,7 @@ interface DiscordInteraction {
   data?: {
     name?: string;
     custom_id?: string;
+    options?: Array<{ name: string; type: number; value?: string | number | boolean }>;
   };
   channel_id?: string;
   guild_id?: string;
@@ -138,6 +139,20 @@ let readyGuildIds: Set<string> | null = null;
 
 // Track known thread channel IDs and their parent channel IDs for multi-session support
 const knownThreads = new Map<string, { parentId: string; agentName?: string }>();
+
+// Per-channel model overrides (mirrors Telegram's /model). Key: sessionKey ?? GLOBAL_MODEL_KEY
+const MODEL_HAIKU = "claude-haiku-4-5-20251001";
+const MODEL_SONNET = "claude-sonnet-4-6";
+const MODEL_OPUS = "claude-opus-4-7";
+const GLOBAL_MODEL_KEY = "__global__";
+const channelModels = new Map<string, string>();
+
+function modelLabel(model: string): string {
+  if (model === MODEL_HAIKU) return "Haiku ⚡";
+  if (model === MODEL_SONNET) return "Sonnet ⚖️";
+  if (model === MODEL_OPUS) return "Opus 🧠";
+  return model;
+}
 
 function isDiscordThreadType(type: number | undefined): boolean {
   return type === 10 || type === 11 || type === 12;
@@ -586,6 +601,25 @@ async function registerSlashCommands(token: string): Promise<void> {
       name: "context",
       description: "Show context window usage",
       type: 1,
+    },
+    {
+      name: "model",
+      description: "Switch the Claude model for this channel",
+      type: 1,
+      options: [
+        {
+          name: "choice",
+          description: "Which model to use",
+          type: 3, // STRING
+          required: true,
+          choices: [
+            { name: "Haiku — fastest, least capable", value: MODEL_HAIKU },
+            { name: "Sonnet — balanced", value: MODEL_SONNET },
+            { name: "Opus — most capable, slower", value: MODEL_OPUS },
+            { name: "Default — use config default", value: "__default__" },
+          ],
+        },
+      ],
     },
   ];
 
@@ -1066,6 +1100,7 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
           threadInfo?.agentName,
           streamCb?.onChunk,
           streamCb?.onToolEvent,
+          channelModels.get(sessionKey ?? GLOBAL_MODEL_KEY),
         );
       } finally {
         if (streamCb) {
@@ -1246,6 +1281,27 @@ async function handleInteractionCreate(token: string, interaction: DiscordIntera
         await respondToInteraction(interaction, {
           content: `Failed to read context: ${err instanceof Error ? err.message : err}`,
         });
+      }
+      return;
+    }
+
+    if (interaction.data.name === "model") {
+      const isGuildCmd = !!interaction.guild_id && !!interaction.channel_id;
+      const key = isGuildCmd ? interaction.channel_id! : GLOBAL_MODEL_KEY;
+      const choice = interaction.data.options?.find((o) => o.name === "choice")?.value;
+      const defaultModel = getSettings().model || "default";
+      if (choice === "__default__") {
+        channelModels.delete(key);
+        await respondToInteraction(interaction, {
+          content: `🔄 Reset to default model: **${defaultModel}**`,
+        });
+      } else if (typeof choice === "string") {
+        channelModels.set(key, choice);
+        await respondToInteraction(interaction, {
+          content: `Switched to **${modelLabel(choice)}**.`,
+        });
+      } else {
+        await respondToInteraction(interaction, { content: "No model selected." });
       }
       return;
     }
