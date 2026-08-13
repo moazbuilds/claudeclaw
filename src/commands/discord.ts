@@ -1203,11 +1203,16 @@ async function handleInteractionCreate(token: string, interaction: DiscordIntera
         return;
       }
       const threadSessions = await listThreadSessions();
+      const modelKey = isGuildCmd ? interaction.channel_id! : GLOBAL_MODEL_KEY;
+      const overrideModel = channelModels.get(modelKey);
+      const modelDisplay = overrideModel
+        ? `${modelLabel(overrideModel)} (override)`
+        : `${settings.model || "default"} (default)`;
       const lines = [
         "📊 **Session Status**",
         `Session: \`${session.sessionId.slice(0, 8)}\``,
         `Turns: ${(session as any).turnCount ?? 0}`,
-        `Model: ${settings.model || "default"}`,
+        `Model: ${modelDisplay}`,
         `Security: ${settings.security.level}`,
         `Created: ${session.createdAt}`,
         `Last used: ${session.lastUsedAt}`,
