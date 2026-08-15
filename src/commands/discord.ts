@@ -864,16 +864,19 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
   try {
     await sendTyping(config.token, channelId);
 
-    let imagePath: string | null = null;
+    const imagePaths: string[] = [];
     let voicePath: string | null = null;
     let voiceTranscript: string | null = null;
     let textContent: string | null = null;
 
     if (hasImage) {
-      try {
-        imagePath = await downloadDiscordAttachment(imageAttachments[0], "image");
-      } catch (err) {
-        console.error(`[Discord] Failed to download image for ${label}: ${err instanceof Error ? err.message : err}`);
+      for (const attachment of imageAttachments) {
+        try {
+          const path = await downloadDiscordAttachment(attachment, "image");
+          if (path) imagePaths.push(path);
+        } catch (err) {
+          console.error(`[Discord] Failed to download image for ${label}: ${err instanceof Error ? err.message : err}`);
+        }
       }
     }
 
@@ -1001,9 +1004,20 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
     } else if (cleanContent.trim()) {
       promptParts.push(`Message: ${wrapUntrusted("user-message", cleanContent)}`);
     }
-    if (imagePath) {
-      promptParts.push(`Image path: ${imagePath}`);
-      promptParts.push("The user attached an image. Inspect this image file directly before answering.");
+    if (imagePaths.length > 0) {
+      for (const path of imagePaths) {
+        promptParts.push(`Image path: ${path}`);
+      }
+      promptParts.push(
+        imagePaths.length > 1
+          ? `The user attached ${imagePaths.length} images. Inspect all of these image files directly before answering.`
+          : "The user attached an image. Inspect this image file directly before answering.",
+      );
+      if (imagePaths.length < imageAttachments.length) {
+        promptParts.push(
+          `Note: ${imageAttachments.length - imagePaths.length} additional attached image(s) failed to download.`,
+        );
+      }
     } else if (hasImage) {
       promptParts.push("The user attached an image, but downloading it failed. Respond and ask them to resend.");
     }
@@ -1026,17 +1040,43 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
     const snapshot = coalescedSnapshot ?? message.message_snapshots?.[0]?.message;
     if ((isForward || coalescedSnapshot) && snapshot) {
       const fwdAuthor = snapshot.author ? snapshot.author.username : "unknown";
-      const fwdAttachments = snapshot.attachments.length > 0
-        ? ` [attachments: ${snapshot.attachments.map((a) => a.filename).join(", ")}]`
+      const fwdImages = snapshot.attachments.filter(isImageAttachment);
+      const fwdOther = snapshot.attachments.filter((a) => !isImageAttachment(a));
+      const fwdAttachments = fwdOther.length > 0
+        ? ` [attachments: ${fwdOther.map((a) => a.filename).join(", ")}]`
         : "";
       promptParts.push(`[Forwarded message from ${fwdAuthor}]: ${snapshot.content}${fwdAttachments}`);
+      for (const img of fwdImages) {
+        try {
+          const path = await downloadDiscordAttachment(img, "image");
+          if (path) {
+            promptParts.push(`Image path (from forwarded message): ${path}`);
+            promptParts.push("Inspect this forwarded image file directly before answering.");
+          }
+        } catch (err) {
+          console.error(`[Discord] Failed to download forwarded image for ${label}: ${err instanceof Error ? err.message : err}`);
+        }
+      }
     } else if (message.referenced_message) {
       const ref = message.referenced_message;
       const refAuthor = ref.author.username;
-      const refAttachments = ref.attachments.length > 0
-        ? ` [attachments: ${ref.attachments.map((a) => a.filename).join(", ")}]`
+      const refImages = ref.attachments.filter(isImageAttachment);
+      const refOther = ref.attachments.filter((a) => !isImageAttachment(a));
+      const refAttachments = refOther.length > 0
+        ? ` [attachments: ${refOther.map((a) => a.filename).join(", ")}]`
         : "";
       promptParts.push(`[In reply to ${refAuthor}]: ${ref.content}${refAttachments}`);
+      for (const img of refImages) {
+        try {
+          const path = await downloadDiscordAttachment(img, "image");
+          if (path) {
+            promptParts.push(`Image path (from replied-to message): ${path}`);
+            promptParts.push("Inspect this image from the message being replied to directly before answering.");
+          }
+        } catch (err) {
+          console.error(`[Discord] Failed to download replied-to image for ${label}: ${err instanceof Error ? err.message : err}`);
+        }
+      }
     }
 
     const prefixedPrompt = promptParts.join("\n");
