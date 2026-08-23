@@ -473,6 +473,27 @@ function guildTriggerReason(message: DiscordMessage): string | null {
 // --- Attachment handling ---
 
 // --- AI-powered thread intent classifier (uses Sonnet via Claude OAuth) ---
+/**
+ * Resolve the per-channel model override for a guild message.
+ * Threads inherit the model of their parent channel. DMs never get an override.
+ * Exported for testing.
+ */
+export function resolveChannelModel(
+  channelModels: Record<string, string> | undefined,
+  channelId: string,
+  isGuild: boolean,
+  parentId?: string,
+): string | undefined {
+  if (!isGuild || !channelModels) return undefined;
+  const direct = channelModels[channelId]?.trim();
+  if (direct) return direct;
+  if (parentId) {
+    const inherited = channelModels[parentId]?.trim();
+    if (inherited) return inherited;
+  }
+  return undefined;
+}
+
 interface ThreadIntent {
   action: "hire" | "fire";
   names: string[];
@@ -1056,6 +1077,10 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
     if (config.streaming) {
       streamCb = makeDiscordStreamCallback(config.token, channelId);
     }
+    const channelModel = resolveChannelModel(config.channelModels, channelId, isGuild, threadInfo?.parentId);
+    if (channelModel) {
+      console.log(`[${new Date().toLocaleTimeString()}] Discord channel model: ${channelId} → ${channelModel}`);
+    }
 
     const result = await (async () => {
       try {
@@ -1066,6 +1091,7 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
           threadInfo?.agentName,
           streamCb?.onChunk,
           streamCb?.onToolEvent,
+          channelModel,
         );
       } finally {
         if (streamCb) {

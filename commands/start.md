@@ -234,6 +234,7 @@ Defaults: `WEB_HOST=127.0.0.1`, `WEB_PORT=4632` unless changed via settings or `
 - `discord.token` — Discord bot token from the Developer Portal
 - `discord.allowedUserIds` — array of string Discord user IDs (snowflakes) allowed to interact
 - `discord.listenChannels` — array of string channel IDs where the bot responds to all messages without requiring an @mention
+- `discord.channelModels` — optional object mapping channel ID → model (`opus`, `sonnet`, `haiku`, or full model ID). Messages in that channel run with that model instead of the global `model`; threads inherit their parent channel's entry. Unlisted channels and DMs use the global `model` (or agentic routing).
 - `security.level` — one of: `locked`, `strict`, `moderate`, `unrestricted`
 - `security.allowedTools` — extra tools to allow on top of the level (e.g. `["Bash(git:*)"]`)
 - `security.disallowedTools` — tools to block on top of the level

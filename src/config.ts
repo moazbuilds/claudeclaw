@@ -133,6 +133,7 @@ export interface DiscordConfig {
   imageOutputRoots: string[]; // Absolute path prefixes from which image uploads are permitted
   streaming?: boolean; // When true, POST a live preview while Claude is working. Default: false.
   channelAllowedUserIds?: Record<string, string[]>; // channelId -> extra user IDs allowed in that guild channel only (never DMs)
+  channelModels?: Record<string, string>; // channelId -> model override for that guild channel (threads inherit from their parent)
 }
 
 export interface SlackConfig {
@@ -377,6 +378,13 @@ function parseSettings(
             Object.entries(raw.discord.channelAllowedUserIds as Record<string, unknown>)
               .filter(([, v]) => Array.isArray(v))
               .map(([k, v]) => [String(k), (v as unknown[]).map(String)]),
+          )
+        : undefined,
+      channelModels: raw.discord?.channelModels && typeof raw.discord.channelModels === "object"
+        ? Object.fromEntries(
+            Object.entries(raw.discord.channelModels as Record<string, unknown>)
+              .filter(([, v]) => typeof v === "string" && (v as string).trim().length > 0)
+              .map(([k, v]) => [String(k), (v as string).trim()]),
           )
         : undefined,
     },
