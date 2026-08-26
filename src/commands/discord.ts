@@ -182,6 +182,36 @@ async function joinThreadIfNeeded(token: string, threadId: string): Promise<void
   }
 }
 
+// A pasted discord.com/channels/{guild}/{channel}/{message} link in a message's
+// content is a deliberate "this is what I'm talking about" pointer -- e.g. a
+// user typing/pasting a link instead of using Discord's own reply-to feature.
+// If that channel is a thread, route the bot's reply there instead of letting
+// the normal auto-thread-off-this-message logic spin up an unrelated new
+// thread. Registers it in knownThreads (with its real parentId) so downstream
+// thread-session logic treats it exactly like any other known thread.
+const DISCORD_MESSAGE_LINK_RE = /discord\.com\/channels\/\d+\/(\d+)\/\d+/;
+
+async function resolveLinkedThreadChannel(token: string, content: string): Promise<string | null> {
+  const match = content.match(DISCORD_MESSAGE_LINK_RE);
+  if (!match) return null;
+  const linkedChannelId = match[1];
+  if (knownThreads.has(linkedChannelId)) return linkedChannelId;
+  try {
+    const ch = await discordApi<{ id: string; type: number; parent_id?: string }>(
+      token, "GET", `/channels/${linkedChannelId}`,
+    );
+    // Thread channel types: 10 (announcement), 11 (public), 12 (private).
+    if ([10, 11, 12].includes(ch.type) && ch.parent_id) {
+      knownThreads.set(linkedChannelId, { parentId: ch.parent_id });
+      return linkedChannelId;
+    }
+    return null;
+  } catch (err) {
+    debugLog(`Could not resolve linked channel ${linkedChannelId} from message content: ${err}`);
+    return null;
+  }
+}
+
 // --- Debug ---
 
 function debugLog(message: string): void {
@@ -1376,7 +1406,17 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
 
     // For guild messages not already in a thread, route the bot's reply into
     // a thread BEFORE running Claude so the reply (and follow-ups) live in
-    // the thread instead of cluttering the channel. Two-step routing:
+    // the thread instead of cluttering the channel. Three-step routing:
+    //   0. If the message contains a pasted discord.com/channels/.../.../...
+    //      link, treat that as an explicit "reply over there" instruction —
+    //      stronger than a native Discord reply, since the user typed/pasted
+    //      it deliberately to point at a specific existing conversation.
+    //      Without this, pasting a link to another thread (instead of using
+    //      Discord's own reply-to feature) still fell through to step 2 and
+    //      auto-created a BRAND NEW unrelated thread, so the bot's answer
+    //      landed somewhere the user never intended and never saw (caught
+    //      2026-08-26: user linked a message inside an active thread three
+    //      separate times and each time got a fresh disconnected thread).
     //   1. If the user's message is a reply-to a message that already has a
     //      thread, reuse that thread. This is the common art-channel case:
     //      bot posts art → auto-creates thread A → user uses Discord's reply
@@ -1387,7 +1427,13 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
     let replyChannelId = channelId;
     const inKnownThread = knownThreads.has(channelId);
     if (isGuild && !inKnownThread) {
-      const refThreadId = message.referenced_message?.thread?.id;
+      const linkedChannelId = await resolveLinkedThreadChannel(config.token, cleanContent);
+      const refThreadId = linkedChannelId ?? message.referenced_message?.thread?.id;
+      if (linkedChannelId) {
+        console.log(
+          `[Discord] Routed reply into thread ${linkedChannelId.slice(0, 8)} from a pasted message link in content`,
+        );
+      }
       if (refThreadId) {
         knownThreads.set(refThreadId, { parentId: channelId });
         await joinThreadIfNeeded(config.token, refThreadId);
