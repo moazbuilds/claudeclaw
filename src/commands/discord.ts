@@ -288,12 +288,13 @@ function extractReactionDirective(text: string): { cleanedText: string; reaction
   return { cleanedText, reactionEmoji };
 }
 
-// Matches absolute image file paths embedded in reply text so they can be
-// sent as Discord file attachments instead of appearing as raw paths.
-const IMAGE_PATH_RE = /(?<![^\s])(\/[^\s]+\.(?:png|jpe?g|gif|webp))(?=\s|$)/gi;
+// Matches absolute output-artifact file paths embedded in reply text so they can be
+// sent as Discord file attachments instead of appearing as raw paths. Not just images —
+// text/data artifacts (docs, transcripts, exports) get the same treatment.
+const ATTACHMENT_PATH_RE = /(?<![^\s])(\/[^\s]+\.(?:png|jpe?g|gif|webp|md|txt|html?|pdf|csv|json))(?=\s|$)/gi;
 const PATH_SKEW_MS = 30_000;
 
-function extractImagePaths(
+function extractAttachmentPaths(
   text: string,
   allowedRoots: string[],
   requestStartedAt: number,
@@ -304,7 +305,7 @@ function extractImagePaths(
   });
   const paths: string[] = [];
   const cleanedText = text
-    .replace(IMAGE_PATH_RE, (match, p1) => {
+    .replace(ATTACHMENT_PATH_RE, (match, p1) => {
       let resolved: string;
       try {
         resolved = realpathSync(p1);
@@ -327,11 +328,11 @@ function extractImagePaths(
   return { paths, cleanedText };
 }
 
-async function sendMessageWithImages(
+async function sendMessageWithAttachments(
   token: string,
   channelId: string,
   text: string,
-  imagePaths: string[],
+  attachmentPaths: string[],
 ): Promise<void> {
   const chunks = discordMessageChunks(text || "​");
   const uploadText = chunks.pop() ?? "​";
@@ -339,21 +340,21 @@ async function sendMessageWithImages(
     await discordApi(token, "POST", `/channels/${channelId}/messages`, { content: chunk });
   }
 
-  await uploadImageMessage(token, channelId, uploadText, imagePaths);
+  await uploadAttachmentMessage(token, channelId, uploadText, attachmentPaths);
 }
 
-async function uploadImageMessage(
+async function uploadAttachmentMessage(
   token: string,
   channelId: string,
   text: string,
-  imagePaths: string[],
+  attachmentPaths: string[],
   attempt = 0,
 ): Promise<void> {
   const form = new FormData();
   form.append("payload_json", JSON.stringify({ content: text }));
-  for (let i = 0; i < imagePaths.length; i++) {
-    const file = Bun.file(imagePaths[i]);
-    form.append(`files[${i}]`, file, basename(imagePaths[i]));
+  for (let i = 0; i < attachmentPaths.length; i++) {
+    const file = Bun.file(attachmentPaths[i]);
+    form.append(`files[${i}]`, file, basename(attachmentPaths[i]));
   }
   const res = await fetch(`${DISCORD_API}/channels/${channelId}/messages`, {
     method: "POST",
@@ -369,7 +370,7 @@ async function uploadImageMessage(
       ? Math.ceil(data.retry_after * 1000)
       : 5_000;
     await Bun.sleep(delay);
-    return uploadImageMessage(token, channelId, text, imagePaths, attempt + 1);
+    return uploadAttachmentMessage(token, channelId, text, attachmentPaths, attempt + 1);
   }
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
@@ -1084,9 +1085,9 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
           console.error(`[Discord] Failed to send reaction for ${label}: ${err instanceof Error ? err.message : err}`);
         });
       }
-      const { paths: imagePaths, cleanedText: finalText } = extractImagePaths(cleanedText || "", config.imageOutputRoots, requestStartedAt);
-      if (imagePaths.length > 0) {
-        await sendMessageWithImages(config.token, channelId, finalText || "(empty response)", imagePaths);
+      const { paths: attachmentPaths, cleanedText: finalText } = extractAttachmentPaths(cleanedText || "", config.imageOutputRoots, requestStartedAt);
+      if (attachmentPaths.length > 0) {
+        await sendMessageWithAttachments(config.token, channelId, finalText || "(empty response)", attachmentPaths);
       } else {
         await sendMessage(config.token, channelId, finalText || "(empty response)");
       }
