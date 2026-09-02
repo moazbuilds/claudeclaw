@@ -348,7 +348,7 @@ export function resolveMinimaxModel(model: string): { baseUrl: string; modelId: 
   let normalized = model.trim().toLowerCase();
   if (!normalized.startsWith("minimax")) return null;
 
-  let baseUrl = MINIMAX_ANTHROPIC_BASE_URLS.global;
+  let baseUrl: string = MINIMAX_ANTHROPIC_BASE_URLS.global;
   if (normalized.endsWith("-cn")) {
     baseUrl = MINIMAX_ANTHROPIC_BASE_URLS.cn;
     normalized = normalized.slice(0, -"-cn".length);
