@@ -290,8 +290,8 @@ function extractReactionDirective(text: string): { cleanedText: string; reaction
 
 // Matches absolute output-artifact file paths embedded in reply text so they can be
 // sent as Discord file attachments instead of appearing as raw paths. Not just images —
-// text/data artifacts (docs, transcripts, exports) get the same treatment.
-const ATTACHMENT_PATH_RE = /(?<![^\s])(\/[^\s]+\.(?:png|jpe?g|gif|webp|md|txt|html?|pdf|csv|json))(?=\s|$)/gi;
+// text/data artifacts (docs, transcripts, exports) and code handoffs get the same treatment.
+const ATTACHMENT_PATH_RE = /(?<![^\s])(\/[^\s]+\.(?:png|jpe?g|gif|webp|md|txt|html?|pdf|csv|json|js|ts|py|sh|gs|ya?ml))(?=\s|$)/gi;
 const PATH_SKEW_MS = 30_000;
 
 function extractAttachmentPaths(
