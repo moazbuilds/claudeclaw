@@ -481,7 +481,7 @@ interface ThreadIntent {
 async function classifyThreadIntent(text: string): Promise<ThreadIntent | null> {
   const systemPrompt = `You classify user messages into thread management intents.
 
-If the user wants to CREATE/SPAWN/DEPLOY threads (e.g. "hire X", "派出 X", "叫 X 出來", "派 X 去打", "開 X", "建立 X"):
+If the user wants to CREATE/SPAWN/DEPLOY threads — either naming an agent directly (e.g. "hire X", "派出 X", "叫 X 出來", "派 X 去打", "開 X", "建立 X") or generically asking to isolate/relocate work into a thread without naming anyone (e.g. "create a thread", "make a thread", "build a thread", "spinoff a thread", "run a thread", "build this in a separate thread", "put this in a thread", "move this to a thread"):
 Return: {"action":"hire","names":["name1","name2"]}
 
 If the user wants to DELETE/REMOVE threads (e.g. "fire X", "撤回 X", "把 X 叫回來", "刪 X", "關 X"):
@@ -492,13 +492,14 @@ If the message is NOT about thread management, return: null
 Rules:
 - Extract individual names. "桃園三結義" = ["劉備","關羽","張飛"]. "五虎將" = ["關羽","張飛","趙雲","馬超","黃忠"].
 - Common patterns: 派/派出/出征/上陣/迎戰/出戰 = hire. 撤/撤回/收回/叫回來/滾 = fire.
+- If a create/hire request doesn't name anyone (e.g. "let's build the login flow in a separate thread"), synthesize ONE short kebab-case name (2-4 words, lowercase, hyphen-separated) summarizing the task, e.g. "login-flow".
 - Return ONLY valid JSON or the word null. No explanation.`;
 
   try {
     const { execSync } = await import("node:child_process");
     const input = `${systemPrompt}\n\n---\nUser message: ${text}`;
     const result = execSync(
-      `claude --model claude-sonnet-4-20250514 --print --output-format text`,
+      `claude --model sonnet --print --output-format text`,
       {
         input,
         encoding: "utf-8",
