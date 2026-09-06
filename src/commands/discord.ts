@@ -536,17 +536,29 @@ function isTextAttachment(a: DiscordAttachment): boolean {
   return ext === ".txt" || ext === ".md";
 }
 
+function isZipAttachment(a: DiscordAttachment): boolean {
+  if (a.content_type === "application/zip" || a.content_type === "application/x-zip-compressed") return true;
+  return extname(a.filename).toLowerCase() === ".zip";
+}
+
+const MAX_ZIP_ATTACHMENT_BYTES = 20 * 1024 * 1024; // 20 MB compressed
+const MAX_ZIP_UNCOMPRESSED_BYTES = 100 * 1024 * 1024; // 100 MB uncompressed — zip-bomb guard
+
 async function downloadDiscordAttachment(
   attachment: DiscordAttachment,
-  type: "image" | "voice",
+  type: "image" | "voice" | "zip",
 ): Promise<string | null> {
+  if (type === "zip" && attachment.size > MAX_ZIP_ATTACHMENT_BYTES) {
+    throw new Error(`Zip attachment too large: ${attachment.size} bytes (max ${MAX_ZIP_ATTACHMENT_BYTES})`);
+  }
+
   const dir = join(process.cwd(), ".claude", "claudeclaw", "inbox", "discord");
   await mkdir(dir, { recursive: true });
 
   const response = await fetch(attachment.url);
   if (!response.ok) throw new Error(`Discord attachment download failed: ${response.status}`);
 
-  const ext = extname(attachment.filename) || (type === "voice" ? ".ogg" : ".jpg");
+  const ext = extname(attachment.filename) || (type === "voice" ? ".ogg" : type === "zip" ? ".zip" : ".jpg");
   const filename = `${attachment.id}-${Date.now()}${ext}`;
   const localPath = join(dir, filename);
 
@@ -554,6 +566,56 @@ async function downloadDiscordAttachment(
   await Bun.write(localPath, bytes);
   debugLog(`Attachment downloaded: ${localPath} (${bytes.length} bytes)`);
   return localPath;
+}
+
+interface ZipExtractResult {
+  dir: string;
+  files: string[];
+}
+
+// Lists entries via `unzip -l` before extracting anything, so a malicious archive can be
+// rejected outright: path-traversal entries (absolute paths, "..", backslashes) and
+// zip bombs (huge uncompressed size relative to the download) never touch the filesystem.
+async function extractZipSafely(zipPath: string): Promise<ZipExtractResult> {
+  const { execFileSync } = await import("node:child_process");
+
+  let listing: string;
+  try {
+    listing = execFileSync("unzip", ["-l", zipPath], { encoding: "utf-8", timeout: 15_000 });
+  } catch (err) {
+    throw new Error(`Could not read zip contents (is 'unzip' installed?): ${err instanceof Error ? err.message : err}`);
+  }
+
+  const entryRe = /^\s*(\d+)\s+[\d-]+\s+[\d:]+\s+(.+)$/;
+  let totalBytes = 0;
+  const names: string[] = [];
+  for (const line of listing.split("\n")) {
+    const m = line.match(entryRe);
+    if (!m) continue;
+    const name = m[2].trim();
+    if (name.endsWith("/")) continue; // directory entry
+    if (name.startsWith("/") || name.includes("..") || name.includes("\\")) {
+      throw new Error(`Zip contains unsafe entry path: ${name}`);
+    }
+    totalBytes += Number(m[1]);
+    names.push(name);
+  }
+
+  if (names.length === 0) throw new Error("Zip archive is empty or unreadable");
+  if (totalBytes > MAX_ZIP_UNCOMPRESSED_BYTES) {
+    throw new Error(`Zip uncompressed size too large: ${totalBytes} bytes (max ${MAX_ZIP_UNCOMPRESSED_BYTES}) — possible zip bomb`);
+  }
+
+  const extractDir = `${zipPath.replace(/\.zip$/i, "")}-extracted`;
+  await mkdir(extractDir, { recursive: true });
+
+  try {
+    execFileSync("unzip", ["-o", "-q", zipPath, "-d", extractDir], { timeout: 30_000 });
+  } catch (err) {
+    throw new Error(`Zip extraction failed: ${err instanceof Error ? err.message : err}`);
+  }
+
+  return { dir: extractDir, files: names };
 }
 
 // --- Slash command registration ---
@@ -799,15 +861,17 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
   const imageAttachments = message.attachments.filter(isImageAttachment);
   const voiceAttachments = message.attachments.filter(isVoiceAttachment);
   const textAttachments = message.attachments.filter(isTextAttachment);
+  const zipAttachments = message.attachments.filter(isZipAttachment);
   const hasImage = imageAttachments.length > 0;
   const hasVoice = voiceAttachments.length > 0;
   const hasText = textAttachments.length > 0;
+  const hasZip = zipAttachments.length > 0;
 
   const hasForwardedContent = !!message.message_snapshots?.[0]?.message?.content;
-  if (!content.trim() && !hasImage && !hasVoice && !hasText && !hasForwardedContent) return;
+  if (!content.trim() && !hasImage && !hasVoice && !hasText && !hasZip && !hasForwardedContent) return;
 
   const forwardKey = `${channelId}:${userId}`;
-  const isForwardOnly = message.message_reference?.type === 1 && !content.trim() && !hasImage && !hasVoice && !hasText;
+  const isForwardOnly = message.message_reference?.type === 1 && !content.trim() && !hasImage && !hasVoice && !hasText && !hasZip;
 
   if (!skipCoalesce && isForwardOnly && hasForwardedContent) {
     // Pure forward with no accompanying text — hold it and wait for a follow-up comment
@@ -912,6 +976,22 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
       }
     }
 
+    const zipResults: { filename: string; extraction?: ZipExtractResult; error?: string }[] = [];
+    if (hasZip) {
+      for (const attachment of zipAttachments) {
+        try {
+          const zipPath = await downloadDiscordAttachment(attachment, "zip");
+          if (!zipPath) throw new Error("download returned no path");
+          const extraction = await extractZipSafely(zipPath);
+          zipResults.push({ filename: attachment.filename, extraction });
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          console.error(`[Discord] Failed to process zip "${attachment.filename}" for ${label}: ${errMsg}`);
+          zipResults.push({ filename: attachment.filename, error: errMsg });
+        }
+      }
+    }
+
     // --- Thread management: AI-powered intent classification ---
     if (isGuild && cleanContent.length < 200) {
       const intent = await classifyThreadIntent(cleanContent);
@@ -1005,14 +1085,17 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
       promptParts.push(`Message: ${wrapUntrusted("user-message", cleanContent)}`);
     }
     if (imagePaths.length > 0) {
-      for (const path of imagePaths) {
-        promptParts.push(`Image path: ${path}`);
+      if (imagePaths.length > 1) {
+        imagePaths.forEach((path, i) => {
+          promptParts.push(`Image ${i + 1} of ${imagePaths.length} path: ${path}`);
+        });
+        promptParts.push(
+          `The user attached ${imagePaths.length} images. Inspect EACH of these ${imagePaths.length} images individually before answering — do not stop after the first one.`,
+        );
+      } else {
+        promptParts.push(`Image path: ${imagePaths[0]}`);
+        promptParts.push("The user attached an image. Inspect this image file directly before answering.");
       }
-      promptParts.push(
-        imagePaths.length > 1
-          ? `The user attached ${imagePaths.length} images. Inspect all of these image files directly before answering.`
-          : "The user attached an image. Inspect this image file directly before answering.",
-      );
       if (imagePaths.length < imageAttachments.length) {
         promptParts.push(
           `Note: ${imageAttachments.length - imagePaths.length} additional attached image(s) failed to download.`,
@@ -1033,6 +1116,15 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
       promptParts.push(`Attached text file (${textAttachments[0].filename}):\n${wrapUntrusted("user-attachment", textContent, 2000)}`);
     } else if (hasText) {
       promptParts.push("The user attached a text file, but downloading it failed. Ask them to resend.");
+    }
+    for (const r of zipResults) {
+      if (r.extraction) {
+        promptParts.push(`Extracted zip "${r.filename}" to: ${r.extraction.dir}`);
+        promptParts.push(`Files (${r.extraction.files.length}): ${r.extraction.files.join(", ")}`);
+        promptParts.push("Inspect the extracted files directly before answering.");
+      } else {
+        promptParts.push(`Failed to process zip attachment "${r.filename}": ${r.error}. Ask the user to resend or split it into individual files.`);
+      }
     }
 
     // Include context from replied-to or forwarded messages
