@@ -293,7 +293,7 @@ function extractReactionDirective(text: string): { cleanedText: string; reaction
 // text/data artifacts (docs, transcripts, exports) and code handoffs get the same treatment.
 // Boundaries accept whitespace, start/end-of-string, or a backtick — Markdown inline-code
 // wrapping (`` `/path/to/file.js` ``) is a natural way to present a path and must still match.
-const ATTACHMENT_PATH_RE = /(?<![^\s`])(\/[^\s`]+\.(?:png|jpe?g|gif|webp|md|txt|html?|pdf|csv|json|js|ts|py|sh|gs|ya?ml))(?=[\s`]|$)/gi;
+const ATTACHMENT_PATH_RE = /(?<![^\s`])(\/[^\s`]+\.(?:png|jpe?g|gif|webp|md|txt|html?|pdf|csv|json|js|ts|py|sh|gs|ya?ml|zip))(?=[\s`]|$)/gi;
 const PATH_SKEW_MS = 30_000;
 
 function extractAttachmentPaths(
