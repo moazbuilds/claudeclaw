@@ -12,6 +12,7 @@ import { findSessionJsonlPath } from "../sessionFiles";
 import { homedir } from "node:os";
 import { transcribeAudioToText } from "../whisper";
 import { resolveSkillPrompt } from "../skills";
+import { createSessionRetryJob, hasActiveRetryJob } from "../jobs";
 import { mkdir } from "node:fs/promises";
 import { extname, join, basename, sep } from "node:path";
 import { isWizardTrigger, hasActiveWizard, handleWizardInput } from "./plugin-wizard";
@@ -1075,7 +1076,31 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
       }
     })();
 
-    if (result.exitCode !== 0) {
+    if (result.exitCode === 124 && isGuild) {
+      // Genuinely-slow task, not a compact-retry case (that's handled inside runner.ts already,
+      // only for existing sessions with history). Schedule a background retry paired to this
+      // channel's session, with a longer timeout, instead of just reporting the timeout.
+      if (hasActiveRetryJob(channelId)) {
+        await sendMessage(
+          config.token,
+          channelId,
+          `Still timing out (exit 124) — a retry is already in flight for this channel, waiting on that one.`,
+        );
+      } else {
+        const settings = getSettings();
+        await createSessionRetryJob(
+          channelId,
+          prefixedPrompt,
+          settings.timeouts.discordRetry * 60,
+          settings.timezoneOffsetMinutes,
+        );
+        await sendMessage(
+          config.token,
+          channelId,
+          `That timed out after ${Math.round((settings.timeouts.discord * 60_000) / 60_000)} min. Retrying in the background with a ${settings.timeouts.discordRetry} min timeout, same session — I'll post here when it's done.`,
+        );
+      }
+    } else if (result.exitCode !== 0) {
       await sendMessage(config.token, channelId, `Error (exit ${result.exitCode}): ${extractErrorDetail(result) || "Unknown error"}`);
     } else {
       const { cleanedText, reactionEmoji } = extractReactionDirective(result.stdout || "");

@@ -5,7 +5,7 @@ import { fileURLToPath } from "url";
 import { run, runUserMessage, streamUserMessage, bootstrap, ensureProjectClaudeMd, loadHeartbeatPromptTemplate, isRateLimited, getRateLimitResetAt, wasRateLimitNotified, markRateLimitNotified } from "../runner";
 import { writeState, type StateData } from "../statusline";
 import { cronMatches, nextCronMatch } from "../cron";
-import { clearJobSchedule, loadJobs, snapshotJobFrontmatter } from "../jobs";
+import { clearJobSchedule, deleteRetryJob, isRetryJobName, loadJobs, snapshotJobFrontmatter } from "../jobs";
 import { writePidFile, cleanupPidFile, checkExistingDaemon } from "../pid";
 import { initConfig, loadSettings, reloadSettings, resolvePrompt, type HeartbeatConfig, type Settings } from "../config";
 import { getDayAndMinuteAtOffset, buildClockPromptPrefix } from "../timezone";
@@ -422,21 +422,24 @@ export async function start(args: string[] = []) {
 
   // --- Discord ---
   let discordSendToUser: ((userId: string, text: string) => Promise<void>) | null = null;
+  let discordSendToChannel: ((channelId: string, text: string) => Promise<void>) | null = null;
   let discordToken = "";
 
   async function initDiscord(token: string) {
     if (token && token !== discordToken) {
-      const { startGateway, sendMessageToUser, stopGateway } = await import("./discord");
+      const { startGateway, sendMessageToUser, sendMessage, stopGateway } = await import("./discord");
       if (discordToken) stopGateway();
       startGateway(debugFlag);
       discordStopGateway = stopGateway;
       discordSendToUser = (userId, text) => sendMessageToUser(token, userId, text);
+      discordSendToChannel = (channelId, text) => sendMessage(token, channelId, text);
       discordToken = token;
       console.log(`[${ts()}] Discord: enabled`);
     } else if (!token && discordToken) {
       if (discordStopGateway) discordStopGateway();
       discordStopGateway = null;
       discordSendToUser = null;
+      discordSendToChannel = null;
       discordToken = "";
       console.log(`[${ts()}] Discord: disabled`);
     }
@@ -636,11 +639,20 @@ export async function start(args: string[] = []) {
     }
   }
 
-  function forwardToDiscord(label: string, result: { exitCode: number; stdout: string; stderr: string }) {
-    if (!discordSendToUser || currentSettings.discord.allowedUserIds.length === 0) return;
+  function forwardToDiscord(label: string, result: { exitCode: number; stdout: string; stderr: string }, notifyChannel?: string) {
     const text = result.exitCode === 0
       ? `${label ? `[${label}]\n` : ""}${result.stdout || "(empty)"}`
       : `${label ? `[${label}] ` : ""}error (exit ${result.exitCode}): ${extractErrorDetail(result) || "Unknown"}`;
+
+    if (notifyChannel) {
+      if (!discordSendToChannel) return;
+      discordSendToChannel(notifyChannel, text).catch((err) =>
+        console.error(`[Discord] Failed to forward to channel ${notifyChannel}: ${err}`)
+      );
+      return;
+    }
+
+    if (!discordSendToUser || currentSettings.discord.allowedUserIds.length === 0) return;
     for (const userId of currentSettings.discord.allowedUserIds) {
       discordSendToUser(userId, text).catch((err) =>
         console.error(`[Discord] Failed to forward to ${userId}: ${err}`)
@@ -871,11 +883,11 @@ export async function start(args: string[] = []) {
             return run(
               job.name,
               `${clock}\n${prompt}`,
-              job.agent ? `agent:${job.agent}` : job.name,
+              job.sessionChannel ?? (job.agent ? `agent:${job.agent}` : job.name),
               job.model,
               timeoutMs,
               job.agent,
-              "job"
+              job.sessionChannel ? "discord" : "job"
             );
           })
           .then(async (r) => {
@@ -904,15 +916,22 @@ export async function start(args: string[] = []) {
             if (job.notify === false) return;
             if (job.notify === "error" && r.exitCode === 0) return;
             forwardToTelegram(job.name, r);
-            forwardToDiscord(job.name, r);
+            forwardToDiscord(job.name, r, job.notifyChannel);
           })
           .finally(async () => {
             if (job.recurring) return;
             // Only clear one-shot schedule when no retry is pending.
             if (jobRetryState.has(job.name)) return;
             try {
-              await clearJobSchedule(job.name);
-              console.log(`[${ts()}] Cleared schedule for one-time job: ${job.name}`);
+              if (isRetryJobName(job.name) && job.sessionChannel) {
+                // Auto-generated timeout-retry jobs are single-use scratch files; remove entirely
+                // instead of leaving a spent, unscheduled file behind for every timeout.
+                await deleteRetryJob(job.sessionChannel);
+                console.log(`[${ts()}] Removed spent retry job: ${job.name}`);
+              } else {
+                await clearJobSchedule(job.name);
+                console.log(`[${ts()}] Cleared schedule for one-time job: ${job.name}`);
+              }
             } catch (err) {
               console.error(`[${ts()}] Failed to clear schedule for ${job.name}:`, err);
             }
