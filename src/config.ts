@@ -85,7 +85,7 @@ const DEFAULT_SETTINGS: Settings = {
   web: { enabled: false, host: "127.0.0.1", port: 4632 },
   stt: { baseUrl: "", model: "" },
   sessionTimeoutMs: DEFAULT_SESSION_TIMEOUT_MS,
-  timeouts: { telegram: 5, discord: 10, heartbeat: 15, job: 30, default: 5 },
+  timeouts: { telegram: 5, discord: 10, discordRetry: 10, heartbeat: 15, job: 30, default: 5 },
   watchdog: { maxConsecutiveTimeouts: null, maxRuntimeSeconds: null },
   session: { autoRotate: false, maxMessages: 50, maxAgeHours: 24, summaryPath: "" },
   plugins: {},
@@ -161,6 +161,8 @@ export interface TimeoutsConfig {
   telegram: number;
   /** Max minutes for a discord message subprocess. Default: 10 min. */
   discord: number;
+  /** Max minutes for the auto-retry job scheduled after a discord timeout. Default: 10 min. */
+  discordRetry: number;
   /** Max minutes for a heartbeat subprocess. Default: 15 min. */
   heartbeat: number;
   /** Max minutes for a scheduled job subprocess. Default: 30 min. */
@@ -417,6 +419,7 @@ function parseSettings(
     timeouts: {
       telegram: Number.isFinite(raw.timeouts?.telegram) && Number(raw.timeouts.telegram) > 0 ? Number(raw.timeouts.telegram) : 5,
       discord: Number.isFinite(raw.timeouts?.discord) && Number(raw.timeouts.discord) > 0 ? Number(raw.timeouts.discord) : 10,
+      discordRetry: Number.isFinite(raw.timeouts?.discordRetry) && Number(raw.timeouts.discordRetry) > 0 ? Number(raw.timeouts.discordRetry) : 10,
       heartbeat: Number.isFinite(raw.timeouts?.heartbeat) && Number(raw.timeouts.heartbeat) > 0 ? Number(raw.timeouts.heartbeat) : 15,
       job: Number.isFinite(raw.timeouts?.job) && Number(raw.timeouts.job) > 0 ? Number(raw.timeouts.job) : 30,
       default: Number.isFinite(raw.timeouts?.default) && Number(raw.timeouts.default) > 0 ? Number(raw.timeouts.default) : 5,

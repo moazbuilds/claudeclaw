@@ -1,6 +1,8 @@
 import { readdir } from "fs/promises";
+import { existsSync } from "fs";
 import { join } from "path";
 import { getJobsDir, getAgentsDir } from "./config";
+import { shiftDateToOffset } from "./timezone";
 
 export interface Job {
   /** Scheduler key. For standalone jobs this is the file stem. For agent-scoped jobs this is "agent/label". */
@@ -14,6 +16,13 @@ export interface Job {
    * Not gated by discord.allowedUserIds — anyone with access to the channel sees the job output.
    */
   notifyChannel?: string;
+  /**
+   * When set, this job runs inside that Discord channel/thread's existing session instead of
+   * its own isolated job session — same continuity a real interactive message there would get
+   * (picks up the same sessionId, same history). If notifyChannel isn't also set, it defaults
+   * to this value, so pairing a job to a session routes its output there too unless overridden.
+   */
+  sessionChannel?: string;
   /** When set, overrides the global model for this job. Useful for routing cheap tasks to haiku. */
   model?: string;
   /** When set, overrides the global session timeout for this job (in seconds). */
@@ -70,10 +79,15 @@ function parseJobFile(name: string, content: string): Job | null {
     : notifyRaw === "error" ? "error"
     : true;
 
+  const sessionChannelLine = lines.find((l) => l.startsWith("sessionChannel:"));
+  const sessionChannel = sessionChannelLine
+    ? parseFrontmatterValue(sessionChannelLine.replace("sessionChannel:", "")) || undefined
+    : undefined;
+
   const notifyChannelLine = lines.find((l) => l.startsWith("notifyChannel:"));
   const notifyChannel = notifyChannelLine
     ? parseFrontmatterValue(notifyChannelLine.replace("notifyChannel:", "")) || undefined
-    : undefined;
+    : sessionChannel;
 
   const modelLine = lines.find((l) => l.startsWith("model:"));
   const model = modelLine ? parseFrontmatterValue(modelLine.replace("model:", "")) || undefined : undefined;
@@ -106,7 +120,7 @@ function parseJobFile(name: string, content: string): Job | null {
   const retryDelayLine = lines.find((l) => l.startsWith("retry_delay:"));
   const retryDelay = retryDelayLine ? parseInt(parseFrontmatterValue(retryDelayLine.replace("retry_delay:", "")), 10) || undefined : undefined;
 
-  return { name, schedule, prompt, recurring, notify, notifyChannel, model, timeoutSeconds, agent, label, enabled, retry, retryDelay };
+  return { name, schedule, prompt, recurring, notify, notifyChannel, sessionChannel, model, timeoutSeconds, agent, label, enabled, retry, retryDelay };
 }
 
 export async function loadJobs(): Promise<Job[]> {
@@ -228,4 +242,48 @@ export async function clearJobSchedule(jobName: string): Promise<void> {
   const body = match[2].trim();
   const next = `---\n${filteredFrontmatter}\n---\n${body}\n`;
   await Bun.write(path, next);
+}
+
+function retryJobName(sessionChannel: string): string {
+  return `_timeout-retry-${sessionChannel}`;
+}
+
+/**
+ * Schedules a one-time job that resumes `sessionChannel`'s session ~1 minute from now
+ * with a longer timeout. Used after a Discord message times out, so the task keeps
+ * running in the background instead of just erroring out.
+ */
+export async function createSessionRetryJob(
+  sessionChannel: string,
+  prompt: string,
+  timeoutSeconds: number,
+  timezoneOffsetMinutes: number
+): Promise<string> {
+  const target = shiftDateToOffset(new Date(Date.now() + 60_000), timezoneOffsetMinutes);
+  const schedule = `${target.getUTCMinutes()} ${target.getUTCHours()} ${target.getUTCDate()} ${target.getUTCMonth() + 1} *`;
+  const name = retryJobName(sessionChannel);
+  const path = join(getJobsDir(), `${name}.md`);
+  const content = `---\nschedule: "${schedule}"\nrecurring: false\nsessionChannel: "${sessionChannel}"\ntimeout: ${timeoutSeconds}\n---\n${prompt}\n`;
+  await Bun.write(path, content);
+  return name;
+}
+
+/** True if a retry job is already pending for this channel (avoids stacking duplicate retries). */
+export function hasActiveRetryJob(sessionChannel: string): boolean {
+  return existsSync(join(getJobsDir(), `${retryJobName(sessionChannel)}.md`));
+}
+
+/** Deletes the auto-generated retry job file for this channel, if any. */
+export async function deleteRetryJob(sessionChannel: string): Promise<void> {
+  const path = join(getJobsDir(), `${retryJobName(sessionChannel)}.md`);
+  try {
+    await Bun.file(path).delete();
+  } catch {
+    /* already gone */
+  }
+}
+
+/** True if `jobName` is an auto-generated timeout-retry job (vs. a user-authored one). */
+export function isRetryJobName(jobName: string): boolean {
+  return jobName.startsWith("_timeout-retry-");
 }

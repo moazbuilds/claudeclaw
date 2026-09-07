@@ -5,7 +5,7 @@ import { fileURLToPath } from "url";
 import { run, runUserMessage, streamUserMessage, bootstrap, ensureProjectClaudeMd, loadHeartbeatPromptTemplate, isRateLimited, getRateLimitResetAt, wasRateLimitNotified, markRateLimitNotified } from "../runner";
 import { writeState, type StateData } from "../statusline";
 import { cronMatches, nextCronMatch } from "../cron";
-import { clearJobSchedule, loadJobs, snapshotJobFrontmatter } from "../jobs";
+import { clearJobSchedule, deleteRetryJob, isRetryJobName, loadJobs, snapshotJobFrontmatter } from "../jobs";
 import { writePidFile, cleanupPidFile, checkExistingDaemon } from "../pid";
 import { initConfig, loadSettings, reloadSettings, resolvePrompt, type HeartbeatConfig, type Settings } from "../config";
 import { getDayAndMinuteAtOffset, buildClockPromptPrefix } from "../timezone";
@@ -883,11 +883,11 @@ export async function start(args: string[] = []) {
             return run(
               job.name,
               `${clock}\n${prompt}`,
-              job.agent ? `agent:${job.agent}` : job.name,
+              job.sessionChannel ?? (job.agent ? `agent:${job.agent}` : job.name),
               job.model,
               timeoutMs,
               job.agent,
-              "job"
+              job.sessionChannel ? "discord" : "job"
             );
           })
           .then(async (r) => {
@@ -923,8 +923,15 @@ export async function start(args: string[] = []) {
             // Only clear one-shot schedule when no retry is pending.
             if (jobRetryState.has(job.name)) return;
             try {
-              await clearJobSchedule(job.name);
-              console.log(`[${ts()}] Cleared schedule for one-time job: ${job.name}`);
+              if (isRetryJobName(job.name) && job.sessionChannel) {
+                // Auto-generated timeout-retry jobs are single-use scratch files; remove entirely
+                // instead of leaving a spent, unscheduled file behind for every timeout.
+                await deleteRetryJob(job.sessionChannel);
+                console.log(`[${ts()}] Removed spent retry job: ${job.name}`);
+              } else {
+                await clearJobSchedule(job.name);
+                console.log(`[${ts()}] Cleared schedule for one-time job: ${job.name}`);
+              }
             } catch (err) {
               console.error(`[${ts()}] Failed to clear schedule for ${job.name}:`, err);
             }
