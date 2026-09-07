@@ -85,7 +85,7 @@ const DEFAULT_SETTINGS: Settings = {
   web: { enabled: false, host: "127.0.0.1", port: 4632 },
   stt: { baseUrl: "", model: "" },
   sessionTimeoutMs: DEFAULT_SESSION_TIMEOUT_MS,
-  timeouts: { telegram: 5, discord: 15, heartbeat: 15, job: 30, default: 5 },
+  timeouts: { telegram: 5, discord: 10, heartbeat: 15, job: 30, default: 5 },
   watchdog: { maxConsecutiveTimeouts: null, maxRuntimeSeconds: null },
   session: { autoRotate: false, maxMessages: 50, maxAgeHours: 24, summaryPath: "" },
   plugins: {},
@@ -159,7 +159,7 @@ export interface SecurityConfig {
 export interface TimeoutsConfig {
   /** Max minutes for a telegram message subprocess. Default: 5 min. */
   telegram: number;
-  /** Max minutes for a discord message subprocess. Default: 15 min. */
+  /** Max minutes for a discord message subprocess. Default: 10 min. */
   discord: number;
   /** Max minutes for a heartbeat subprocess. Default: 15 min. */
   heartbeat: number;
@@ -416,7 +416,7 @@ function parseSettings(
       : DEFAULT_SESSION_TIMEOUT_MS,
     timeouts: {
       telegram: Number.isFinite(raw.timeouts?.telegram) && Number(raw.timeouts.telegram) > 0 ? Number(raw.timeouts.telegram) : 5,
-      discord: Number.isFinite(raw.timeouts?.discord) && Number(raw.timeouts.discord) > 0 ? Number(raw.timeouts.discord) : 15,
+      discord: Number.isFinite(raw.timeouts?.discord) && Number(raw.timeouts.discord) > 0 ? Number(raw.timeouts.discord) : 10,
       heartbeat: Number.isFinite(raw.timeouts?.heartbeat) && Number(raw.timeouts.heartbeat) > 0 ? Number(raw.timeouts.heartbeat) : 15,
       job: Number.isFinite(raw.timeouts?.job) && Number(raw.timeouts.job) > 0 ? Number(raw.timeouts.job) : 30,
       default: Number.isFinite(raw.timeouts?.default) && Number(raw.timeouts.default) > 0 ? Number(raw.timeouts.default) : 5,

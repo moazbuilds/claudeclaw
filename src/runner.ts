@@ -344,7 +344,7 @@ function buildChildEnv(baseEnv: Record<string, string>, model: string, api: stri
  *
  * Category mapping:
  *   "telegram"  → settings.timeouts.telegram  (default 5 min)
- *   "discord"   → settings.timeouts.discord   (default 15 min)
+ *   "discord"   → settings.timeouts.discord   (default 10 min)
  *   "heartbeat" → settings.timeouts.heartbeat (default 15 min)
  *   "job"       → settings.timeouts.job       (default 30 min)
  *   anything else (bootstrap, trigger, chat…) → settings.timeouts.default (default 5 min)
