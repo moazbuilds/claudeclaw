@@ -289,7 +289,7 @@ Location: `.claude/claudeclaw/settings.json`
 
 | Key                        | Type       | Description                                    |
 |----------------------------|------------|------------------------------------------------|
-| `model`                    | string     | Claude model (`opus`, `sonnet`, `haiku`, `glm`, `minimax`/`minimax-m3`/`minimax-m2.7`, or full ID). Append `-cn` to a MiniMax alias for the China endpoint. An exact canonical MiniMax ID preserves an explicitly configured `ANTHROPIC_BASE_URL`; preset aliases select the built-in regional endpoint. Empty = default |
+| `model`                    | string     | Claude model (`opus`, `sonnet`, `haiku`, `glm`, `minimax`/`minimax-m3.1-flash` (MiniMax-M3.1-Flash, the MiniMax default)/`minimax-m3`, or full ID). Append `-cn` to a MiniMax alias for the China endpoint. An exact canonical MiniMax ID preserves an explicitly configured `ANTHROPIC_BASE_URL`; preset aliases select the built-in regional endpoint (`https://api.minimax.io/anthropic` globally, `https://api.minimax.cn/anthropic` in China). Saved legacy `minimax-m2.7` aliases remain accepted but are not offered for new setup. Empty = default |
 | `api`                      | string     | API token used when model is `glm` or a `minimax` preset (mapped to `ANTHROPIC_AUTH_TOKEN`); inherited Anthropic credentials are never forwarded to provider presets |
 | `fallback.model`           | string     | Backup model used automatically if primary run returns rate-limit text (recommend `glm` for provider diversity) |
 | `fallback.api`             | string     | API token used with `fallback.model`; required for GLM and MiniMax presets because inherited Anthropic credentials are never forwarded |

@@ -8,7 +8,7 @@
       "name": "claudeclaw",
       "source": "./",
       "description": "Cron-like daemon that runs Claude prompts on a schedule",
-      "version": "1.0.45",
+      "version": "1.0.46",
       "keywords": [
         "cron",
         "heartbeat",

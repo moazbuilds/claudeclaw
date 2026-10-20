@@ -326,12 +326,13 @@ function isNotFoundError(error: unknown): boolean {
 /** Anthropic-compatible base URLs for the MiniMax provider preset. */
 const MINIMAX_ANTHROPIC_BASE_URLS = {
   global: "https://api.minimax.io/anthropic",
-  cn: "https://api.minimaxi.com/anthropic",
+  cn: "https://api.minimax.cn/anthropic",
 } as const;
 
 /** Canonical MiniMax model IDs, keyed by the accepted `model` setting aliases. */
 const MINIMAX_MODEL_IDS: Record<string, string> = {
-  minimax: "MiniMax-M3",
+  minimax: "MiniMax-M3.1-Flash",
+  "minimax-m3.1-flash": "MiniMax-M3.1-Flash",
   "minimax-m3": "MiniMax-M3",
   "minimax-m2.7": "MiniMax-M2.7",
 };
@@ -340,10 +341,10 @@ const MINIMAX_CANONICAL_MODEL_IDS = new Set(Object.values(MINIMAX_MODEL_IDS));
 /**
  * Resolve the MiniMax provider preset for a configured `model` string.
  *
- * Users select a MiniMax model with `minimax`, `minimax-m3`, or `minimax-m2.7`
- * (the bare `minimax` alias maps to the latest MiniMax-M3). Append `-cn` to any
- * of those to route to the China endpoint instead of the global one. Returns
- * null when the model is not a MiniMax preset.
+ * Users select `minimax` (MiniMax-M3.1-Flash), `minimax-m3.1-flash`, or
+ * `minimax-m3`. The legacy `minimax-m2.7` alias remains accepted for saved
+ * configurations. Append `-cn` to select the China endpoint. Returns null
+ * when the model is not a MiniMax preset.
  */
 export function resolveMinimaxModel(model: string): { baseUrl: string; modelId: string } | null {
   let normalized = model.trim().toLowerCase();
