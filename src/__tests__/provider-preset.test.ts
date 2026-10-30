@@ -17,7 +17,7 @@ describe("resolveMinimaxModel", () => {
   it("maps explicit MiniMax model aliases", () => {
     expect(resolveMinimaxModel("minimax-m3.1-flash")?.modelId).toBe("MiniMax-M3.1-Flash");
     expect(resolveMinimaxModel("  MiniMax-M3.1-Flash-cn  ")).toEqual({
-      baseUrl: "https://api.minimax.cn/anthropic",
+      baseUrl: "https://api.minimaxi.com/anthropic",
       modelId: "MiniMax-M3.1-Flash",
     });
     expect(resolveMinimaxModel("minimax-m3")?.modelId).toBe("MiniMax-M3");
@@ -26,11 +26,11 @@ describe("resolveMinimaxModel", () => {
 
   it("routes to the China endpoint with the -cn suffix", () => {
     expect(resolveMinimaxModel("minimax-m3-cn")).toEqual({
-      baseUrl: "https://api.minimax.cn/anthropic",
+      baseUrl: "https://api.minimaxi.com/anthropic",
       modelId: "MiniMax-M3",
     });
     expect(resolveMinimaxModel("minimax-cn")?.baseUrl).toBe(
-      "https://api.minimax.cn/anthropic",
+      "https://api.minimaxi.com/anthropic",
     );
   });
 
@@ -103,7 +103,7 @@ describe("buildChildEnv", () => {
       "https://api.minimax.io/anthropic",
     );
     expect(buildChildEnv({}, "minimax-m2.7-cn", "token").ANTHROPIC_BASE_URL).toBe(
-      "https://api.minimax.cn/anthropic",
+      "https://api.minimaxi.com/anthropic",
     );
   });
 
@@ -168,7 +168,7 @@ describe("buildChildEnv", () => {
       "your-cn-token",
     );
 
-    expect(env.ANTHROPIC_BASE_URL).toBe("https://api.minimax.cn/anthropic");
+    expect(env.ANTHROPIC_BASE_URL).toBe("https://api.minimaxi.com/anthropic");
     expect(env.ANTHROPIC_AUTH_TOKEN).toBe("your-cn-token");
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
   });

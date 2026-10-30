@@ -326,7 +326,7 @@ function isNotFoundError(error: unknown): boolean {
 /** Anthropic-compatible base URLs for the MiniMax provider preset. */
 const MINIMAX_ANTHROPIC_BASE_URLS = {
   global: "https://api.minimax.io/anthropic",
-  cn: "https://api.minimax.cn/anthropic",
+  cn: "https://api.minimaxi.com/anthropic",
 } as const;
 
 /** Canonical MiniMax model IDs, keyed by the accepted `model` setting aliases. */

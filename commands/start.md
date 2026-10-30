@@ -217,7 +217,7 @@ Defaults: `WEB_HOST=127.0.0.1`, `WEB_PORT=4632` unless changed via settings or `
   }
 }
 ```
-- `model` — Claude model to use (`opus`, `sonnet`, `haiku`, `glm`, `minimax`/`minimax-m3.1-flash` (MiniMax-M3.1-Flash, the MiniMax default)/`minimax-m3`, or full model ID). Append `-cn` to a MiniMax alias to use `https://api.minimax.cn/anthropic` instead of `https://api.minimax.io/anthropic`. Saved legacy `minimax-m2.7` aliases remain accepted but are not offered for new setup. Empty string uses default. Ignored when `agentic.enabled` is true.
+- `model` — Claude model to use (`opus`, `sonnet`, `haiku`, `glm`, `minimax`/`minimax-m3.1-flash` (MiniMax-M3.1-Flash, the MiniMax default)/`minimax-m3`, or full model ID). Append `-cn` to a MiniMax alias to use `https://api.minimaxi.com/anthropic` instead of `https://api.minimax.io/anthropic`. Saved legacy `minimax-m2.7` aliases remain accepted but are not offered for new setup. Empty string uses default. Ignored when `agentic.enabled` is true.
 - `api` — API token used when `model` is `glm` or a `minimax` preset (passed as `ANTHROPIC_AUTH_TOKEN` for that provider path).
 - `fallback.model` — backup model used automatically if the primary run returns a rate-limit message. Prefer `glm` for provider diversity.
 - `fallback.api` — optional API token to use with `fallback.model`.

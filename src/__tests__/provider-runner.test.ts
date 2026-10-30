@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 const globalUrl = "https://api.minimax.io/anthropic";
-const chinaUrl = "https://api.minimax.cn/anthropic";
+const chinaUrl = "https://api.minimaxi.com/anthropic";
 const customUrl = "https://gateway.example/anthropic";
 
 // The transport owned by this repository is the CLI invocation, not HTTP.
