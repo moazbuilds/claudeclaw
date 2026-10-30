@@ -14,10 +14,10 @@ Parse `$ARGUMENTS` to identify what the user wants. If no arguments are given, s
 2. Display all settings clearly:
 
    **General**
-   - Model: (e.g. `opus`, `sonnet`, `haiku`, `glm` or "default")
-   - API token: (first 5 chars + "..." or "not configured"; used when `model` is `glm`)
+   - Model: (e.g. `opus`, `sonnet`, `haiku`, `glm`, `minimax` or "default")
+   - API token: ("configured" with SHA-256 prefix and character count, or "not configured"; never print the token; used when `model` is `glm` or a `minimax` preset)
    - Fallback model: (e.g. `glm`, `sonnet`, or "not configured")
-   - Fallback API token: (first 5 chars + "..." or "not configured")
+   - Fallback API token: ("configured" with SHA-256 prefix and character count, or "not configured"; never print the token)
    - Timezone: (e.g. `America/New_York` or "UTC")
 
    **Heartbeat**
@@ -117,42 +117,46 @@ Disable Telegram integration.
 Set the Claude model to use for sessions.
 
 1. If model name is in `$ARGUMENTS`, use it directly.
-2. Otherwise, use **AskUserQuestion**: "Which Claude model should ClaudeClaw use?" (header: "Model", options: "opus (default)", "sonnet", "haiku", "glm")
+2. Otherwise, use **AskUserQuestion**: "Which Claude model should ClaudeClaw use?" (header: "Model", options: "opus (default)", "sonnet", "glm", "minimax"; `haiku` and full IDs remain available through Other)
 3. Read `.claude/claudeclaw/settings.json`.
-4. Set `model` to the new value.
-5. If the selected model is `glm`, ask for `api` token (unless already set) and save it to top-level `api`.
-6. If model is changed away from `glm`, keep `api` unchanged.
-7. Write and confirm.
+4. Classify the old and new model providers as `glm`, `minimax` (any supported MiniMax preset alias, including `-cn`), or `anthropic` (all other values), then set `model` to the new value.
+5. If the new provider is `glm` or `minimax`, ask for that provider's `api` token when `api` is empty or the provider changed. Never reuse one provider's token for another provider.
+6. If the new provider is `anthropic`, clear top-level `api` so a third-party token is not forwarded to Anthropic.
+7. Write and confirm without printing any token value.
 
 ### `api <token>` / `api`
 
-Set or update the API token used when `model` is `glm`.
+Set or update the API token used when `model` is `glm` or a supported MiniMax preset.
 
 1. If token is in `$ARGUMENTS`, use it directly.
-2. Otherwise, use **AskUserQuestion**: "What API token should ClaudeClaw use for glm?" (header: "API token", options: let user type via Other)
-3. Read `.claude/claudeclaw/settings.json`.
-4. Set top-level `api` to the new value.
-5. Write and confirm.
+2. Read `.claude/claudeclaw/settings.json` and identify whether the selected provider is `glm` or `minimax`.
+3. If neither provider is selected, stop and ask the user to choose a provider model first.
+4. If no token was supplied in `$ARGUMENTS`, use **AskUserQuestion**: "What API token should ClaudeClaw use for the selected provider?" (header: "API token", options: let user type via Other)
+5. Set top-level `api` to the new value.
+6. Write and confirm without printing the token value.
 
 ### `fallback model <name>` / `fallback model`
 
 Set the fallback model used when the primary model hits a rate limit.
 
 1. If fallback model name is in `$ARGUMENTS`, use it directly.
-2. Otherwise, use **AskUserQuestion**: "Which fallback model should ClaudeClaw use?" (header: "Fallback model", options: "glm (Recommended)", "sonnet", "haiku")
+2. Otherwise, use **AskUserQuestion**: "Which fallback model should ClaudeClaw use?" (header: "Fallback model", options: "glm (Recommended)", "minimax", "sonnet", "haiku")
 3. Read `.claude/claudeclaw/settings.json`.
-4. Set `fallback.model` to the chosen value (`""` for none).
-5. Write and confirm.
+4. Classify the old and new fallback providers as `glm`, `minimax` (any supported MiniMax preset alias, including `-cn`), or `anthropic` (all other values), then set `fallback.model` to the chosen value (`""` for none).
+5. If the new provider is `glm` or `minimax`, ask for that provider's `fallback.api` token when it is empty or the provider changed. Never reuse one provider's token for another provider.
+6. If the new provider is `anthropic`, clear `fallback.api` so a third-party token is not forwarded to Anthropic.
+7. Write and confirm without printing any token value.
 
 ### `fallback api <token>` / `fallback api`
 
-Set or clear the API token for the fallback model.
+Set or clear the API token for a GLM or MiniMax fallback model.
 
 1. If token is in `$ARGUMENTS`, use it directly.
-2. Otherwise, use **AskUserQuestion**: "What API token should ClaudeClaw use for fallback model?" (header: "Fallback API token", options: let user type via Other)
-3. Read `.claude/claudeclaw/settings.json`.
-4. Set `fallback.api` to the new value.
-5. Write and confirm.
+2. Read `.claude/claudeclaw/settings.json` and identify whether `fallback.model` selects `glm` or `minimax`.
+3. If neither provider is selected, stop and ask the user to choose a provider fallback first.
+4. If no token was supplied in `$ARGUMENTS`, use **AskUserQuestion**: "What API token should ClaudeClaw use for the fallback provider?" (header: "Fallback API token", options: let user type via Other)
+5. Set `fallback.api` to the new value.
+6. Write and confirm without printing the token value.
 
 ### `timezone <tz>` / `timezone`
 
@@ -285,10 +289,10 @@ Location: `.claude/claudeclaw/settings.json`
 
 | Key                        | Type       | Description                                    |
 |----------------------------|------------|------------------------------------------------|
-| `model`                    | string     | Claude model (`opus`, `sonnet`, `haiku`, `glm`, or full ID). Empty = default |
-| `api`                      | string     | API token used when model is `glm` (mapped to `ANTHROPIC_AUTH_TOKEN`) |
+| `model`                    | string     | Claude model (`opus`, `sonnet`, `haiku`, `glm`, `minimax`/`minimax-m3.1-flash` (MiniMax-M3.1-Flash, the MiniMax default)/`minimax-m3`, or full ID). Append `-cn` to a MiniMax alias for the China endpoint. An exact canonical MiniMax ID preserves an explicitly configured `ANTHROPIC_BASE_URL`; preset aliases select the built-in regional endpoint (`https://api.minimax.io/anthropic` globally, `https://api.minimaxi.com/anthropic` in China). Saved legacy `minimax-m2.7` aliases remain accepted but are not offered for new setup. Empty = default |
+| `api`                      | string     | API token used when model is `glm` or a `minimax` preset (mapped to `ANTHROPIC_AUTH_TOKEN`); inherited Anthropic credentials are never forwarded to provider presets |
 | `fallback.model`           | string     | Backup model used automatically if primary run returns rate-limit text (recommend `glm` for provider diversity) |
-| `fallback.api`             | string     | API token used with `fallback.model` (optional) |
+| `fallback.api`             | string     | API token used with `fallback.model`; required for GLM and MiniMax presets because inherited Anthropic credentials are never forwarded |
 | `timezone`                 | string     | IANA timezone name (e.g. `America/New_York`)   |
 | `timezoneOffsetMinutes`    | number     | UTC offset in minutes (auto-resolved from timezone) |
 | `heartbeat.enabled`        | boolean    | Whether the recurring heartbeat runs           |

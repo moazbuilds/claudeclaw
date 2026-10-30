@@ -323,11 +323,99 @@ function isNotFoundError(error: unknown): boolean {
   return /enoent|no such file or directory/i.test(message);
 }
 
-function buildChildEnv(baseEnv: Record<string, string>, model: string, api: string): Record<string, string> {
+/** Anthropic-compatible base URLs for the MiniMax provider preset. */
+const MINIMAX_ANTHROPIC_BASE_URLS = {
+  global: "https://api.minimax.io/anthropic",
+  cn: "https://api.minimaxi.com/anthropic",
+} as const;
+
+/** Canonical MiniMax model IDs, keyed by the accepted `model` setting aliases. */
+const MINIMAX_MODEL_IDS: Record<string, string> = {
+  minimax: "MiniMax-M3.1-Flash",
+  "minimax-m3.1-flash": "MiniMax-M3.1-Flash",
+  "minimax-m3": "MiniMax-M3",
+  "minimax-m2.7": "MiniMax-M2.7",
+};
+const MINIMAX_CANONICAL_MODEL_IDS = new Set(Object.values(MINIMAX_MODEL_IDS));
+
+/**
+ * Resolve the MiniMax provider preset for a configured `model` string.
+ *
+ * Users select `minimax` (MiniMax-M3.1-Flash), `minimax-m3.1-flash`, or
+ * `minimax-m3`. The legacy `minimax-m2.7` alias remains accepted for saved
+ * configurations. Append `-cn` to select the China endpoint. Returns null
+ * when the model is not a MiniMax preset.
+ */
+export function resolveMinimaxModel(model: string): { baseUrl: string; modelId: string } | null {
+  let normalized = model.trim().toLowerCase();
+  if (!normalized.startsWith("minimax")) return null;
+
+  let baseUrl: string = MINIMAX_ANTHROPIC_BASE_URLS.global;
+  if (normalized.endsWith("-cn")) {
+    baseUrl = MINIMAX_ANTHROPIC_BASE_URLS.cn;
+    normalized = normalized.slice(0, -"-cn".length);
+  }
+
+  const modelId = MINIMAX_MODEL_IDS[normalized];
+  return modelId ? { baseUrl, modelId } : null;
+}
+
+function resolveProviderFamily(model: string): "anthropic" | "glm" | "minimax" {
+  if (model.trim().toLowerCase() === "glm") return "glm";
+  if (resolveMinimaxModel(model)) return "minimax";
+  return "anthropic";
+}
+
+/**
+ * Pair an effective model with the configured primary credential only when the
+ * model stays within the same provider family. Overrides and agentic routes do
+ * not carry provider-specific credentials, so cross-provider switches fail
+ * closed instead of forwarding the configured provider token.
+ */
+export function resolvePrimaryModelConfig(
+  configured: ModelConfig,
+  effectiveModel: string,
+): ModelConfig {
+  const sameProvider = resolveProviderFamily(configured.model) === resolveProviderFamily(effectiveModel);
+  return { model: effectiveModel, api: sameProvider ? configured.api : "" };
+}
+
+/**
+ * Resolve the value passed to the Claude CLI `--model` flag, or null when no
+ * flag should be added. GLM uses its provider default (no flag); MiniMax presets
+ * are rewritten to their canonical model IDs; anything else is passed through.
+ */
+export function resolveModelArg(model: string): string | null {
+  const trimmed = model.trim();
+  if (!trimmed) return null;
+  if (trimmed.toLowerCase() === "glm") return null;
+  const minimax = resolveMinimaxModel(trimmed);
+  if (minimax) return minimax.modelId;
+  return trimmed;
+}
+
+export function buildChildEnv(baseEnv: Record<string, string>, model: string, api: string): Record<string, string> {
   const childEnv: Record<string, string> = { ...baseEnv };
   const normalizedModel = model.trim().toLowerCase();
+  const apiToken = api.trim();
+  const minimax = resolveMinimaxModel(model);
+  const hasExplicitBaseUrl = Boolean(childEnv.ANTHROPIC_BASE_URL?.trim());
+  const preservesCustomMinimaxEndpoint = Boolean(
+    minimax && hasExplicitBaseUrl && MINIMAX_CANONICAL_MODEL_IDS.has(model.trim()),
+  );
+  const isolatesProviderCredentials = Boolean(
+    normalizedModel === "glm" || (minimax && (!preservesCustomMinimaxEndpoint || apiToken)),
+  );
 
-  if (api.trim()) childEnv.ANTHROPIC_AUTH_TOKEN = api.trim();
+  if (isolatesProviderCredentials) {
+    delete childEnv.ANTHROPIC_AUTH_TOKEN;
+    delete childEnv.ANTHROPIC_API_KEY;
+    if (apiToken) childEnv.ANTHROPIC_AUTH_TOKEN = apiToken;
+  }
+
+  if (minimax && !preservesCustomMinimaxEndpoint) {
+    childEnv.ANTHROPIC_BASE_URL = minimax.baseUrl;
+  }
 
   if (normalizedModel === "glm") {
     childEnv.ANTHROPIC_BASE_URL = "https://api.z.ai/api/anthropic";
@@ -414,8 +502,8 @@ async function runClaudeOnce(
   cwd?: string
 ): Promise<{ rawStdout: string; stderr: string; exitCode: number }> {
   const args = [...baseArgs];
-  const normalizedModel = model.trim().toLowerCase();
-  if (model.trim() && normalizedModel !== "glm") args.push("--model", model.trim());
+  const modelArg = resolveModelArg(model);
+  if (modelArg) args.push("--model", modelArg);
 
   const proc = Bun.spawn(args, {
     stdout: "pipe",
@@ -483,8 +571,8 @@ async function runClaudeStream(
   onToolEvent?: (line: string) => void
 ): Promise<{ rawStdout: string; stderr: string; exitCode: number; sessionId?: string }> {
   const args = [...baseArgs];
-  const normalizedModel = model.trim().toLowerCase();
-  if (model.trim() && normalizedModel !== "glm") args.push("--model", model.trim());
+  const modelArg = resolveModelArg(model);
+  if (modelArg) args.push("--model", modelArg);
 
   const proc = Bun.spawn(args, {
     stdout: "pipe",
@@ -635,8 +723,8 @@ async function runClaudeStreaming(
   onToolEvent?: (line: string) => void
 ): Promise<{ result: string; stderr: string; exitCode: number; sessionId?: string; isRateLimit: boolean }> {
   const args = [...baseArgs];
-  const normalizedModel = model.trim().toLowerCase();
-  if (model.trim() && normalizedModel !== "glm") args.push("--model", model.trim());
+  const modelArg = resolveModelArg(model);
+  if (modelArg) args.push("--model", modelArg);
 
   const proc = Bun.spawn(args, {
     stdout: "pipe",
@@ -1065,11 +1153,11 @@ async function execClaude(
   let routingReasoning = "";
 
   if (modelOverride) {
-    primaryConfig = { model: modelOverride, api };
+    primaryConfig = resolvePrimaryModelConfig({ model, api }, modelOverride);
     console.log(`[${new Date().toLocaleTimeString()}] Job model override: ${modelOverride}`);
   } else if (agentic.enabled) {
     const routing = selectModel(prompt, agentic.modes, agentic.defaultMode);
-    primaryConfig = { model: routing.model, api };
+    primaryConfig = resolvePrimaryModelConfig({ model, api }, routing.model);
     taskType = routing.taskType;
     routingReasoning = routing.reasoning;
     console.log(
@@ -1502,8 +1590,8 @@ async function streamClaude(
     args.push("--append-system-prompt", appendParts.join("\n\n"));
   }
 
-  const normalizedModel = model.trim().toLowerCase();
-  if (model.trim() && normalizedModel !== "glm") args.push("--model", model.trim());
+  const modelArg = resolveModelArg(model);
+  if (modelArg) args.push("--model", modelArg);
 
   const childEnv = buildChildEnv(cleanSpawnEnv(), model, api);
 
